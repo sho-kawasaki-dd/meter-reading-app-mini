@@ -90,14 +90,14 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 
 ### 4.2 起動・ログ統合
 
-- [ ] 小さな `src/meter_reading_mini/app.py` に起動ライフサイクルを追加し、既存部品を再利用する。依存(`QApplication` 生成、DB 接続、ロック、ログ設定)を引数で注入できる形にする。
-- [ ] 順序を「データ・ログディレクトリ準備(`ensure_dirs(paths)`) → `SingleInstanceLock` 取得 → ログ初期化 → DB 接続・migration → `QApplication` 作成 → 表示設定読込・適用」とする。
-- [ ] DB 接続・migration は `open_database(paths.db_path, paths.backup_dir, backup_timestamp=local_timestamp_for_filename)` を呼び出し、`core/timeutil.py` の `local_timestamp_for_filename` を渡す。
-- [ ] `configure_logging(log_dir=paths.log_dir)` を使い、`METER_READING_MINI_DATA_DIR` 指定時もログが `<data_dir>/logs/app.log` に保存されるようにする。
-- [ ] ロック取得に失敗した場合はログ・DB・UI の初期化へ進まない。
-- [ ] 起動途中に例外が発生した場合は、開いた DB 接続と取得済みロックを必ず解放する。
-- [ ] `QApplication` の既定ファクトリは既存の `QApplication.instance()` があれば再利用し(テスト環境 `pytest-qt` 等との競合防止)、`app.py` 自身が新規生成した場合のみ終了時に破棄する。
-- [ ] MainWindow、仮ウィンドウ、`__main__.py` を追加しない。
+- [x] 小さな `src/meter_reading_mini/app.py` に起動ライフサイクルを追加し、既存部品を再利用する。依存(`QApplication` 生成、DB 接続、ロック、ログ設定)を引数で注入できる形にする。
+- [x] 順序を「データ・ログディレクトリ準備(`ensure_dirs(paths)`) → `SingleInstanceLock` 取得 → ログ初期化 → DB 接続・migration → `QApplication` 作成 → 表示設定読込・適用」とする。
+- [x] DB 接続・migration は `open_database(paths.db_path, paths.backup_dir, backup_timestamp=local_timestamp_for_filename)` を呼び出し、`core/timeutil.py` の `local_timestamp_for_filename` を渡す。
+- [x] `configure_logging(log_dir=paths.log_dir)` を使い、`METER_READING_MINI_DATA_DIR` 指定時もログが `<data_dir>/logs/app.log` に保存されるようにする。
+- [x] ロック取得に失敗した場合はログ・DB・UI の初期化へ進まない。
+- [x] 起動途中に例外が発生した場合は、開いた DB 接続と取得済みロックを必ず解放する。
+- [x] `QApplication` の既定ファクトリは既存の `QApplication.instance()` があれば再利用し(テスト環境 `pytest-qt` 等との競合防止)、`app.py` 自身が新規生成した場合のみ終了時に破棄する。
+- [x] MainWindow、仮ウィンドウ、`__main__.py` を追加しない。
 
 起動処理の仕様は次のとおり。
 
