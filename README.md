@@ -8,9 +8,10 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 
 ## 開発状況と仕様の正本
 
-現在は、新構成への移行パッケージを収録した開発準備段階です。
-共通基盤と既存の業務ロジック・テストはありますが、旧 import や SQLAlchemy 実装の移植が残っています。
-起動用の `__main__.py`・メイン画面・標準 sqlite3 Repository・CI・配布設定は未整備です。
+現在は `migration_package/` を基点に開発中です。
+Phase 0 の共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow は実装済みです。
+一方、旧 import や SQLAlchemy 実装の移植、メイン画面・起動用 `__main__.py`・標準 sqlite3 Repository は未整備です。
+CI の GitHub 上での確認、`main` の保護設定、実 PR による検証も未完了のため、Phase 0 全体は完了していません。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -53,11 +54,11 @@ Python 3.13 と uv を用意し、リポジトリのルートから PowerShell �
 
 ```powershell
 Set-Location .\migration_package
-uv sync
+uv sync --locked
 ```
 
-現時点では `uv.lock` がないため、初回は `uv sync` で生成します。依存関係を確定してロックファイルを
-Git 管理した後は、ローカル・CI とも `uv sync --locked` を使用します。
+依存関係を追加・変更するときは `uv lock` で `uv.lock` を更新し、差分を確認してから
+`uv sync --locked` でロックファイルどおりに同期します。通常の環境構築・CI では `uv sync --locked` を使用します。
 
 将来、移行パッケージの内容をリポジトリ直下へ正式配置した場合は、以降のコマンドをリポジトリのルートで
 実行する構成に統一し、関連文書・設定のパスも同時に更新します。
@@ -65,7 +66,9 @@ Git 管理した後は、ローカル・CI とも `uv sync --locked` を使用�
 ## 検査・テスト
 
 以下はプロジェクトディレクトリ (現在は `migration_package`) で実行する共通の品質ゲートです。
-移植前の旧 import 等による失敗は解消対象であり、現状で全コマンドが成功することを示すものではありません。
+検査対象は [開発計画書の Phase 0 品質ゲート検査対象](docs/plan/ローカル検針管理アプリ開発計画書.md) と
+`pyproject.toml` に定義しています。Phase 1 で統合する移植前の資産は対象外として明示しており、
+このコマンド一覧は CI の実行手順を示すもので、GitHub 上の CI 成功を示すものではありません。
 
 ```powershell
 uv run playwright install chromium
@@ -73,29 +76,30 @@ uv run ruff check
 uv run ruff format --check
 uv run pyright
 uv run pytest --cov
-uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90
+uv run coverage report --fail-under=90
 ```
 
 - 型検査は `core/`・`db/` を strict、`ui/` を standard とします。
-- `core/`・`db/` の行カバレッジ目標は 90% 以上です。
+- Phase 0 で設定した coverage 対象の行カバレッジ目標は 90% 以上です。
 - ブラウザテストは生成 HTML を `file:` URL で開き、HTTP サーバーを起動せず実施します。
 - Playwright / Chromium 未準備を理由にブラウザテストをスキップしません。
-- Linux の CI では `uv run playwright install --with-deps chromium` でシステム依存も準備します。
+- Ubuntu CI では `uv run playwright install --with-deps chromium` でシステム依存も準備します。
 
 ### Linux のヘッドレステスト
 
 ```sh
 QT_QPA_PLATFORM=offscreen uv run pytest --cov
-uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90
+uv run coverage report --fail-under=90
 ```
 
 通常の GUI 起動では `QT_QPA_PLATFORM=offscreen` を設定しません。
 テスト DB は `:memory:` または `tmp_path` を使い、実データの保存先は使用しません。
 
-## アプリの起動 (起動処理の実装後)
+## アプリの起動 (Phase 3 の画面・`__main__.py` 実装後)
 
-現時点では起動用モジュールがないため、次のコマンドでは起動できません。
-起動処理・画面の実装とロックファイルの整備後は、プロジェクトディレクトリで実行します。
+起動オーケストレーション自体は `app.py` に実装済みですが、画面と起動用 `__main__.py` は未実装です。
+そのため、現時点では次のコマンドでは起動できません。Phase 3 で画面・`__main__.py` を実装した後、
+プロジェクトディレクトリで実行する予定です。
 
 ```powershell
 uv sync --locked
@@ -185,7 +189,7 @@ CSV の日時はローカル時刻で出力し、文字列セルの数式注入�
 - DB 名: `meter_reading.db`、ロック: `meter_reading.lock`、表示設定: `ui_settings.json`
 
 起動前に `METER_READING_MINI_DATA_DIR` を設定すると、DB 等は指定先、ログはその `logs` 配下になります。
-起動処理の実装後、一時的な動作確認では次のように通常データと分離します。
+Phase 3 でアプリを起動できるようになった後、一時的な動作確認では次のように通常データと分離します。
 
 ```powershell
 $env:METER_READING_MINI_DATA_DIR = Join-Path $env:TEMP ("meter-reading-mini-" + [guid]::NewGuid().ToString('N'))
@@ -238,9 +242,11 @@ uv run python -m meter_reading_mini
 │       └── フェーズ0_共通基盤・CI整備計画.md
 └── migration_package/
     ├── README.md
+    ├── uv.lock
     ├── pyproject.toml
     ├── docs/plan/
     ├── src/meter_reading_mini/
+    │   ├── app.py
     │   ├── config.py
     │   ├── core/
     │   ├── db/
@@ -272,7 +278,7 @@ Repository の移植・テストが完了した段階で参考資産を削除し
 - `main` は常にテスト成功状態を保ち、`feature/<フェーズ>-<内容>` ブランチで作業します。
 - `main` へ直接 push せず、feature ブランチを push して PR を作成し、CI 成功後にマージします。
 - 必須チェックは `test (windows-latest)`・`test (ubuntu-latest)` とする方針です。
-  **現時点では CI workflow がなく、リポジトリルールの設定状況も本書では確認していません。**
+  **CI workflow は用意済みですが、GitHub 上でのチェック実行・リポジトリルールの設定状況は未確認です。**
   CI 導入時に両ジョブとブランチ保護を整備し、ジョブ名変更時は必須チェック名も同時に更新します。
 - コミットは Conventional Commits (`feat:`、`fix:`、`test:`、`docs:`、`refactor:` 等) に従い、
   メッセージ本文・UI テキスト・ドキュメント・コード内コメントは日本語を使います。

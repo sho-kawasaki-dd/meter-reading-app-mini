@@ -136,10 +136,10 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 
 ### 4.5 文書の整合
 
-- [ ] ルート README の開発状況・コマンドと Phase 0 の実装状況を正本に合わせる(品質ゲートの `coverage report` コマンドも `pyproject.toml` 一元化に合わせて引数なしの `uv run coverage report --fail-under=90` に揃え、`python -m meter_reading_mini` は Phase 3 の画面・`__main__.py` 実装後に有効になる旨を明記する)。
-- [ ] `migration_package/README.md` の「Phase 0 完了済み」を、「基盤部品は同梱済み、CI・起動統合・GitHub 保護は未完了」のように、資産の存在とフェーズ完了を区別する記述へ直す。完了締め PR(4.6 手順 6)で「完了」へ更新する。
-- [ ] `uv.lock` の管理開始後は、README の同期コマンドを `uv sync --locked` にする。lock の生成・更新手順(`uv lock`)も記録する。
-- [ ] 正本の Phase 0 に、検査対象と検査対象外(ファイル名・理由)を記載する。正本の Phase 1 完了条件に「Phase 0 で設けた検査対象外をすべて解除し、全テスト・全ゲートが成功する」を追加する。
+- [x] ルート README の開発状況・コマンドと Phase 0 の実装状況を正本に合わせる(品質ゲートの `coverage report` コマンドも `pyproject.toml` 一元化に合わせて引数なしの `uv run coverage report --fail-under=90` に揃え、`python -m meter_reading_mini` は Phase 3 の画面・`__main__.py` 実装後に有効になる旨を明記する)。
+- [x] `migration_package/README.md` の「Phase 0 完了済み」を、基盤部品・起動統合・CI workflow の同梱状況と、GitHub 上の CI 確認・保護設定・実 PR 検証の未完了を分け、資産の存在とフェーズ完了を区別する記述へ直す。完了締め PR(4.6 手順 6)で「完了」へ更新する。
+- [x] `uv.lock` の管理開始後は、README の同期コマンドを `uv sync --locked` にする。lock の生成・更新手順(`uv lock`)も記録する。
+- [x] 正本の Phase 0 に検査対象と検査対象外(ファイル名・理由)を記載し、正本の Phase 1 完了条件に「Phase 0 で設けた検査対象外をすべて解除し、全テスト・全ゲートが成功する」を追加済みであることを確認する。
 - [ ] 正本の Phase 0 完了チェックは、該当する実装・CI・GitHub 確認が完了してから、4.6 手順 6 の完了締め PR で更新する。
 
 ### 4.6 GitHub の保護設定と PR 検証

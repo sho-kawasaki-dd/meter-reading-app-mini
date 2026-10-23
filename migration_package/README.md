@@ -10,6 +10,7 @@
 
 ```text
 migration_package/
+├─ uv.lock                                # uv の依存ロックファイル
 ├─ pyproject.toml                         # PySide6 + 標準 sqlite3 + Playwright 構成のプロジェクト定義
 ├─ README.md                              # 本ガイド
 ├─ docs/
@@ -18,6 +19,7 @@ migration_package/
 ├─ src/
 │  └─ meter_reading_mini/
 │     ├─ __init__.py
+│     ├─ app.py                              # Phase 0 起動オーケストレーション
 │     ├─ config.py                          # 【同梱済】パス解決 (platformdirs / METER_READING_MINI_DATA_DIR)
 │     ├─ core/                              # 純 Python の業務ロジック・データ契約層
 │     │  ├─ contract_models.py              # 旧 api/models.py (Enum・Decimal文字列検証・WorkPackage/Sync DTO)
@@ -85,12 +87,13 @@ migration_package/
 
 ---
 
-## 2. 新リポジトリ立ち上げ手順 (Phase 0 完了済 〜 Phase 1)
+## 2. 新リポジトリへの移行・開発手順 (Phase 0 作業中 〜 Phase 1)
 
 ### Step 1: 新リポジトリへのコピーと環境構築
 
 1. 新しいフォルダ（例: `meter_reading_mini`）を作成し、`migration_package/` 内の全ファイル・フォルダをコピーします。
-2. 備品在庫管理アプリ（`inventory-manager-mini`）由来の Phase 0 共通基盤モジュール（`config.py`, `core/errors.py`, `core/timeutil.py`, `core/mobile_reading.py`, `db/connection.py`, `db/backup.py`, `db/migrations.py`, `ui/single_instance.py`, `ui/display_settings.py`, `ui/dialog_placement.py`, `ui/error_handling.py`, `ui/csv_export.py`）およびその単体テストは**すべて同梱済み**です。`uv sync` を実行すれば直ちに共通基盤のテストを実行できます。
+2. 備品在庫管理アプリ（`inventory-manager-mini`）由来の Phase 0 共通基盤モジュール（`config.py`, `core/errors.py`, `core/timeutil.py`, `core/mobile_reading.py`, `db/connection.py`, `db/backup.py`, `db/migrations.py`, `ui/single_instance.py`, `ui/display_settings.py`, `ui/dialog_placement.py`, `ui/error_handling.py`, `ui/csv_export.py`）およびその単体テストは**同梱済み**です。起動オーケストレーションと CI workflow も実装されていますが、GitHub 上の CI 確認・`main` 保護・実 PR 検証は未完了のため、Phase 0 は完了していません。
+3. コピー先のプロジェクトルートで `uv sync --locked` を実行して環境を構築します。依存関係を追加・変更するときは `uv lock` で `uv.lock` を更新し、差分を確認してから `uv sync --locked` で同期を検証してください。
 
 ### Step 2: `core/` 内の import パス整理と `build_scheduled_at` の移動
 
