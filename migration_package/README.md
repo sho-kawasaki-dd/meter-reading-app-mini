@@ -14,7 +14,6 @@ migration_package/
 ├─ README.md                              # 本ガイド
 ├─ docs/
 │  └─ plan/
-│     ├─ ローカル検針管理アプリ開発計画書.md             # 新アーキテクチャの基本設計・開発計画書(正本)
 │     └─ オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md # 旧企画書(業務ルールの参考記録)
 ├─ src/
 │  └─ meter_reading_mini/
@@ -81,6 +80,8 @@ migration_package/
    ├─ test_timezone_settings.py
    └─ test_meter_master_service.py
 ```
+
+開発計画書の正本はリポジトリ直下の [`docs/ローカル検針管理アプリ開発計画書.md`](../docs/ローカル検針管理アプリ開発計画書.md) にあります。
 
 ---
 
