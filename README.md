@@ -13,7 +13,7 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 起動用の `__main__.py`・メイン画面・標準 sqlite3 Repository・CI・配布設定は未整備です。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
-- **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/ローカル検針管理アプリ開発計画書.md)
+- **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
 - **移行資産と移植手順**: [移行パッケージの README](migration_package/README.md)
 - **開発規約**: [Copilot 開発ガイドライン](.github/copilot-instructions.md)
 - **旧構成の参考記録**: [旧企画書](migration_package/docs/plan/オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md)
@@ -233,7 +233,9 @@ uv run python -m meter_reading_mini
 ├── .github/
 │   └── copilot-instructions.md
 ├── docs/
-│   └── ローカル検針管理アプリ開発計画書.md
+│   └── plan/
+│       ├── ローカル検針管理アプリ開発計画書.md
+│       └── フェーズ0_共通基盤・CI整備計画.md
 └── migration_package/
     ├── README.md
     ├── pyproject.toml
@@ -276,4 +278,4 @@ Repository の移植・テストが完了した段階で参考資産を削除し
   メッセージ本文・UI テキスト・ドキュメント・コード内コメントは日本語を使います。
 - 新機能・仕様変更は実装計画書を作成し、検証済みタスクにチェックを入れます。
   完了時に正本へ確定仕様を統合し、作業用計画書を `docs/plan/implemented/` へ移して凍結します
-  (作業用計画書の文書基点は `migration_package/docs/plan/`、開発計画書の正本は `docs/` です)。
+  (作業用計画書の文書基点は `docs/plan/`、開発計画書の正本も `docs/plan/` です)。
