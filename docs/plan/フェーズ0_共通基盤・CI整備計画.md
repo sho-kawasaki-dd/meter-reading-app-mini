@@ -15,7 +15,7 @@
 - `config.py`、`db/connection.py`、`db/migrations.py`、`ui/single_instance.py`、`ui/display_settings.py` 等の基盤部品と単体テストは存在する。
 - 起動オーケストレーション、標準 sqlite3 Repository、アプリ画面、CI workflow は未整備。
 - ログ設定の既定保存先(`get_default_log_dir()` はパッケージ相対の `logs/`)と `AppPaths.log_dir` が一致していない。`get_default_log_dir()` の挙動は変更せず、起動処理が `AppPaths.log_dir` を必ず明示してログを構成する。
-- `migration_package/uv.lock` は未作成。依存解決を固定し、以降 `uv sync --locked` を使用する。
+- `migration_package/uv.lock` を作成し、依存解決を固定した。以降 `uv sync --locked` を使用する。
 - `migration_package/README.md` は Phase 0 完了済みと読める記述があるが、正本では CI と `main` 保護が未完了。両者を整合させる。
 - GitHub リポジトリは作成済み。作業は `main` へ直接 push せず、`feature/phase0-foundation-ci` 等の feature ブランチから PR を作る。
 - リポジトリの公開設定・プランで Ruleset / branch protection が使えるかは未確認(4.6 で最初に確認する)。
@@ -27,17 +27,31 @@
 | ゲート | 全体の結果 | 主因 |
 | --- | --- | --- |
 | `ruff check` | 7681 件(W191 タブ 7290、E501 291 ほか) | Phase 1 資産(`core/*` の移植コード、`db/reference_sqlalchemy/`、移植テスト)のタブインデント・長行 |
-| `ruff format --check` | 64 ファイル中 31 ファイルが対象 | 同上 |
+| `ruff format --check` | 63 ファイル中 31 ファイルが対象 | 同上 |
 | `pyright` | 2427 件(`db/reference_sqlalchemy` 1579、他の `src` 841、`tests` 7) | strict 配下の Unknown 系、`sqlalchemy`(20 件、未導入)、旧プロジェクト由来の `api` / `application` / `core` import(54 件)の未解決 |
 | `pytest` | 10 ファイルの収集エラーで中断 | 旧プロジェクト由来の `api.*` / `application.*` import。`sqlalchemy` を追加しても解消しない |
 | `coverage`(`core/*` + `db/*`) | 18 %(90 % 未達) | 未テストの Phase 1 資産が分母に入る |
 
-Phase 0 資産のみに絞った場合の実測(下記 5 章のゲート対象の候補範囲)は次のとおり。
+Phase 0 資産のみに絞った場合の初回実測(下記 5 章のゲート対象の候補範囲)は次のとおり。
 
 - `pytest`: 収集エラーのない 12 ファイルで 103 件成功・1 件 skip(`test_timeutil.py` の `time.tzset()` は Windows では実行不可の既存 OS 条件 skip)。
 - `pyright`: 0 件。
 - `ruff check`: 42 件、`ruff format --check`: 1 ファイル(`core/logging_config.py` のタブインデント等。4.1 で内訳を確認して機械整形する)。
-- `coverage`: 855 文中 88 %。`core/logging_config.py` と新規の起動処理は未テストのため、4.3 のテスト追加で 90 % に到達させる。到達しない場合も閾値は下げず、テストを追加する。
+- `coverage`: 初回実測は 855 文中 88 %。対象範囲を設定した後の再測定は 746 文中 86 %。`core/logging_config.py` と新規の起動処理は未テストのため、4.3 のテスト追加で 90 % に到達させる。到達しない場合も閾値は下げず、テストを追加する。
+
+#### 4.1 再測定(2026-10-23、Windows、Python 3.13.12、uv 0.11.32)
+
+`uv lock` と `uv sync --locked` の後、対象範囲を `pyproject.toml` に設定して全体と Phase 0 の両方を再実行した。
+
+| ゲート | 全体(除外設定前) | Phase 0(除外設定後) |
+| --- | --- | --- |
+| `ruff check` | 7681 件 | 0 件 |
+| `ruff format --check` | 63 ファイル中 31 ファイルが未整形 | 32 ファイルすべて整形済み |
+| `pyright` | 2427 件 | 0 件 |
+| `pytest --cov` | 旧移植テスト 10 ファイルの収集エラー | 103 passed、1 skipped |
+| coverage | pytest の収集失敗で全体測定不可(別途 `core/*` + `db/*` は 18 %) | 746 文中 86 % |
+
+Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` のタブインデント・import 順・末尾改行であり、Ruff の機械整形で解消した。Phase 0 に回帰・環境起因の失敗はない。全体の lint / 型検査 / テスト収集エラーは旧 import、`sqlalchemy` 依存および未移植資産に起因する Phase 1 課題であり、coverage 90 % 未達は Phase 0 起動・ログテストを追加する 4.3 の課題として扱う。Windows で既存の OS 条件 skip が 1 件あるが、新しい skip は追加しない。
 
 ## 3. スコープ
 
@@ -66,13 +80,13 @@ Phase 0 資産のみに絞った場合の実測(下記 5 章のゲート対象�
 ### 4.1 feature ブランチ・ベースライン・検査対象の確定
 
 - [x] `main` の状態を確認してから `feature/phase0-foundation-ci` を作成する。作業中の既存変更は保持する。
-- [ ] `migration_package/` で `uv lock` を実行して `uv.lock` を生成し、`uv sync --locked` で検証して Git 管理する。以降のローカル・CI 手順は `uv sync --locked` に統一する。
-- [ ] 2.1 の実測を再現し、Windows のベースラインを記録する(全体と Phase 0 資産のみの両方)。
-- [ ] 失敗を「機械整形」「Phase 0 の回帰・環境問題」「Phase 1 移植課題」に分類する。
+- [x] `migration_package/` で `uv lock` を実行して `uv.lock` を生成し、`uv sync --locked` で検証して Git 管理する。以降のローカル・CI 手順は `uv sync --locked` に統一する。
+- [x] 2.1 の実測を再現し、Windows のベースラインを記録する(全体と Phase 0 資産のみの両方)。
+- [x] 失敗を「機械整形」「Phase 0 の回帰・環境問題」「Phase 1 移植課題」に分類する。
   - 機械整形: Phase 0 資産の `ruff format` / `ruff check --fix` で直るもの(`core/logging_config.py` 等)。挙動を変えない純粋な整形コミットとして機能変更から分離し、Phase 0 に含める。`ruff format` で直らない違反(E501 等)は個別に直し、`ignore` は追加しない。
   - Phase 1 移植課題: `api` / `application` / `core` 旧 import、`sqlalchemy` 依存、Phase 1 資産のタブ・長行・strict 型エラー。Phase 0 では修正せず、5 章の検査対象外として明示的に記録する。
-- [ ] 検査対象外は `pyproject.toml` に宣言し(ruff `extend-exclude`、pyright `ignore`、pytest `--ignore`、`[tool.coverage.report]` の `include` / `omit`)、各設定に「Phase 1 で解除」のコメントを付ける。`[tool.coverage.run] source = ["meter_reading_mini"]` により未 import の Phase 1 ファイルが分母へ混入しないよう、coverage は `src/meter_reading_mini/` 配下の Phase 0 対象モジュールのみを明示し、`tests/*` と `core/mobile_reading.py` を除外する。個別の skip、`noqa` の一括付与、閾値の引き下げは行わない。
-- [ ] 検査対象外の一覧(ファイル名と理由)を正本の Phase 0 検査対象として転記する(4.5)。
+- [x] 検査対象外は `pyproject.toml` に宣言し(ruff `extend-exclude`、pyright `ignore`、pytest `--ignore`、`[tool.coverage.report]` の `include` / `omit`)、各設定に「Phase 1 で解除」のコメントを付ける。`[tool.coverage.run] source = ["meter_reading_mini"]` により未 import の Phase 1 ファイルが分母へ混入しないよう、coverage は `src/meter_reading_mini/` 配下の Phase 0 対象モジュールのみを明示し、`tests/*` と `core/mobile_reading.py` を除外する。個別の skip、`noqa` の一括付与、閾値の引き下げは行わない。
+- [x] 検査対象外の一覧(ファイル名と理由)を正本の Phase 0 検査対象として転記する(4.5)。
 
 ### 4.2 起動・ログ統合
 
