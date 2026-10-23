@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+    defaults:
+      run:
+        working-directory: migration_package
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@b3a2036d13966e92c1813371948f44239d28461e
+        with:
+          version: "0.11.32"
+          cache-dependency-glob: migration_package/uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Check lint
+        run: uv run ruff check
+
+      - name: Check formatting
+        run: uv run ruff format --check
+
+      - name: Check types
+        run: uv run pyright
+
+      - name: Install Playwright Chromium (Ubuntu)
+        if: runner.os == 'Linux'
+        run: uv run playwright install --with-deps chromium
+
+      - name: Install Playwright Chromium (Windows)
+        if: runner.os == 'Windows'
+        run: uv run playwright install chromium
+
+      - name: Run tests (Ubuntu)
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest --cov
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: uv run pytest --cov
+
+      - name: Check coverage threshold
+        run: uv run coverage report --fail-under=90

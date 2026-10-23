@@ -122,17 +122,17 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 
 ### 4.4 Windows / Ubuntu CI
 
-- [ ] リポジトリ直下に `.github/workflows/ci.yml` を追加する。
-- [ ] `main` 向け `pull_request` と `push` をトリガーにする。
-- [ ] `permissions: contents: read`、`concurrency`(同一 ref の古い実行をキャンセル)、`strategy.fail-fast: false` を設定する。
-- [ ] job に `name: test (${{ matrix.os }})` を明示し、matrix を `windows-latest` / `ubuntu-latest` にして、必須チェック名 `test (windows-latest)`、`test (ubuntu-latest)` と一致させる。workflow 名・job id・job 名を変更するときは、GitHub の必須チェック名も同時に更新する。
-- [ ] action は公式をメジャータグ、サードパーティ(`astral-sh/setup-uv` 等)をコミット SHA で固定する。
-- [ ] uv と品質ゲートのコマンドは `migration_package/` を作業ディレクトリとして実行する(job の `defaults.run.working-directory` を `migration_package` に設定する)。workflow 自体はリポジトリ直下に置く。
-- [ ] Python 3.13、uv、`uv sync --locked` を使用する。`setup-uv` のキャッシュは `cache-dependency-glob: migration_package/uv.lock` を指定する。
-- [ ] 各 OS で 5 章のコマンドを実行する。検査対象は `pyproject.toml` で定義済みのため、コマンド自体に絞り込み引数を付けない。
-- [ ] Playwright Chromium を pytest 実行より前にインストールする。Ubuntu は `uv run playwright install --with-deps chromium` を使って Chromium と Qt offscreen 実行に必要なシステム依存をまとめて導入し、pytest 実行時に `QT_QPA_PLATFORM=offscreen` を設定する(万一 `ubuntu-latest` で `libegl1` / `libgl1` / `libxkbcommon0` 等の Qt 共有ライブラリが不足する場合は apt で明示導入する)。現状ブラウザテストは存在せず(Phase 2 で追加)、Phase 0 では「両 OS でブラウザ準備が成功すること」を確認する。
+- [x] リポジトリ直下に `.github/workflows/ci.yml` を追加する。
+- [x] `main` 向け `pull_request` と `push` をトリガーにする。
+- [x] `permissions: contents: read`、`concurrency`(同一 ref の古い実行をキャンセル)、`strategy.fail-fast: false` を設定する。
+- [x] job に `name: test (${{ matrix.os }})` を明示し、matrix を `windows-latest` / `ubuntu-latest` にして、必須チェック名 `test (windows-latest)`、`test (ubuntu-latest)` と一致させる。workflow 名・job id・job 名を変更するときは、GitHub の必須チェック名も同時に更新する。
+- [x] action は公式をメジャータグ、サードパーティ(`astral-sh/setup-uv` 等)をコミット SHA で固定する。
+- [x] uv と品質ゲートのコマンドは `migration_package/` を作業ディレクトリとして実行する(job の `defaults.run.working-directory` を `migration_package` に設定する)。workflow 自体はリポジトリ直下に置く。
+- [x] Python 3.13、uv、`uv sync --locked` を使用する。`setup-uv` のキャッシュは `cache-dependency-glob: migration_package/uv.lock` を指定する。
+- [x] 各 OS で 5 章のコマンドを実行する。検査対象は `pyproject.toml` で定義済みのため、コマンド自体に絞り込み引数を付けない。
+- [x] Playwright Chromium を pytest 実行より前にインストールする。Ubuntu は `uv run playwright install --with-deps chromium` を使って Chromium と Qt offscreen 実行に必要なシステム依存をまとめて導入し、pytest 実行時に `QT_QPA_PLATFORM=offscreen` を設定する(万一 `ubuntu-latest` で `libegl1` / `libgl1` / `libxkbcommon0` 等の Qt 共有ライブラリが不足する場合は apt で明示導入する)。現状ブラウザテストは存在せず(Phase 2 で追加)、Phase 0 では「両 OS でブラウザ準備が成功すること」を確認する。
 - [ ] 改行コード(Windows の CRLF)で `ruff format --check` が失敗しないかを初回 CI で確認し、失敗した場合のみ `.gitattributes` を追加する。
-- [ ] ブラウザテストの skip、検査対象の無断除外、品質ゲートの緩和をしない。
+- [x] ブラウザテストの skip、検査対象の無断除外、品質ゲートの緩和をしない。
 
 ### 4.5 文書の整合
 
