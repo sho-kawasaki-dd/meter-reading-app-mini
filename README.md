@@ -1,1 +1,0 @@
-# meter-reading-app-mini

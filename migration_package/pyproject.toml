@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meter-reading-mini"
+version = "0.1.0"
+description = "ローカル完結型 検針管理デスクトップアプリ (PySide6 + 単一HTMLスマホ検針)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "PySide6>=6.8.0",
+    "platformdirs>=4.3.0",
+    "pydantic>=2.12.5",
+]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.50.0",
+    "pyinstaller>=6.12.0",
+    "pyright>=1.1.390",
+    "pytest>=9.0.2",
+    "pytest-cov>=6.0.0",
+    "pytest-qt>=4.4.0",
+    "ruff>=0.9.0",
+    "tzdata>=2025.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meter_reading_mini"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["meter_reading_mini"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = ["src", "tests"]
+typeCheckingMode = "standard"
+strict = [
+    "src/meter_reading_mini/core",
+    "src/meter_reading_mini/db",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+qt_api = "pyside6"
+addopts = "-ra --strict-markers --strict-config"
+markers = ["perf: 時間のかかる性能計測テスト"]
+
+[tool.coverage.run]
+source = ["meter_reading_mini"]
+branch = false
+
