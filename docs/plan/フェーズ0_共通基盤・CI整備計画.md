@@ -112,13 +112,13 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 
 ### 4.3 起動・ログのテスト
 
-- [ ] 既存の `test_config.py`、`test_single_instance.py`、`test_display_settings.py`、`test_migrations.py` 等を再利用する。
-- [ ] 起動イベントの順序、ロック競合時の短絡(終了コード 2、ログ・DB・UI 未初期化)、例外時のリソース解放(DB → ロックの順)を確認する。
-- [ ] 一時データディレクトリで DB の migration とログ出力先(`<data_dir>/logs/app.log`)を確認する。
-- [ ] `configure_logging` について、同一パスの再呼び出しでハンドラーが増えないこと、`basicConfig` 由来の StreamHandler が増えないこと、別パスで再呼び出しした場合の挙動(既存の `RotatingFileHandler` を `close()` して新しいパスのハンドラーへ切り替える等)を仕様として固定してテストする。root logger のハンドラーは fixture で退避・復元し、Windows で `tmp_path` の `app.log` がファイルロックされないようテスト中に追加された `RotatingFileHandler` を確実に `close()` する。
-- [ ] 起動処理が `AppPaths.log_dir` を明示して渡すことをテストする(`get_default_log_dir()` の既定値は変更しない)。
-- [ ] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する。
-- [ ] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py` の `tzset`、Windows のみ skip)は 4.1 で一覧に記録し、Ubuntu で実行されることを確認する。
+- [x] 既存の `test_config.py`、`test_single_instance.py`、`test_display_settings.py`、`test_migrations.py` 等を再利用する。
+- [x] 起動イベントの順序、ロック競合時の短絡(終了コード 2、ログ・DB・UI 未初期化)、例外時のリソース解放(DB → ロックの順)を確認する。
+- [x] 一時データディレクトリで DB の migration とログ出力先(`<data_dir>/logs/app.log`)を確認する。
+- [x] `configure_logging` について、同一パスの再呼び出しでハンドラーが増えないこと、`basicConfig` 由来の StreamHandler が増えないこと、別パスで再呼び出しした場合の挙動(既存の `RotatingFileHandler` を `close()` して新しいパスのハンドラーへ切り替える等)を仕様として固定してテストする。root logger のハンドラーは fixture で退避・復元し、Windows で `tmp_path` の `app.log` がファイルロックされないようテスト中に追加された `RotatingFileHandler` を確実に `close()` する。
+- [x] 起動処理が `AppPaths.log_dir` を明示して渡すことをテストする(`get_default_log_dir()` の既定値は変更しない)。
+- [ ] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する(CI での確認は 4.4)。
+- [ ] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py` の `tzset`、Windows のみ skip)は 4.1 で一覧に記録し、Ubuntu で実行されることを確認する(4.4 の CI で確認)。
 
 ### 4.4 Windows / Ubuntu CI
 

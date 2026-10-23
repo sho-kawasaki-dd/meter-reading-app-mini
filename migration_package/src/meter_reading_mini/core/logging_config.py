@@ -61,6 +61,15 @@ def configure_logging(*, log_dir: str | Path | None = None) -> None:
     file_handler.setLevel(logging.INFO)
     root_logger.addHandler(file_handler)
 
+    for handler in tuple(root_logger.handlers):
+        if (
+            isinstance(handler, RotatingFileHandler)
+            and handler is not file_handler
+            and Path(getattr(handler, "baseFilename", "")).resolve() != log_file.resolve()
+        ):
+            root_logger.removeHandler(handler)
+            handler.close()
+
     for logger_name, level in _NOISY_LOGGERS.items():
         logging.getLogger(logger_name).setLevel(level)
 
