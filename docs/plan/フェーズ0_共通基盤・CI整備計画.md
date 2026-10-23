@@ -65,7 +65,7 @@ Phase 0 資産のみに絞った場合の実測(下記 5 章のゲート対象�
 
 ### 4.1 feature ブランチ・ベースライン・検査対象の確定
 
-- [ ] `main` の状態を確認してから `feature/phase0-foundation-ci` を作成する。作業中の既存変更は保持する。
+- [x] `main` の状態を確認してから `feature/phase0-foundation-ci` を作成する。作業中の既存変更は保持する。
 - [ ] `migration_package/` で `uv lock` を実行して `uv.lock` を生成し、`uv sync --locked` で検証して Git 管理する。以降のローカル・CI 手順は `uv sync --locked` に統一する。
 - [ ] 2.1 の実測を再現し、Windows のベースラインを記録する(全体と Phase 0 資産のみの両方)。
 - [ ] 失敗を「機械整形」「Phase 0 の回帰・環境問題」「Phase 1 移植課題」に分類する。
