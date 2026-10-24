@@ -15,7 +15,7 @@
 - `config.py`、`db/connection.py`、`db/migrations.py`、`ui/single_instance.py`、`ui/display_settings.py` 等の基盤部品と単体テストは存在する。
 - 起動オーケストレーション、標準 sqlite3 Repository、アプリ画面、CI workflow は未整備。
 - ログ設定の既定保存先(`get_default_log_dir()` はパッケージ相対の `logs/`)と `AppPaths.log_dir` が一致していない。`get_default_log_dir()` の挙動は変更せず、起動処理が `AppPaths.log_dir` を必ず明示してログを構成する。
-- `migration_package/uv.lock` は未作成。依存解決を固定し、以降 `uv sync --locked` を使用する。
+- `migration_package/uv.lock` を作成し、依存解決を固定した。以降 `uv sync --locked` を使用する。
 - `migration_package/README.md` は Phase 0 完了済みと読める記述があるが、正本では CI と `main` 保護が未完了。両者を整合させる。
 - GitHub リポジトリは作成済み。作業は `main` へ直接 push せず、`feature/phase0-foundation-ci` 等の feature ブランチから PR を作る。
 - リポジトリの公開設定・プランで Ruleset / branch protection が使えるかは未確認(4.6 で最初に確認する)。
@@ -27,17 +27,31 @@
 | ゲート | 全体の結果 | 主因 |
 | --- | --- | --- |
 | `ruff check` | 7681 件(W191 タブ 7290、E501 291 ほか) | Phase 1 資産(`core/*` の移植コード、`db/reference_sqlalchemy/`、移植テスト)のタブインデント・長行 |
-| `ruff format --check` | 64 ファイル中 31 ファイルが対象 | 同上 |
+| `ruff format --check` | 63 ファイル中 31 ファイルが対象 | 同上 |
 | `pyright` | 2427 件(`db/reference_sqlalchemy` 1579、他の `src` 841、`tests` 7) | strict 配下の Unknown 系、`sqlalchemy`(20 件、未導入)、旧プロジェクト由来の `api` / `application` / `core` import(54 件)の未解決 |
 | `pytest` | 10 ファイルの収集エラーで中断 | 旧プロジェクト由来の `api.*` / `application.*` import。`sqlalchemy` を追加しても解消しない |
 | `coverage`(`core/*` + `db/*`) | 18 %(90 % 未達) | 未テストの Phase 1 資産が分母に入る |
 
-Phase 0 資産のみに絞った場合の実測(下記 5 章のゲート対象の候補範囲)は次のとおり。
+Phase 0 資産のみに絞った場合の初回実測(下記 5 章のゲート対象の候補範囲)は次のとおり。
 
 - `pytest`: 収集エラーのない 12 ファイルで 103 件成功・1 件 skip(`test_timeutil.py` の `time.tzset()` は Windows では実行不可の既存 OS 条件 skip)。
 - `pyright`: 0 件。
 - `ruff check`: 42 件、`ruff format --check`: 1 ファイル(`core/logging_config.py` のタブインデント等。4.1 で内訳を確認して機械整形する)。
-- `coverage`: 855 文中 88 %。`core/logging_config.py` と新規の起動処理は未テストのため、4.3 のテスト追加で 90 % に到達させる。到達しない場合も閾値は下げず、テストを追加する。
+- `coverage`: 初回実測は 855 文中 88 %。対象範囲を設定した後の再測定は 746 文中 86 %。`core/logging_config.py` と新規の起動処理は未テストのため、4.3 のテスト追加で 90 % に到達させる。到達しない場合も閾値は下げず、テストを追加する。
+
+#### 4.1 再測定(2026-10-23、Windows、Python 3.13.12、uv 0.11.32)
+
+`uv lock` と `uv sync --locked` の後、対象範囲を `pyproject.toml` に設定して全体と Phase 0 の両方を再実行した。
+
+| ゲート | 全体(除外設定前) | Phase 0(除外設定後) |
+| --- | --- | --- |
+| `ruff check` | 7681 件 | 0 件 |
+| `ruff format --check` | 63 ファイル中 31 ファイルが未整形 | 32 ファイルすべて整形済み |
+| `pyright` | 2427 件 | 0 件 |
+| `pytest --cov` | 旧移植テスト 10 ファイルの収集エラー | 103 passed、1 skipped |
+| coverage | pytest の収集失敗で全体測定不可(別途 `core/*` + `db/*` は 18 %) | 746 文中 86 % |
+
+Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` のタブインデント・import 順・末尾改行であり、Ruff の機械整形で解消した。Phase 0 に回帰・環境起因の失敗はない。全体の lint / 型検査 / テスト収集エラーは旧 import、`sqlalchemy` 依存および未移植資産に起因する Phase 1 課題であり、coverage 90 % 未達は Phase 0 起動・ログテストを追加する 4.3 の課題として扱う。Windows で既存の OS 条件 skip が 1 件あるが、新しい skip は追加しない。
 
 ## 3. スコープ
 
@@ -65,25 +79,25 @@ Phase 0 資産のみに絞った場合の実測(下記 5 章のゲート対象�
 
 ### 4.1 feature ブランチ・ベースライン・検査対象の確定
 
-- [ ] `main` の状態を確認してから `feature/phase0-foundation-ci` を作成する。作業中の既存変更は保持する。
-- [ ] `migration_package/` で `uv lock` を実行して `uv.lock` を生成し、`uv sync --locked` で検証して Git 管理する。以降のローカル・CI 手順は `uv sync --locked` に統一する。
-- [ ] 2.1 の実測を再現し、Windows のベースラインを記録する(全体と Phase 0 資産のみの両方)。
-- [ ] 失敗を「機械整形」「Phase 0 の回帰・環境問題」「Phase 1 移植課題」に分類する。
+- [x] `main` の状態を確認してから `feature/phase0-foundation-ci` を作成する。作業中の既存変更は保持する。
+- [x] `migration_package/` で `uv lock` を実行して `uv.lock` を生成し、`uv sync --locked` で検証して Git 管理する。以降のローカル・CI 手順は `uv sync --locked` に統一する。
+- [x] 2.1 の実測を再現し、Windows のベースラインを記録する(全体と Phase 0 資産のみの両方)。
+- [x] 失敗を「機械整形」「Phase 0 の回帰・環境問題」「Phase 1 移植課題」に分類する。
   - 機械整形: Phase 0 資産の `ruff format` / `ruff check --fix` で直るもの(`core/logging_config.py` 等)。挙動を変えない純粋な整形コミットとして機能変更から分離し、Phase 0 に含める。`ruff format` で直らない違反(E501 等)は個別に直し、`ignore` は追加しない。
   - Phase 1 移植課題: `api` / `application` / `core` 旧 import、`sqlalchemy` 依存、Phase 1 資産のタブ・長行・strict 型エラー。Phase 0 では修正せず、5 章の検査対象外として明示的に記録する。
-- [ ] 検査対象外は `pyproject.toml` に宣言し(ruff `extend-exclude`、pyright `ignore`、pytest `--ignore`、`[tool.coverage.report]` の `include` / `omit`)、各設定に「Phase 1 で解除」のコメントを付ける。`[tool.coverage.run] source = ["meter_reading_mini"]` により未 import の Phase 1 ファイルが分母へ混入しないよう、coverage は `src/meter_reading_mini/` 配下の Phase 0 対象モジュールのみを明示し、`tests/*` と `core/mobile_reading.py` を除外する。個別の skip、`noqa` の一括付与、閾値の引き下げは行わない。
-- [ ] 検査対象外の一覧(ファイル名と理由)を正本の Phase 0 検査対象として転記する(4.5)。
+- [x] 検査対象外は `pyproject.toml` に宣言し(ruff `extend-exclude`、pyright `ignore`、pytest `--ignore`、`[tool.coverage.report]` の `include` / `omit`)、各設定に「Phase 1 で解除」のコメントを付ける。`[tool.coverage.run] source = ["meter_reading_mini"]` により未 import の Phase 1 ファイルが分母へ混入しないよう、coverage は `src/meter_reading_mini/` 配下の Phase 0 対象モジュールのみを明示し、`tests/*` と `core/mobile_reading.py` を除外する。個別の skip、`noqa` の一括付与、閾値の引き下げは行わない。
+- [x] 検査対象外の一覧(ファイル名と理由)を正本の Phase 0 検査対象として転記する(4.5)。
 
 ### 4.2 起動・ログ統合
 
-- [ ] 小さな `src/meter_reading_mini/app.py` に起動ライフサイクルを追加し、既存部品を再利用する。依存(`QApplication` 生成、DB 接続、ロック、ログ設定)を引数で注入できる形にする。
-- [ ] 順序を「データ・ログディレクトリ準備(`ensure_dirs(paths)`) → `SingleInstanceLock` 取得 → ログ初期化 → DB 接続・migration → `QApplication` 作成 → 表示設定読込・適用」とする。
-- [ ] DB 接続・migration は `open_database(paths.db_path, paths.backup_dir, backup_timestamp=local_timestamp_for_filename)` を呼び出し、`core/timeutil.py` の `local_timestamp_for_filename` を渡す。
-- [ ] `configure_logging(log_dir=paths.log_dir)` を使い、`METER_READING_MINI_DATA_DIR` 指定時もログが `<data_dir>/logs/app.log` に保存されるようにする。
-- [ ] ロック取得に失敗した場合はログ・DB・UI の初期化へ進まない。
-- [ ] 起動途中に例外が発生した場合は、開いた DB 接続と取得済みロックを必ず解放する。
-- [ ] `QApplication` の既定ファクトリは既存の `QApplication.instance()` があれば再利用し(テスト環境 `pytest-qt` 等との競合防止)、`app.py` 自身が新規生成した場合のみ終了時に破棄する。
-- [ ] MainWindow、仮ウィンドウ、`__main__.py` を追加しない。
+- [x] 小さな `src/meter_reading_mini/app.py` に起動ライフサイクルを追加し、既存部品を再利用する。依存(`QApplication` 生成、DB 接続、ロック、ログ設定)を引数で注入できる形にする。
+- [x] 順序を「データ・ログディレクトリ準備(`ensure_dirs(paths)`) → `SingleInstanceLock` 取得 → ログ初期化 → DB 接続・migration → `QApplication` 作成 → 表示設定読込・適用」とする。
+- [x] DB 接続・migration は `open_database(paths.db_path, paths.backup_dir, backup_timestamp=local_timestamp_for_filename)` を呼び出し、`core/timeutil.py` の `local_timestamp_for_filename` を渡す。
+- [x] `configure_logging(log_dir=paths.log_dir)` を使い、`METER_READING_MINI_DATA_DIR` 指定時もログが `<data_dir>/logs/app.log` に保存されるようにする。
+- [x] ロック取得に失敗した場合はログ・DB・UI の初期化へ進まない。
+- [x] 起動途中に例外が発生した場合は、開いた DB 接続と取得済みロックを必ず解放する。
+- [x] `QApplication` の既定ファクトリは既存の `QApplication.instance()` があれば再利用し(テスト環境 `pytest-qt` 等との競合防止)、`app.py` 自身が新規生成した場合のみ終了時に破棄する。
+- [x] MainWindow、仮ウィンドウ、`__main__.py` を追加しない。
 
 起動処理の仕様は次のとおり。
 
@@ -98,43 +112,43 @@ Phase 0 資産のみに絞った場合の実測(下記 5 章のゲート対象�
 
 ### 4.3 起動・ログのテスト
 
-- [ ] 既存の `test_config.py`、`test_single_instance.py`、`test_display_settings.py`、`test_migrations.py` 等を再利用する。
-- [ ] 起動イベントの順序、ロック競合時の短絡(終了コード 2、ログ・DB・UI 未初期化)、例外時のリソース解放(DB → ロックの順)を確認する。
-- [ ] 一時データディレクトリで DB の migration とログ出力先(`<data_dir>/logs/app.log`)を確認する。
-- [ ] `configure_logging` について、同一パスの再呼び出しでハンドラーが増えないこと、`basicConfig` 由来の StreamHandler が増えないこと、別パスで再呼び出しした場合の挙動(既存の `RotatingFileHandler` を `close()` して新しいパスのハンドラーへ切り替える等)を仕様として固定してテストする。root logger のハンドラーは fixture で退避・復元し、Windows で `tmp_path` の `app.log` がファイルロックされないようテスト中に追加された `RotatingFileHandler` を確実に `close()` する。
-- [ ] 起動処理が `AppPaths.log_dir` を明示して渡すことをテストする(`get_default_log_dir()` の既定値は変更しない)。
-- [ ] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する。
-- [ ] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py` の `tzset`、Windows のみ skip)は 4.1 で一覧に記録し、Ubuntu で実行されることを確認する。
+- [x] 既存の `test_config.py`、`test_single_instance.py`、`test_display_settings.py`、`test_migrations.py` 等を再利用する。
+- [x] 起動イベントの順序、ロック競合時の短絡(終了コード 2、ログ・DB・UI 未初期化)、例外時のリソース解放(DB → ロックの順)を確認する。
+- [x] 一時データディレクトリで DB の migration とログ出力先(`<data_dir>/logs/app.log`)を確認する。
+- [x] `configure_logging` について、同一パスの再呼び出しでハンドラーが増えないこと、`basicConfig` 由来の StreamHandler が増えないこと、別パスで再呼び出しした場合の挙動(既存の `RotatingFileHandler` を `close()` して新しいパスのハンドラーへ切り替える等)を仕様として固定してテストする。root logger のハンドラーは fixture で退避・復元し、Windows で `tmp_path` の `app.log` がファイルロックされないようテスト中に追加された `RotatingFileHandler` を確実に `close()` する。
+- [x] 起動処理が `AppPaths.log_dir` を明示して渡すことをテストする(`get_default_log_dir()` の既定値は変更しない)。
+- [ ] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する(CI での確認は 4.4)。
+- [ ] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py` の `tzset`、Windows のみ skip)は 4.1 で一覧に記録し、Ubuntu で実行されることを確認する(4.4 の CI で確認)。
 
 ### 4.4 Windows / Ubuntu CI
 
-- [ ] リポジトリ直下に `.github/workflows/ci.yml` を追加する。
-- [ ] `main` 向け `pull_request` と `push` をトリガーにする。
-- [ ] `permissions: contents: read`、`concurrency`(同一 ref の古い実行をキャンセル)、`strategy.fail-fast: false` を設定する。
-- [ ] job に `name: test (${{ matrix.os }})` を明示し、matrix を `windows-latest` / `ubuntu-latest` にして、必須チェック名 `test (windows-latest)`、`test (ubuntu-latest)` と一致させる。workflow 名・job id・job 名を変更するときは、GitHub の必須チェック名も同時に更新する。
-- [ ] action は公式をメジャータグ、サードパーティ(`astral-sh/setup-uv` 等)をコミット SHA で固定する。
-- [ ] uv と品質ゲートのコマンドは `migration_package/` を作業ディレクトリとして実行する(job の `defaults.run.working-directory` を `migration_package` に設定する)。workflow 自体はリポジトリ直下に置く。
-- [ ] Python 3.13、uv、`uv sync --locked` を使用する。`setup-uv` のキャッシュは `cache-dependency-glob: migration_package/uv.lock` を指定する。
-- [ ] 各 OS で 5 章のコマンドを実行する。検査対象は `pyproject.toml` で定義済みのため、コマンド自体に絞り込み引数を付けない。
-- [ ] Playwright Chromium を pytest 実行より前にインストールする。Ubuntu は `uv run playwright install --with-deps chromium` を使って Chromium と Qt offscreen 実行に必要なシステム依存をまとめて導入し、pytest 実行時に `QT_QPA_PLATFORM=offscreen` を設定する(万一 `ubuntu-latest` で `libegl1` / `libgl1` / `libxkbcommon0` 等の Qt 共有ライブラリが不足する場合は apt で明示導入する)。現状ブラウザテストは存在せず(Phase 2 で追加)、Phase 0 では「両 OS でブラウザ準備が成功すること」を確認する。
+- [x] リポジトリ直下に `.github/workflows/ci.yml` を追加する。
+- [x] `main` 向け `pull_request` と `push` をトリガーにする。
+- [x] `permissions: contents: read`、`concurrency`(同一 ref の古い実行をキャンセル)、`strategy.fail-fast: false` を設定する。
+- [x] job に `name: test (${{ matrix.os }})` を明示し、matrix を `windows-latest` / `ubuntu-latest` にして、必須チェック名 `test (windows-latest)`、`test (ubuntu-latest)` と一致させる。workflow 名・job id・job 名を変更するときは、GitHub の必須チェック名も同時に更新する。
+- [x] action は公式をメジャータグ、サードパーティ(`astral-sh/setup-uv` 等)をコミット SHA で固定する。
+- [x] uv と品質ゲートのコマンドは `migration_package/` を作業ディレクトリとして実行する(job の `defaults.run.working-directory` を `migration_package` に設定する)。workflow 自体はリポジトリ直下に置く。
+- [x] Python 3.13、uv、`uv sync --locked` を使用する。`setup-uv` のキャッシュは `cache-dependency-glob: migration_package/uv.lock` を指定する。
+- [x] 各 OS で 5 章のコマンドを実行する。検査対象は `pyproject.toml` で定義済みのため、コマンド自体に絞り込み引数を付けない。
+- [x] Playwright Chromium を pytest 実行より前にインストールする。Ubuntu は `uv run playwright install --with-deps chromium` を使って Chromium と Qt offscreen 実行に必要なシステム依存をまとめて導入し、pytest 実行時に `QT_QPA_PLATFORM=offscreen` を設定する(万一 `ubuntu-latest` で `libegl1` / `libgl1` / `libxkbcommon0` 等の Qt 共有ライブラリが不足する場合は apt で明示導入する)。現状ブラウザテストは存在せず(Phase 2 で追加)、Phase 0 では「両 OS でブラウザ準備が成功すること」を確認する。
 - [ ] 改行コード(Windows の CRLF)で `ruff format --check` が失敗しないかを初回 CI で確認し、失敗した場合のみ `.gitattributes` を追加する。
-- [ ] ブラウザテストの skip、検査対象の無断除外、品質ゲートの緩和をしない。
+- [x] ブラウザテストの skip、検査対象の無断除外、品質ゲートの緩和をしない。
 
 ### 4.5 文書の整合
 
-- [ ] ルート README の開発状況・コマンドと Phase 0 の実装状況を正本に合わせる(品質ゲートの `coverage report` コマンドも `pyproject.toml` 一元化に合わせて引数なしの `uv run coverage report --fail-under=90` に揃え、`python -m meter_reading_mini` は Phase 3 の画面・`__main__.py` 実装後に有効になる旨を明記する)。
-- [ ] `migration_package/README.md` の「Phase 0 完了済み」を、「基盤部品は同梱済み、CI・起動統合・GitHub 保護は未完了」のように、資産の存在とフェーズ完了を区別する記述へ直す。完了締め PR(4.6 手順 6)で「完了」へ更新する。
-- [ ] `uv.lock` の管理開始後は、README の同期コマンドを `uv sync --locked` にする。lock の生成・更新手順(`uv lock`)も記録する。
-- [ ] 正本の Phase 0 に、検査対象と検査対象外(ファイル名・理由)を記載する。正本の Phase 1 完了条件に「Phase 0 で設けた検査対象外をすべて解除し、全テスト・全ゲートが成功する」を追加する。
+- [x] ルート README の開発状況・コマンドと Phase 0 の実装状況を正本に合わせる(品質ゲートの `coverage report` コマンドも `pyproject.toml` 一元化に合わせて引数なしの `uv run coverage report --fail-under=90` に揃え、`python -m meter_reading_mini` は Phase 3 の画面・`__main__.py` 実装後に有効になる旨を明記する)。
+- [x] `migration_package/README.md` の「Phase 0 完了済み」を、基盤部品・起動統合・CI workflow の同梱状況と、GitHub 上の CI 確認・保護設定・実 PR 検証の未完了を分け、資産の存在とフェーズ完了を区別する記述へ直す。完了締め PR(4.6 手順 6)で「完了」へ更新する。
+- [x] `uv.lock` の管理開始後は、README の同期コマンドを `uv sync --locked` にする。lock の生成・更新手順(`uv lock`)も記録する。
+- [x] 正本の Phase 0 に検査対象と検査対象外(ファイル名・理由)を記載し、正本の Phase 1 完了条件に「Phase 0 で設けた検査対象外をすべて解除し、全テスト・全ゲートが成功する」を追加済みであることを確認する。
 - [ ] 正本の Phase 0 完了チェックは、該当する実装・CI・GitHub 確認が完了してから、4.6 手順 6 の完了締め PR で更新する。
 
 ### 4.6 GitHub の保護設定と PR 検証
 
 実施順序は次のとおり。順序を入れ替えない。
 
-1. [ ] 前提確認: リポジトリの公開設定・プランで Ruleset または branch protection が使えることを確認する。使えない場合は公開設定・プランの変更要否をユーザーに確認し、解決するまで Phase 0 を完了扱いにしない。
-2. [ ] Phase 0 本体の PR(`feature/phase0-foundation-ci`)で CI を実行し、両 OS が成功し、GitHub 上のチェック名が `test (windows-latest)` / `test (ubuntu-latest)` であることを確認する。
-3. [ ] リポジトリ管理者が `main` に Ruleset または branch protection を設定する。
+1. [x] 前提確認: リポジトリの公開設定・プランで Ruleset または branch protection が使えることを確認する。使えない場合は公開設定・プランの変更要否をユーザーに確認し、解決するまで Phase 0 を完了扱いにしない。
+2. [x] Phase 0 本体の PR(`feature/phase0-foundation-ci`)で CI を実行し、両 OS が成功し、GitHub 上のチェック名が `test (windows-latest)` / `test (ubuntu-latest)` であることを確認する。
+3. [x] リポジトリ管理者が `main` に Ruleset または branch protection を設定する。
    - PR 経由を必須にする(必須承認数は単独開発のため 0)。
    - `test (windows-latest)` と `test (ubuntu-latest)` の成功を必須にする。
    - force push とブランチ削除を禁止する。
