@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: "3.13"
 
-      - uses: astral-sh/setup-uv@b3a2036d13966e92c1813371948f44239d28461e
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.11.32"
           cache-dependency-glob: migration_package/uv.lock
