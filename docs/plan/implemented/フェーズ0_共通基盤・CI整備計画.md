@@ -1,7 +1,7 @@
 # Phase 0 共通基盤・CI 整備計画
 
 - 作成日: 2026-10-23
-- ステータス: 完了締め PR 待ち(2026-10-25、GitHub 検証記録を反映)
+- ステータス: 完了(2026-10-25、凍結済み)
 - 対象: `migration_package/` を基点とする Phase 0
 - 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md)
 - GitHub: `sho-kawasaki-dd/meter-reading-app-mini`
