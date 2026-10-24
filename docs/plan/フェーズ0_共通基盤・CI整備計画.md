@@ -51,7 +51,7 @@ Phase 0 資産のみに絞った場合の初回実測(下記 5 章のゲート�
 | `pytest --cov` | 旧移植テスト 10 ファイルの収集エラー | 103 passed、1 skipped |
 | coverage | pytest の収集失敗で全体測定不可(別途 `core/*` + `db/*` は 18 %) | 746 文中 86 % |
 
-Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` のタブインデント・import 順・末尾改行であり、Ruff の機械整形で解消した。Phase 0 に回帰・環境起因の失敗はない。全体の lint / 型検査 / テスト収集エラーは旧 import、`sqlalchemy` 依存および未移植資産に起因する Phase 1 課題であり、coverage 90 % 未達は Phase 0 起動・ログテストを追加する 4.3 の課題として扱う。Windows で既存の OS 条件 skip が 1 件あるが、新しい skip は追加しない。
+Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` のタブインデント・import 順・末尾改行であり、Ruff の機械整形で解消した。Phase 0 に回帰・環境起因の失敗はない。全体の lint / 型検査 / テスト収集エラーは旧 import、`sqlalchemy` 依存および未移植資産に起因する Phase 1 課題であり、coverage 90 % 未達は Phase 0 起動・ログテストを追加する 4.3 の課題として扱う。既存の OS 条件 skip は `tests/test_timeutil.py::test_os_local_dst_boundaries_in_isolated_process` の 1 件のみで、`time.tzset()` を使うため Windows でのみ skip され、Ubuntu では実行される。新しい skip は追加しない。
 
 ## 3. スコープ
 
@@ -117,8 +117,8 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 - [x] 一時データディレクトリで DB の migration とログ出力先(`<data_dir>/logs/app.log`)を確認する。
 - [x] `configure_logging` について、同一パスの再呼び出しでハンドラーが増えないこと、`basicConfig` 由来の StreamHandler が増えないこと、別パスで再呼び出しした場合の挙動(既存の `RotatingFileHandler` を `close()` して新しいパスのハンドラーへ切り替える等)を仕様として固定してテストする。root logger のハンドラーは fixture で退避・復元し、Windows で `tmp_path` の `app.log` がファイルロックされないようテスト中に追加された `RotatingFileHandler` を確実に `close()` する。
 - [x] 起動処理が `AppPaths.log_dir` を明示して渡すことをテストする(`get_default_log_dir()` の既定値は変更しない)。
-- [ ] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する(CI での確認は 4.4)。
-- [ ] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py` の `tzset`、Windows のみ skip)は 4.1 で一覧に記録し、Ubuntu で実行されることを確認する(4.4 の CI で確認)。
+- [x] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する(4.4 の成功 run で確認)。
+- [x] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py::test_os_local_dst_boundaries_in_isolated_process` の `tzset`、Windows のみ skip)を 4.1 に記録し、Ubuntu で実行されることを 4.4 の成功 run で確認する。
 
 ### 4.4 Windows / Ubuntu CI
 
