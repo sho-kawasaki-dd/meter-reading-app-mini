@@ -147,8 +147,8 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 実施順序は次のとおり。順序を入れ替えない。
 
 1. [x] 前提確認: リポジトリの公開設定・プランで Ruleset または branch protection が使えることを確認する。使えない場合は公開設定・プランの変更要否をユーザーに確認し、解決するまで Phase 0 を完了扱いにしない。
-2. [ ] Phase 0 本体の PR(`feature/phase0-foundation-ci`)で CI を実行し、両 OS が成功し、GitHub 上のチェック名が `test (windows-latest)` / `test (ubuntu-latest)` であることを確認する。
-3. [ ] リポジトリ管理者が `main` に Ruleset または branch protection を設定する。
+2. [x] Phase 0 本体の PR(`feature/phase0-foundation-ci`)で CI を実行し、両 OS が成功し、GitHub 上のチェック名が `test (windows-latest)` / `test (ubuntu-latest)` であることを確認する。
+3. [x] リポジトリ管理者が `main` に Ruleset または branch protection を設定する。
    - PR 経由を必須にする(必須承認数は単独開発のため 0)。
    - `test (windows-latest)` と `test (ubuntu-latest)` の成功を必須にする。
    - force push とブランチ削除を禁止する。
