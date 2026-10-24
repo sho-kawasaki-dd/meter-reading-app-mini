@@ -1,7 +1,7 @@
 # Phase 0 共通基盤・CI 整備計画
 
 - 作成日: 2026-10-23
-- ステータス: 完了締め PR 待ち(2026-10-25、GitHub 検証記録を反映)
+- ステータス: 完了(2026-10-25、凍結済み)
 - 対象: `migration_package/` を基点とする Phase 0
 - 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md)
 - GitHub: `sho-kawasaki-dd/meter-reading-app-mini`
@@ -156,7 +156,7 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
    - 設定ミスで締め出された場合の復旧手順(Ruleset を `Disabled` にする)をメモしておく。
 4. [x] 失敗系の検証: 使い捨てブランチ(例: `verify/phase0-required-check-fail`)で意図的に失敗するテストを含む PR を作成し、チェック未成功時に merge がブロックされることを確認して記録する。この PR は merge せず close する。
 5. [x] 成功系の検証: Phase 0 本体の PR で両 OS のチェック成功後に merge できることを確認し、merge する。
-6. [ ] 完了締め PR の作成・merge(`main` 保護有効化後は直接 push できないため別 PR で実施): 完了記録用ブランチ `docs/phase0-completion-record` で以下を反映した PR を作成して両 OS の必須チェック成功後に merge する。workflow の追加やローカル成功だけで GitHub 側の完了とはみなさない。現在の作業ブランチには記録を反映済みだが、GitHub CLI が未認証のため PR 作成・merge は未実施であり、Phase 0 は未完了とする。
+6. [x] 完了締め PR の作成・merge(`main` 保護有効化後は直接 push できないため別 PR で実施): 完了記録用ブランチ `docs/phase0-completion-record` で以下を反映した PR を作成して両 OS の必須チェック成功後に merge する。workflow の追加やローカル成功だけで GitHub 側の完了とはみなさない。現在の作業ブランチには記録を反映済みだが、GitHub CLI が未認証のため PR 作成・merge は未実施であり、Phase 0 は未完了とする。
    - 設定内容、失敗系検証 PR 番号、本体 PR 番号、チェック結果(URL またはスクリーンショット)を 8 章に記録する。
    - 正本の Phase 0 完了チェックと `migration_package/README.md`・ルート `README.md` の完了状態を更新する。
    - 本計画書を凍結して `docs/plan/implemented/` へ `git mv` し、正本への相対リンクを更新する。
