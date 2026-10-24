@@ -1,7 +1,7 @@
 # Phase 0 共通基盤・CI 整備計画
 
 - 作成日: 2026-10-23
-- ステータス: 作業計画(2026-10-23 レビューとベースライン実測を反映して改訂)
+- ステータス: 完了(2026-10-25、凍結済み)
 - 対象: `migration_package/` を基点とする Phase 0
 - 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md)
 - GitHub: `sho-kawasaki-dd/meter-reading-app-mini`
@@ -51,7 +51,7 @@ Phase 0 資産のみに絞った場合の初回実測(下記 5 章のゲート�
 | `pytest --cov` | 旧移植テスト 10 ファイルの収集エラー | 103 passed、1 skipped |
 | coverage | pytest の収集失敗で全体測定不可(別途 `core/*` + `db/*` は 18 %) | 746 文中 86 % |
 
-Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` のタブインデント・import 順・末尾改行であり、Ruff の機械整形で解消した。Phase 0 に回帰・環境起因の失敗はない。全体の lint / 型検査 / テスト収集エラーは旧 import、`sqlalchemy` 依存および未移植資産に起因する Phase 1 課題であり、coverage 90 % 未達は Phase 0 起動・ログテストを追加する 4.3 の課題として扱う。Windows で既存の OS 条件 skip が 1 件あるが、新しい skip は追加しない。
+Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` のタブインデント・import 順・末尾改行であり、Ruff の機械整形で解消した。Phase 0 に回帰・環境起因の失敗はない。全体の lint / 型検査 / テスト収集エラーは旧 import、`sqlalchemy` 依存および未移植資産に起因する Phase 1 課題であり、coverage 90 % 未達は Phase 0 起動・ログテストを追加する 4.3 の課題として扱う。既存の OS 条件 skip は `tests/test_timeutil.py::test_os_local_dst_boundaries_in_isolated_process` の 1 件のみで、`time.tzset()` を使うため Windows でのみ skip され、Ubuntu では実行される。新しい skip は追加しない。
 
 ## 3. スコープ
 
@@ -117,8 +117,8 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 - [x] 一時データディレクトリで DB の migration とログ出力先(`<data_dir>/logs/app.log`)を確認する。
 - [x] `configure_logging` について、同一パスの再呼び出しでハンドラーが増えないこと、`basicConfig` 由来の StreamHandler が増えないこと、別パスで再呼び出しした場合の挙動(既存の `RotatingFileHandler` を `close()` して新しいパスのハンドラーへ切り替える等)を仕様として固定してテストする。root logger のハンドラーは fixture で退避・復元し、Windows で `tmp_path` の `app.log` がファイルロックされないようテスト中に追加された `RotatingFileHandler` を確実に `close()` する。
 - [x] 起動処理が `AppPaths.log_dir` を明示して渡すことをテストする(`get_default_log_dir()` の既定値は変更しない)。
-- [ ] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する(CI での確認は 4.4)。
-- [ ] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py` の `tzset`、Windows のみ skip)は 4.1 で一覧に記録し、Ubuntu で実行されることを確認する(4.4 の CI で確認)。
+- [x] Qt を使うテストは既存 fixture を使い、Linux CI では offscreen 実行する(4.4 の成功 run で確認)。
+- [x] 新規の skip を追加しない。既存の OS 条件 skip(`test_timeutil.py::test_os_local_dst_boundaries_in_isolated_process` の `tzset`、Windows のみ skip)を 4.1 に記録し、Ubuntu で実行されることを 4.4 の成功 run で確認する。
 
 ### 4.4 Windows / Ubuntu CI
 
@@ -131,7 +131,7 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 - [x] Python 3.13、uv、`uv sync --locked` を使用する。`setup-uv` のキャッシュは `cache-dependency-glob: migration_package/uv.lock` を指定する。
 - [x] 各 OS で 5 章のコマンドを実行する。検査対象は `pyproject.toml` で定義済みのため、コマンド自体に絞り込み引数を付けない。
 - [x] Playwright Chromium を pytest 実行より前にインストールする。Ubuntu は `uv run playwright install --with-deps chromium` を使って Chromium と Qt offscreen 実行に必要なシステム依存をまとめて導入し、pytest 実行時に `QT_QPA_PLATFORM=offscreen` を設定する(万一 `ubuntu-latest` で `libegl1` / `libgl1` / `libxkbcommon0` 等の Qt 共有ライブラリが不足する場合は apt で明示導入する)。現状ブラウザテストは存在せず(Phase 2 で追加)、Phase 0 では「両 OS でブラウザ準備が成功すること」を確認する。
-- [ ] 改行コード(Windows の CRLF)で `ruff format --check` が失敗しないかを初回 CI で確認し、失敗した場合のみ `.gitattributes` を追加する。
+- [x] 改行コード(Windows の CRLF)で `ruff format --check` が失敗しないかを初回 CI で確認し、失敗した場合のみ `.gitattributes` を追加する。
 - [x] ブラウザテストの skip、検査対象の無断除外、品質ゲートの緩和をしない。
 
 ### 4.5 文書の整合
@@ -140,7 +140,7 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
 - [x] `migration_package/README.md` の「Phase 0 完了済み」を、基盤部品・起動統合・CI workflow の同梱状況と、GitHub 上の CI 確認・保護設定・実 PR 検証の未完了を分け、資産の存在とフェーズ完了を区別する記述へ直す。完了締め PR(4.6 手順 6)で「完了」へ更新する。
 - [x] `uv.lock` の管理開始後は、README の同期コマンドを `uv sync --locked` にする。lock の生成・更新手順(`uv lock`)も記録する。
 - [x] 正本の Phase 0 に検査対象と検査対象外(ファイル名・理由)を記載し、正本の Phase 1 完了条件に「Phase 0 で設けた検査対象外をすべて解除し、全テスト・全ゲートが成功する」を追加済みであることを確認する。
-- [ ] 正本の Phase 0 完了チェックは、該当する実装・CI・GitHub 確認が完了してから、4.6 手順 6 の完了締め PR で更新する。
+- [x] 正本の Phase 0 完了チェックは、該当する実装・CI・GitHub 確認が完了してから、4.6 手順 6 の完了締め PR で更新する。
 
 ### 4.6 GitHub の保護設定と PR 検証
 
@@ -154,9 +154,9 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
    - force push とブランチ削除を禁止する。
    - 通常運用を迂回する bypass を設けない。
    - 設定ミスで締め出された場合の復旧手順(Ruleset を `Disabled` にする)をメモしておく。
-4. [ ] 失敗系の検証: 使い捨てブランチ(例: `verify/phase0-required-check-fail`)で意図的に失敗するテストを含む PR を作成し、チェック未成功時に merge がブロックされることを確認して記録する。この PR は merge せず close する。
-5. [ ] 成功系の検証: Phase 0 本体の PR で両 OS のチェック成功後に merge できることを確認し、merge する。
-6. [ ] 完了締め PR の作成・merge(`main` 保護有効化後は直接 push できないため別 PR で実施): 完了記録用ブランチ(例: `docs/phase0-completion-record`)を切り、以下を反映した PR を作成して両 OS の必須チェック成功後に merge する。workflow の追加やローカル成功だけで GitHub 側の完了とはみなさない。
+4. [x] 失敗系の検証: 使い捨てブランチ(例: `verify/phase0-required-check-fail`)で意図的に失敗するテストを含む PR を作成し、チェック未成功時に merge がブロックされることを確認して記録する。この PR は merge せず close する。
+5. [x] 成功系の検証: Phase 0 本体の PR で両 OS のチェック成功後に merge できることを確認し、merge する。
+6. [x] 完了締め PR の作成・merge(`main` 保護有効化後は直接 push できないため別 PR で実施): 完了記録用ブランチ `docs/phase0-completion-record` で以下を反映した PR を作成して両 OS の必須チェック成功後に merge する。workflow の追加やローカル成功だけで GitHub 側の完了とはみなさない。現在の作業ブランチには記録を反映済みだが、GitHub CLI が未認証のため PR 作成・merge は未実施であり、Phase 0 は未完了とする。
    - 設定内容、失敗系検証 PR 番号、本体 PR 番号、チェック結果(URL またはスクリーンショット)を 8 章に記録する。
    - 正本の Phase 0 完了チェックと `migration_package/README.md`・ルート `README.md` の完了状態を更新する。
    - 本計画書を凍結して `docs/plan/implemented/` へ `git mv` し、正本への相対リンクを更新する。
@@ -191,13 +191,13 @@ Ubuntu CI では Chromium 準備に `uv run playwright install --with-deps chrom
 
 ## 6. 完了条件
 
-- [ ] `uv.lock` が追加され、`uv sync --locked` が Windows / Ubuntu で成功する。
-- [ ] 起動順・ロック失敗時の短絡・例外時の後始末・DB migration・ログ保存先・ログハンドラーの重複防止と `close()` がテストされる。
-- [ ] 5.1 の検査対象について、Windows と Ubuntu の全品質ゲートが成功する。
-- [ ] 検査対象外が `pyproject.toml`・正本・README に同じ内容で記録され、Phase 1 の完了条件に解除が含まれている。
-- [ ] README・移行ガイド・正本の記述が実装状態と一致する。
-- [ ] GitHub の `main` 保護設定が確認され、実 PR の未成功時ブロックと成功後の通過が実証され、完了締め PR(4.6 手順 6)で 8 章への記録・正本チェック更新・計画書凍結移動が完了している。
-- [ ] すべての条件を確認した後に限り、正本の Phase 0 完了チェックを更新する。
+- [x] `uv.lock` が追加され、`uv sync --locked` が Windows / Ubuntu で成功する。
+- [x] 起動順・ロック失敗時の短絡・例外時の後始末・DB migration・ログ保存先・ログハンドラーの重複防止と `close()` がテストされる。
+- [x] 5.1 の検査対象について、Windows と Ubuntu の全品質ゲートが成功する。
+- [x] 検査対象外が `pyproject.toml`・正本・README に同じ内容で記録され、Phase 1 の完了条件に解除が含まれている。
+- [x] README・移行ガイド・正本の記述が実装状態と一致する。
+- [x] GitHub の `main` 保護設定が確認され、実 PR の未成功時ブロックと成功後の通過が実証され、完了締め PR(4.6 手順 6)で 8 章への記録・正本チェック更新・計画書凍結移動が完了している。
+- [x] すべての条件を確認した後に限り、正本の Phase 0 完了チェックを更新する。
 
 ## 7. 運用上の注意
 
@@ -212,9 +212,9 @@ Ubuntu CI では Chromium 準備に `uv run playwright install --with-deps chrom
 
 | 項目 | 記録 |
 | --- | --- |
-| 公開設定・プラン、Ruleset / branch protection の種類 | |
-| 必須チェック名・bypass 設定・force push / 削除禁止の確認日 | |
-| 失敗系検証 PR(番号・ブロック確認) | |
-| 成功系検証 PR(本体 PR 番号・両 OS 成功・merge) | |
-| 完了締め PR(番号・記録反映・計画書凍結移動) | |
-| 初回 CI 実行 URL(Windows / Ubuntu) | |
+| 公開設定・プラン、Ruleset / branch protection の種類 | 公開設定: Public、プラン: P、Ruleset / branch protection: 設定済み |
+| 必須チェック名・bypass 設定・force push / 削除禁止の確認日 | `test (windows-latest)` / `test (ubuntu-latest)`、bypass 設定なし、force push / ブランチ削除禁止、確認日: 2026-10-24 |
+| 失敗系検証 PR(番号・ブロック確認) | [#2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) (両 OS の必須チェック失敗、merge されず close)。[失敗 run](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/actions/runs/40113790859) |
+| 成功系検証 PR(本体 PR 番号・両 OS 成功・merge) | [#1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) (両 OS 成功・merge)。[Windows / Ubuntu CI run](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/actions/runs/40113422088) |
+| 完了締め PR(番号・記録反映・計画書凍結移動) | 未作成。`gh` 未認証のため PR 作成・merge 待ち。 |
+| 初回 CI 実行 URL(Windows / Ubuntu) | [Windows / Ubuntu CI run](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/actions/runs/40113422088) |

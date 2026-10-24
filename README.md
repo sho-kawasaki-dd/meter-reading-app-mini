@@ -9,9 +9,9 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 ## 開発状況と仕様の正本
 
 現在は `migration_package/` を基点に開発中です。
-Phase 0 の共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow は実装済みです。
+Phase 0 の共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow は実装済みです。GitHub の `main` 保護と必須チェックも設定し、[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) の両 OS 成功・merge、および[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) の未成功チェックによる merge ブロックを確認しました。
 一方、旧 import や SQLAlchemy 実装の移植、メイン画面・起動用 `__main__.py`・標準 sqlite3 Repository は未整備です。
-CI の GitHub 上での確認、`main` の保護設定、実 PR による検証も未完了のため、Phase 0 全体は完了していません。
+完了記録 PR の作成・必須チェック成功後の merge と作業計画書の凍結移動は未完了のため、Phase 0 全体はまだ完了していません。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -69,6 +69,18 @@ uv sync --locked
 検査対象は [開発計画書の Phase 0 品質ゲート検査対象](docs/plan/ローカル検針管理アプリ開発計画書.md) と
 `pyproject.toml` に定義しています。Phase 1 で統合する移植前の資産は対象外として明示しており、
 このコマンド一覧は CI の実行手順を示すもので、GitHub 上の CI 成功を示すものではありません。
+
+Phase 1 で解除する検査対象外は次のとおりです。
+
+- `src/meter_reading_mini/core/contract_models.py`、`meter_master_service.py`、`meter_reading_sync.py`、
+  `meter_reading_sync_repositories.py`、`reading_signature.py`、`reading_write_orchestration.py`、
+  `schedule_settings.py`、`timezone_settings.py`、`usage_delta_calculation.py`、`work_package_download.py`
+- `src/meter_reading_mini/db/reference_sqlalchemy/**`
+- 対応するテスト: `tests/test_api_models.py`、`test_measurement_definition_schedule_service.py`、
+  `test_meter_master_service.py`、`test_meter_reading_sync_service.py`、
+  `test_meter_reading_sync_service_batch_txn.py`、`test_reading_signature.py`、
+  `test_reading_write_orchestration.py`、`test_timezone_settings.py`、
+  `test_usage_delta_calculation.py`、`test_work_package_download_service.py`
 
 ```powershell
 uv run playwright install chromium
