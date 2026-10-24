@@ -70,6 +70,18 @@ uv sync --locked
 `pyproject.toml` に定義しています。Phase 1 で統合する移植前の資産は対象外として明示しており、
 このコマンド一覧は CI の実行手順を示すもので、GitHub 上の CI 成功を示すものではありません。
 
+Phase 1 で解除する検査対象外は次のとおりです。
+
+- `src/meter_reading_mini/core/contract_models.py`、`meter_master_service.py`、`meter_reading_sync.py`、
+  `meter_reading_sync_repositories.py`、`reading_signature.py`、`reading_write_orchestration.py`、
+  `schedule_settings.py`、`timezone_settings.py`、`usage_delta_calculation.py`、`work_package_download.py`
+- `src/meter_reading_mini/db/reference_sqlalchemy/**`
+- 対応するテスト: `tests/test_api_models.py`、`test_measurement_definition_schedule_service.py`、
+  `test_meter_master_service.py`、`test_meter_reading_sync_service.py`、
+  `test_meter_reading_sync_service_batch_txn.py`、`test_reading_signature.py`、
+  `test_reading_write_orchestration.py`、`test_timezone_settings.py`、
+  `test_usage_delta_calculation.py`、`test_work_package_download_service.py`
+
 ```powershell
 uv run playwright install chromium
 uv run ruff check
