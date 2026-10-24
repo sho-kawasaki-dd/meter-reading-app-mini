@@ -154,8 +154,8 @@ Phase 0 の lint 42 件と未整形 1 ファイルは `core/logging_config.py` �
    - force push とブランチ削除を禁止する。
    - 通常運用を迂回する bypass を設けない。
    - 設定ミスで締め出された場合の復旧手順(Ruleset を `Disabled` にする)をメモしておく。
-4. [ ] 失敗系の検証: 使い捨てブランチ(例: `verify/phase0-required-check-fail`)で意図的に失敗するテストを含む PR を作成し、チェック未成功時に merge がブロックされることを確認して記録する。この PR は merge せず close する。
-5. [ ] 成功系の検証: Phase 0 本体の PR で両 OS のチェック成功後に merge できることを確認し、merge する。
+4. [x] 失敗系の検証: 使い捨てブランチ(例: `verify/phase0-required-check-fail`)で意図的に失敗するテストを含む PR を作成し、チェック未成功時に merge がブロックされることを確認して記録する。この PR は merge せず close する。
+5. [x] 成功系の検証: Phase 0 本体の PR で両 OS のチェック成功後に merge できることを確認し、merge する。
 6. [ ] 完了締め PR の作成・merge(`main` 保護有効化後は直接 push できないため別 PR で実施): 完了記録用ブランチ(例: `docs/phase0-completion-record`)を切り、以下を反映した PR を作成して両 OS の必須チェック成功後に merge する。workflow の追加やローカル成功だけで GitHub 側の完了とはみなさない。
    - 設定内容、失敗系検証 PR 番号、本体 PR 番号、チェック結果(URL またはスクリーンショット)を 8 章に記録する。
    - 正本の Phase 0 完了チェックと `migration_package/README.md`・ルート `README.md` の完了状態を更新する。
