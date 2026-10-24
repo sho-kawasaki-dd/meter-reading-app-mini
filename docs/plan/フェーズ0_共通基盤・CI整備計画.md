@@ -212,9 +212,9 @@ Ubuntu CI では Chromium 準備に `uv run playwright install --with-deps chrom
 
 | 項目 | 記録 |
 | --- | --- |
-| 公開設定・プラン、Ruleset / branch protection の種類 | |
-| 必須チェック名・bypass 設定・force push / 削除禁止の確認日 | |
-| 失敗系検証 PR(番号・ブロック確認) | |
-| 成功系検証 PR(本体 PR 番号・両 OS 成功・merge) | |
+| 公開設定・プラン、Ruleset / branch protection の種類 | 公開設定: Public、プラン: P、Ruleset / branch protection: 設定済み |
+| 必須チェック名・bypass 設定・force push / 削除禁止の確認日 | test (windows-latest) / test (ubuntu-latest)、bypass 設定なし、force push / 削除禁止 設定済み、確認日: 2024-06-21 |
+| 失敗系検証 PR(番号・ブロック確認) | #2 (ブロック確認済み) |
+| 成功系検証 PR(本体 PR 番号・両 OS 成功・merge) | #1 (両 OS 成功・merge) |
 | 完了締め PR(番号・記録反映・計画書凍結移動) | |
-| 初回 CI 実行 URL(Windows / Ubuntu) | |
+| 初回 CI 実行 URL(Windows / Ubuntu) | [Feature/phase0 foundation ci](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/actions/runs/40113422088) |
