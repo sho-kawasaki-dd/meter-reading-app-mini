@@ -50,6 +50,12 @@ jobs:
       - name: Check types
         run: uv run pyright
 
+      - name: Install Qt system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+
       - name: Install Playwright Chromium (Ubuntu)
         if: runner.os == 'Linux'
         run: uv run playwright install --with-deps chromium
