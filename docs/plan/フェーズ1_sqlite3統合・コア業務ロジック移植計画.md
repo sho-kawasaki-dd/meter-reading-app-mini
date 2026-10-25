@@ -198,7 +198,8 @@ uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_readin
 ## 8. 留意事項
 
 - **時刻が秒単位になる(D6 と D3):** 同じ秒に複数回更新があると `client_updated_at` だけでは順序を決められない。`arrival_sequence` で後着を採用する前提をテストで明示する。
-- **`ad_hoc` の区別:** 5.2 の点検で、v1 への列追加が必要になる可能性が高い。追加する場合は `schema.sql`・`migrations.py`・版別検査定義・テストを同時に更新する。
+  - 単一ユーザー運用を前提とし、同一秒の競合は `arrival_sequence` で解決する。マイクロ秒化はしない(D6 の形式は既存契約として維持する。スマホ側の時計ずれは精度を上げても解消しない)。
+  - 更新の新旧を `client_updated_at` の文字列比較だけで判定しない。「同時刻なら `arrival_sequence`」の分岐を必ず通す実装にし、同一秒の複数更新を投入するテストを置く。- **`ad_hoc` の区別:** 5.2 の点検で、v1 への列追加が必要になる可能性が高い。追加する場合は `schema.sql`・`migrations.py`・版別検査定義・テストを同時に更新する。
 - **旧テストの削減:** `startup_diagnostics` 依存分は移植しない。削除したテストと理由を完了記録に残す。
 - **Phase 1 の SQL 移植:** `db/reference_sqlalchemy/` は ORM のセマンティクス(暗黙の flush、`onupdate`、型変換)に依存する。クエリ移植時は、ORM 側の暗黙の挙動を明示的な SQL と Python 側の処理へ置き換える。
 - **実データの保護:** テストは `:memory:` または `tmp_path` を使う。動作確認は `METER_READING_MINI_DATA_DIR` に一時保存先を指定し、実データ領域を使わない。
