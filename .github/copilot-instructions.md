@@ -110,7 +110,7 @@
 
 - 備品在庫管理アプリと同じく、`main` は常にテスト成功状態を保ち、`feature/<フェーズ>-<内容>` ブランチで作業して PR でマージします。
 - `main` へ直接 push しません。feature ブランチを push して PR を作り、必須 CI 成功後にマージします。
-- 必須チェックは `test (windows-latest)`・`test (ubuntu-latest)` とする方針です。現状は CI workflow 未整備であり、このリポジトリのブランチ保護設定済み・`GH013` 発生を事実として断定しません。
+- 必須チェックは `test (windows-latest)`・`test (ubuntu-latest)` で、CI workflow は `.github/workflows/ci.yml` に整備済みです。`main` の保護設定と未成功チェック時のマージブロックは Phase 0 で確認済みです。
 - CI 導入時は両ジョブとリポジトリルールをそろえ、ジョブ名変更時には必須チェック名も更新します。
 - `main` 上に誤コミットした場合は `git switch -c <ブランチ名>` で保全します。ローカル `main` を戻す必要がある場合のみ、作業ツリーと `origin/main` を確認して `git branch -f main origin/main` を使い、未保全の作業・コミットを失わせません。
 - Conventional Commits (`feat:`、`fix:`、`test:`、`docs:`、`refactor:` 等) に従い、内容は日本語で記述します。
