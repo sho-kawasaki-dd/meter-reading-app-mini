@@ -176,6 +176,13 @@ def test_mobile_reading_assets_load_and_have_no_external_dependencies() -> None:
     assert "<!--" not in read_sheet_asset("sheet.js")
 
 
+def test_sheet_script_does_not_use_floating_point_for_business_numbers() -> None:
+    script = read_sheet_asset("sheet.js")
+
+    for forbidden in ("parseFloat", "parseInt", "Number(", "toFixed", "Math.round"):
+        assert forbidden not in script, forbidden
+
+
 def test_measurement_definition_update_contract_exposes_immutable_fields_for_rejection() -> None:
     update_fields = {field.name for field in fields(MeasurementDefinitionUpdateRequest)}
 

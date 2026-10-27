@@ -150,17 +150,17 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
 
 ### 5.2 PR-2b `feature/phase2-sheet-ui-input`: 画面と入力(HTML/JS)
 
-- [ ] `sheet.html`、`sheet.css`、`sheet.js` を作る。`<noscript>` と冒頭の表示で「Chrome で開いてください」と案内する
-- [ ] 検針時間・周期のピルタブを作る。日次枠は `reading_session` ごとの時間タブ、非日次枠(`weekly` / `monthly` / `every_two_months`)は `[週次・月次・隔月]` タブに振り分け、消化件数バッジを付けて上部に固定する。初期選択は D5 に従う
-- [ ] `location_id` ごとのセクションを作る(Sticky 見出し・開閉・完了バッジ)。並び順はカテゴリ固定順(`electricity` → `gas` → `water` → その他)、その次に `display_name` 昇順。`location_id` 未設定は末尾の「場所未設定」にまとめる。場所ドロップダウンと「未入力のみ」トグルを付ける
-- [ ] カードの表示と入力欄を作る
+- [x] `sheet.html`、`sheet.css`、`sheet.js` を作る。`<noscript>` と冒頭の表示で「Chrome で開いてください」と案内する
+- [x] 検針時間・周期のピルタブを作る。日次枠は `reading_session` ごとの時間タブ、非日次枠(`weekly` / `monthly` / `every_two_months`)は `[週次・月次・隔月]` タブに振り分け、消化件数バッジを付けて上部に固定する。初期選択は D5 に従う
+- [x] `location_id` ごとのセクションを作る(Sticky 見出し・開閉・完了バッジ)。並び順はカテゴリ固定順(`electricity` → `gas` → `water` → その他)、その次に `display_name` 昇順。`location_id` 未設定は末尾の「場所未設定」にまとめる。場所ドロップダウンと「未入力のみ」トグルを付ける
+- [x] カードの表示と入力欄を作る
   - 測定定義名(`display_name`)・単位・物理メーター情報(`meter_name`・`meter_serial`)・前回値の表示
   - 状態 4 種(`measured` / `skipped` / `unreachable` / `meter_fault`)
   - 数値(非負の plain decimal 文字列、`decimal_places` 以下の小数桁数、および `rollover_value` 設定時は `0 <= raw_reading < rollover_value` で検証。`rollover_value` 同値は不可)
   - 力率(`%` は 0〜100 の非負 plain decimal、位相 `lag` / `lead` / `unity` を選択。`100%` のときは `unity` に固定し、`100%` 未満のときは `unity` を選択不可とする。`100%` から `100%` 未満へ変更した際も `unity` のままでは確認済みにできない)
   - 備考(500 文字以内)
   - 確認ボタン、「次へ」で同じ場所の次の未入力へ移動
-- [ ] D9 の BigInt 小数で参考使用量を計算する
+- [x] D9 の BigInt 小数で参考使用量を計算する
   - `raw_only` のとき
   - 加減算のスケールは両辺の小数桁数の最大とし、途中結果を丸めない
   - 倍率を掛けるとき(スケールは差分と `multiplier` の小数桁数の和)
@@ -169,19 +169,19 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
   - 閾値超過の警告
   - 交換初期値がない初回(`replacement_no_initial`)および前回実測なし(`none`)は 0
   - 警告は現場の実数記録を妨げない
-- [ ] 同日先行枠の値を引き継ぐ(D12)
+- [x] 同日先行枠の値を引き継ぐ(D12)
   - 同じ `measurement_definition_id` かつ同じ `meter_id` の DB 由来の初期前回実測と、確認済みで正常な同日先行実測を比較し、対象枠より前で `scheduled_at, planned_reading_id` が最大の候補を前回値とする(交換前後の別 `meter_id` 間では引き継がない)
   - DB 由来の候補には `initial_previous_scheduled_at`・`initial_previous_planned_reading_id` を使い、より古いシート内の入力では置き換えない
   - 引き継ぎ中は、シート出力時の `previous_source` が `replacement_no_initial` や `none`(初回使用量 0)であっても、先行枠の実測値を前回値とする通常の差分計算に切り替える
   - 先行枠が未入力・非実測・未確認ならその枠を候補から外し、DB 由来の初期前回実測と残る確認済み実測から再選択する。実測候補がない場合だけ、シート出力時の交換初期値または初回使用量 0 の扱いに戻す
   - 先行枠の測定値・状態・備考が変更されて確認が解除された場合、それを引き継いでいた後続枠の前回値・参考使用量を再計算するとともに、後続枠の確認状態(`confirmed`)も連動して解除する
-- [ ] 測定値・状態・備考を変えたら確認を解除する。業務条件を満たさない枠は確認済みにしない
-- [ ] Playwright の基盤を `tests/conftest.py` に置く
+- [x] 測定値・状態・備考を変えたら確認を解除する。業務条件を満たさない枠は確認済みにしない
+- [x] Playwright の基盤を `tests/conftest.py` に置く
   - Chromium をセッション単位で起動する
   - `file:` 以外のリクエストを遮断して記録する
   - `pageerror` と `console.error` を集める
   - `localStorage` にアクセスしたら検出する
-- [ ] `tests/test_mobile_reading_browser.py` でブラウザ操作を確認する
+- [x] `tests/test_mobile_reading_browser.py` でブラウザ操作を確認する
   - タブの切替、グループ化、絞り込み
   - 同日先行枠からの引き継ぎ
   - 08:00 が未入力、14:00 が `completed` で読値 200、22:00 が未入力のシートで、08:00 に 150、22:00 に 250 を確認入力しても、22:00 の前回値は 200、参考使用量は倍率 1 で 50 となること
@@ -295,3 +295,6 @@ uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
   - 追加: `core/decimal_arithmetic.py`(D9 の丸めなし演算)、`core/previous_reading.py`(D2 の前回値判定、オーケストレーションと共用)、`core/mobile_reading_sheet.py`(`MobileReadingSheetService`)、`core/mobile_reading_assets/`(2b で差し替える最小の骨組み)。
   - `SupersededPlannedReadingError` を `core/errors.py` に追加し、`ReadingWriteOrchestrationService.upsert_reading` と `SQLiteRepository.upsert_reading` で拒否する。
   - `pyproject.toml` の coverage `omit` の解除は 5.4 の項目のため、この PR では行っていない。`mobile_reading.py` の単体 coverage は 99%。
+- PR-2b(2026-10-27、`feature/phase2-sheet-ui-input`): Ruff check / format、Pyright(0 errors)、pytest 405 passed / 1 skipped(Windows では `QT_QPA_PLATFORM=offscreen` を設定せず実行。設定すると `tests/test_app.py` が Qt でクラッシュするため、Linux のみで設定する)、全体 94%・`core/` 97%・`db/` 90%(いずれも `--fail-under=90` 達成)を確認した。
+  - 追加: `sheet.html`・`sheet.css`・`sheet.js`(ピルタブ、場所別セクション、カード入力、D9 の BigInt 小数による参考使用量と警告、D12 の前回値引き継ぎと連動する確認解除)、`tests/conftest.py` の Playwright 基盤(`SheetBrowser`: 外部通信の遮断と記録、`pageerror`・`console.error`・`localStorage` 参照の検出)、`tests/test_mobile_reading_browser.py`、`tests/mobile_sheet_helpers.py`。
+  - 初期タブのうち「全枠が消化済みなら `[すべて]`」は、下書きの復元がない 2b では再現できないため、2c(IndexedDB 復元)のブラウザテストで確認する。

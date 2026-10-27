@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+from playwright.sync_api import Browser, BrowserContext, Page, Route, sync_playwright
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
@@ -235,3 +237,106 @@ def fixed_schedule_datetime(business_date: date) -> datetime:
         time(8),
         tzinfo=ZoneInfo("Asia/Tokyo"),
     ).astimezone(UTC)
+
+
+BROWSER_FIXED_TIME = datetime(2026, 2, 4, 3, 0, 0, tzinfo=UTC)
+_STORAGE_GUARD_SCRIPT = """
+window.__mrmStorageAccess = [];
+Object.defineProperty(window, "localStorage", {
+  configurable: true,
+  get() {
+    window.__mrmStorageAccess.push("localStorage");
+    throw new Error("localStorage は使用できません");
+  },
+});
+"""
+_EXTERNAL_URL_PATTERN = re.compile(r"^(?!file:|data:|blob:|about:)")
+
+
+class SheetBrowser:
+    """生成 HTML を `file:` URL で開き、外部通信・JS エラー・localStorage 参照を記録する。"""
+
+    def __init__(self, browser: Browser, directory: Path) -> None:
+        self._browser = browser
+        self._directory = directory
+        self._contexts: list[BrowserContext] = []
+        self._pages: list[tuple[Page, list[str]]] = []
+        self.external_requests: list[str] = []
+        self.page_errors: list[str] = []
+
+    def new_context(self, *, viewport: tuple[int, int] = (360, 640)) -> BrowserContext:
+        context = self._browser.new_context(
+            viewport={"width": viewport[0], "height": viewport[1]},
+            locale="ja-JP",
+            accept_downloads=True,
+        )
+        context.route(_EXTERNAL_URL_PATTERN, self._block_external)
+        context.add_init_script(_STORAGE_GUARD_SCRIPT)
+        context.clock.set_fixed_time(BROWSER_FIXED_TIME)
+        self._contexts.append(context)
+        return context
+
+    def _block_external(self, route: Route) -> None:
+        self.external_requests.append(route.request.url)
+        route.abort()
+
+    def open_html(
+        self,
+        html: str,
+        *,
+        name: str = "sheet.html",
+        context: BrowserContext | None = None,
+        viewport: tuple[int, int] = (360, 640),
+    ) -> Page:
+        path = self._directory / name
+        path.write_text(html, encoding="utf-8")
+        page = (context or self.new_context(viewport=viewport)).new_page()
+        console_errors: list[str] = []
+        page.on("pageerror", lambda error: self.page_errors.append(str(error)))
+        page.on(
+            "console",
+            lambda message: (
+                console_errors.append(message.text) if message.type == "error" else None
+            ),
+        )
+        self._pages.append((page, console_errors))
+        page.goto(path.as_uri())
+        return page
+
+    def verify_clean(self) -> None:
+        """外部通信・JavaScript エラー・localStorage 参照がなかったことを確認する。"""
+
+        storage_access: list[object] = []
+        console_errors: list[str] = []
+        for page, errors in self._pages:
+            console_errors.extend(errors)
+            if not page.is_closed():
+                storage_access.extend(page.evaluate("window.__mrmStorageAccess || []"))
+        assert self.external_requests == []
+        assert self.page_errors == []
+        assert console_errors == []
+        assert storage_access == []
+
+    def close(self) -> None:
+        for context in self._contexts:
+            context.close()
+
+
+@pytest.fixture(scope="session")
+def chromium_browser() -> Iterator[Browser]:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            yield browser
+        finally:
+            browser.close()
+
+
+@pytest.fixture
+def sheet_browser(chromium_browser: Browser, tmp_path: Path) -> Iterator[SheetBrowser]:
+    session = SheetBrowser(chromium_browser, tmp_path)
+    try:
+        yield session
+        session.verify_clean()
+    finally:
+        session.close()
