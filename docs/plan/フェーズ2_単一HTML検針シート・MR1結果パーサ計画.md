@@ -110,28 +110,28 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
 
 ### 5.1 PR-2a `feature/phase2-sheet-generation-parser`: シート生成と結果パーサ(Python)
 
-- [ ] `PlannedReadingTaskQueryRepository` に、業務日と状態(`open` / `auto_closed`)を指定してシート用の予定枠(`task_state: PlannedReadingTaskState` を含むレコード)を取得するメソッドを追加し、sqlite3 で実装する。ORDER BY は既存の一覧取得と同じにする。あわせて、対象枠が参照する測定定義・物理メーター・場所名(`location_name`)を、マスタが論理削除済み(`is_active = 0`)の場合も含めて取得できるようにする(D1)
-- [ ] D2 の前回値判定を契約モジュール(`contract_models.py`、`errors.py`、`meter_reading_sync_repositories.py`)以外の core モジュールに共通の関数(または Service)として切り出し、オーケストレーションとシート生成の両方で使う。次のケースを単体テストで確認する:
+- [x] `PlannedReadingTaskQueryRepository` に、業務日と状態(`open` / `auto_closed`)を指定してシート用の予定枠(`task_state: PlannedReadingTaskState` を含むレコード)を取得するメソッドを追加し、sqlite3 で実装する。ORDER BY は既存の一覧取得と同じにする。あわせて、対象枠が参照する測定定義・物理メーター・場所名(`location_name`)を、マスタが論理削除済み(`is_active = 0`)の場合も含めて取得できるようにする(D1)
+- [x] D2 の前回値判定を契約モジュール(`contract_models.py`、`errors.py`、`meter_reading_sync_repositories.py`)以外の core モジュールに共通の関数(または Service)として切り出し、オーケストレーションとシート生成の両方で使う。次のケースを単体テストで確認する:
   - 実測あり
   - 交換初期値あり
   - 交換初期値なし
   - 実測なし
   - 同日の先行枠が `completed`(読値と参照元の予定日時・枠 ID がそろうこと)
   - 実測以外の前回値では参照元の 2 項目がともに `null` となること
-- [ ] D9 に従い、共通の使用量計算を局所的な Decimal コンテキストで丸めなしに計算する方式へ変更する
+- [x] D9 に従い、共通の使用量計算を局所的な Decimal コンテキストで丸めなしに計算する方式へ変更する
   - 必要精度は演算対象の整数部・小数部の桁数と桁上がりから算出し、減算・ロールオーバー補正・乗算の途中結果も正確に保持する。グローバルな精度は変更しない
   - 加減算・乗算のスケールを D9 に統一し、保存時も有限の plain decimal 文字列とする
   - 28 桁境界とそれを超える値、大きな倍率、末尾ゼロ、小数桁数の異なる減算、ロールオーバー補正を単体テストで確認する。呼出元の Decimal 精度を変えても同じ結果になることを確認する
   - PC 直接入力・スマホ同期・交換境界・後続再計算の既存テストを実行し、通常桁数での既存結果とトランザクション整合性を維持する
-- [ ] D6 に従い、`task_state == 'superseded'` の予定枠に対する結果保存(`ReadingWriteOrchestrationService.upsert_reading`)を `DomainError` 派生例外で拒否し、スマホ同期(`MeterReadingSyncService.sync`)では当該 SAVEPOINT だけ戻して `rejected_reading_items` に記録することを単体・結合テストで確認する
-- [ ] `MobileReadingSheetService.create_sheet(target_business_date, *, reading_sessions, cycle_groups)` を作る
+- [x] D6 に従い、`task_state == 'superseded'` の予定枠に対する結果保存(`ReadingWriteOrchestrationService.upsert_reading`)を `DomainError` 派生例外で拒否し、スマホ同期(`MeterReadingSyncService.sync`)では当該 SAVEPOINT だけ戻して `rejected_reading_items` に記録することを単体・結合テストで確認する
+- [x] `MobileReadingSheetService.create_sheet(target_business_date, *, reading_sessions, cycle_groups)` を作る
   - 補完 → 自動クローズ → 枠取得 → 前回値の算出を 1 つのトランザクションにまとめ、Service がトランザクションを持つ
   - 未来日の指定と対象 0 件は `DomainError` 派生例外で拒否する
   - 時計と `sheet_id` 生成(`secrets.token_hex(16)`)は外から注入できるようにする
   - 戻り値: `MobileReadingSheet(sheet_id, html, filename, slot_count)`
-- [ ] `render_sheet_html(sheet_data)` を作り、D3 の資産をまとめて 1 つの HTML にする。外部 URL・`localStorage`・`</script>` の混入がないことをテストする
-- [ ] `format_sheet_timestamps` を tz 必須の引数に変える(D8)
-- [ ] `parse_mobile_reading_result(raw_text) -> MobileReadingResult` を作る。検証内容:
+- [x] `render_sheet_html(sheet_data)` を作り、D3 の資産をまとめて 1 つの HTML にする。外部 URL・`localStorage`・`</script>` の混入がないことをテストする
+- [x] `format_sheet_timestamps` を tz 必須の引数に変える(D8)
+- [x] `parse_mobile_reading_result(raw_text) -> MobileReadingResult` を作る。検証内容:
   - `kind` と `v`(トップレベルの未知キーは拒否し、`business_date`・`generated_at`・`filter` は任意で保持する)
   - `sheet_id`
   - `entries` が空でないこと、`planned_reading_id` が重複しないこと
@@ -139,14 +139,14 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
   - `replaced` を拒否すること
   - 備考が `validate_note` を通ること
   - 下書き形式と未対応の版数を拒否すること
-- [ ] `MobileReadingResult.to_sync_request()` と、`ReadingConfirmationContext` を使った保存を、`:memory:` DB の結合テストで確認する。確認する点:
+- [x] `MobileReadingResult.to_sync_request()` と、`ReadingConfirmationContext` を使った保存を、`:memory:` DB の結合テストで確認する。確認する点:
   - `device_id = sheet_id`
   - `result_source = 'mobile_html'`
   - 署名がある
   - `auto_closed` の枠が `completed` になる
   - `superseded` の枠が拒否される
-- [ ] [test_mobile_reading_envelope.py](../../tests/test_mobile_reading_envelope.py) を `tests/test_mobile_reading.py` に統合する。既存の MR1 テストは結果 `kind` 付きのペイロードに合わせて直す
-- [ ] [test_contract_boundaries.py](../../tests/test_contract_boundaries.py) に `core/mobile_reading_assets/` の資産読込と静的検査を追加し、契約モジュールの独立性、`PySide6` 非依存、`datetime.now` 不使用に加えて、資産内に外部 URL(`http://`、`https://`)や `localStorage` が含まれないことを確認する
+- [x] `test_mobile_reading_envelope.py` を `tests/test_mobile_reading.py` に統合する。既存の MR1 テストは結果 `kind` 付きのペイロードに合わせて直す
+- [x] [test_contract_boundaries.py](../../tests/test_contract_boundaries.py) に `core/mobile_reading_assets/` の資産読込と静的検査を追加し、契約モジュールの独立性、`PySide6` 非依存、`datetime.now` 不使用に加えて、資産内に外部 URL(`http://`、`https://`)や `localStorage` が含まれないことを確認する
 
 ### 5.2 PR-2b `feature/phase2-sheet-ui-input`: 画面と入力(HTML/JS)
 
@@ -290,3 +290,8 @@ uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
 ## 9. 完了記録
 
 (PR ごとに追記し、Phase 2 完了時に集約する)
+
+- PR-2a(2026-10-27、`feature/phase2-sheet-generation-parser`): Ruff check / format、Pyright(0 errors)、pytest 368 passed / 1 skipped、`core/`・`db/` coverage 95%(`--fail-under=90` 達成)を確認した。
+  - 追加: `core/decimal_arithmetic.py`(D9 の丸めなし演算)、`core/previous_reading.py`(D2 の前回値判定、オーケストレーションと共用)、`core/mobile_reading_sheet.py`(`MobileReadingSheetService`)、`core/mobile_reading_assets/`(2b で差し替える最小の骨組み)。
+  - `SupersededPlannedReadingError` を `core/errors.py` に追加し、`ReadingWriteOrchestrationService.upsert_reading` と `SQLiteRepository.upsert_reading` で拒否する。
+  - `pyproject.toml` の coverage `omit` の解除は 5.4 の項目のため、この PR では行っていない。`mobile_reading.py` の単体 coverage は 99%。

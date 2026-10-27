@@ -7,6 +7,7 @@ Service が利用する Protocol と入出力レコードを提供し、lookup �
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -345,6 +346,21 @@ class PlannedReadingRecompositionRecord:
     task_state: PlannedReadingTaskState
     close_reason: PlannedReadingCloseReason | None = None
     superseded_by_planned_reading_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SheetPlannedReadingRecord:
+    """検針シートに載せる予定枠。状態を含む。"""
+
+    planned_reading_id: str
+    measurement_definition_id: str
+    meter_id: str
+    location_id: str
+    business_date: date
+    reading_session: ReadingSession
+    scheduled_at: datetime
+    reading_cycle: ReadingCycle
+    task_state: PlannedReadingTaskState
 
 
 class ResultSource(StrEnum):
@@ -711,8 +727,30 @@ class MeasurementDefinitionQueryRepository(Protocol):
         ...
 
 
+class SheetMasterQueryRepository(Protocol):
+    """検針シート用に、論理削除済みを含めて対象枠のマスタを取得する境界。"""
+
+    def list_sheet_meters(self, meter_ids: Collection[str]) -> list[MeterMasterData]:
+        """Return the physical meters with the given ids, including inactive ones."""
+        ...
+
+    def list_sheet_measurement_definitions(
+        self, measurement_definition_ids: Collection[str]
+    ) -> list[MeasurementDefinitionData]:
+        """Return the definitions with the given ids, including inactive ones."""
+        ...
+
+
 class PlannedReadingTaskQueryRepository(Protocol):
     """work package download 用の open planned reading 一覧取得境界。"""
+
+    def list_planned_reading_tasks_for_sheet(
+        self,
+        business_date: date,
+        task_states: Collection[PlannedReadingTaskState],
+    ) -> list[SheetPlannedReadingRecord]:
+        """Return slots of the business_date in the given states, in sheet order."""
+        ...
 
     def list_open_planned_reading_tasks_for_release_date(
         self, release_date: date

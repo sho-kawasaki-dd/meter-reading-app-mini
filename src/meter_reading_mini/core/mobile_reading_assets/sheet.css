@@ -1,0 +1,33 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 12px;
+  background: #f6f7f9;
+  color: #1f2933;
+}
+
+.notice {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 4px solid #3b82f6;
+  background: #eaf2ff;
+}
+
+.sheet-header {
+  margin: 0 0 12px;
+}
+
+.sheet-header h1 {
+  margin: 0 0 4px;
+  font-size: 1.25rem;
+}
+
+.sheet-meta {
+  margin: 0;
+  color: #52606d;
+  font-size: 0.9rem;
+}

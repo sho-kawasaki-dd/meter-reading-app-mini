@@ -14,7 +14,12 @@ from meter_reading_mini.core.contract_models import (
     MeterReadingSubmission,
     resolve_meter_reading_submission,
 )
-from meter_reading_mini.core.errors import DomainError, InactiveMasterError, ValidationError
+from meter_reading_mini.core.errors import (
+    DomainError,
+    InactiveMasterError,
+    SupersededPlannedReadingError,
+    ValidationError,
+)
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     PC_DIRECT_DEVICE_ID,
     CalculatedUsageUpdate,
@@ -25,6 +30,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionRecord,
     PlannedReadingLookupRepository,
     PlannedReadingRecord,
+    PlannedReadingTaskState,
     ReadingPersistenceRepository,
     ReadingUpsertRequest,
     ReplacementBoundaryCalculationRecord,
@@ -38,6 +44,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     UpsertOutcome,
 )
 from meter_reading_mini.core.mobile_reading import validate_note
+from meter_reading_mini.core.previous_reading import resolve_calculation_context
 from meter_reading_mini.core.reading_signature import calculate_meter_reading_signature
 from meter_reading_mini.core.timeutil import parse_utc, utc_now, utc_now_str
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
@@ -86,10 +93,11 @@ class ReadingWriteOrchestrationService:
         planned_reading = self._get_planned_reading(request.planned_reading_id)
         if planned_reading.measurement_definition_id != request.measurement_definition_id:
             raise ReadingWriteOrchestrationError("予定枠と検針結果の測定定義が一致しません。")
+        if planned_reading.task_state is PlannedReadingTaskState.SUPERSEDED:
+            raise SupersededPlannedReadingError(planned_reading.planned_reading_id)
 
         scheduled_at = planned_reading.scheduled_at or request.recorded_at
         previous, boundary = self._get_calculation_context(
-            request.measurement_definition_id,
             planned_reading,
             excluding_planned_reading_id=request.planned_reading_id,
         )
@@ -221,7 +229,6 @@ class ReadingWriteOrchestrationService:
             for measured_reading in measured_readings:
                 planned = self._get_planned_reading(measured_reading.planned_reading_id)
                 previous, replacement_boundary = self._get_calculation_context(
-                    boundary.measurement_definition_id,
                     planned,
                     excluding_planned_reading_id=measured_reading.planned_reading_id,
                 )
@@ -241,7 +248,6 @@ class ReadingWriteOrchestrationService:
 
     def _get_calculation_context(
         self,
-        measurement_definition_id: str,
         planned_reading: PlannedReadingRecord,
         *,
         excluding_planned_reading_id: str,
@@ -251,23 +257,13 @@ class ReadingWriteOrchestrationService:
             raise ReadingWriteOrchestrationError(
                 f"予定枠の予定日時がありません: {planned_reading.planned_reading_id}"
             )
-        boundary = self._boundary_repository.get_replacement_boundary_for_new_meter_first_reading(
-            measurement_definition_id,
-            planned_reading.meter_id,
-            before_scheduled_at=scheduled_at,
-            before_planned_reading_id=planned_reading.planned_reading_id,
+        context = resolve_calculation_context(
+            self._historical_reading_repository,
+            self._boundary_repository,
+            planned_reading,
             excluding_planned_reading_id=excluding_planned_reading_id,
         )
-        previous = self._historical_reading_repository.get_latest_measured_reading(
-            measurement_definition_id,
-            planned_reading.meter_id,
-            before_scheduled_at=scheduled_at,
-            before_planned_reading_id=planned_reading.planned_reading_id,
-            excluding_planned_reading_id=excluding_planned_reading_id,
-        )
-        if boundary is not None:
-            previous = None
-        return previous, boundary
+        return context.previous, context.boundary
 
     def _recalculate_following_measured_readings(
         self,
@@ -285,7 +281,6 @@ class ReadingWriteOrchestrationService:
         for measured_reading in following:
             current_planned = self._get_planned_reading(measured_reading.planned_reading_id)
             previous, boundary = self._get_calculation_context(
-                measurement_definition.measurement_definition_id,
                 current_planned,
                 excluding_planned_reading_id=measured_reading.planned_reading_id,
             )
