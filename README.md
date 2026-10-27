@@ -235,9 +235,9 @@ uv run python -m meter_reading_mini
 │       │   └── オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md
 │       ├── implemented/
 │       │   ├── フェーズ0_共通基盤・CI整備計画.md
-│       │   └── フェーズ1_sqlite3統合・コア業務ロジック移植計画.md
-│       ├── ローカル検針管理アプリ開発計画書.md
-│       └── ルート配置移行計画.md
+│       │   ├── フェーズ1_sqlite3統合・コア業務ロジック移植計画.md
+│       │   └── ルート配置移行計画.md
+│       └── ローカル検針管理アプリ開発計画書.md
 ├── pyproject.toml
 ├── uv.lock
 ├── src/
