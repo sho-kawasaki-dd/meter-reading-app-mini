@@ -11,6 +11,7 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 現在はリポジトリ直下をプロジェクト基点として開発中です。
 Phase 0 は完了しています。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
 Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロジックを統合し、全品質ゲートが Windows / Ubuntu の必須 CI で成功しました。完了記録と作業計画書の凍結移動も済んでいます。メイン画面・起動用 `__main__.py`・スマホ検針の完成機能は後続フェーズの対象です。
+Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -59,9 +60,8 @@ uv sync --locked
 ## 検査・テスト
 
 以下はリポジトリのルートで実行する共通の品質ゲートです。
-検査対象は `pyproject.toml` に定義しています。Phase 1 の統合により、Ruff・Pyright・pytest の対象外設定はありません。
-coverage はパッケージ全体を対象とし、Phase 2 で機能とテストを整備する
-`core/mobile_reading.py` だけを一時的に集計から除外しています。GitHub Actions では Windows / Ubuntu の両ジョブで品質ゲートを実行します。
+検査対象は `pyproject.toml` に定義しています。Ruff・Pyright・pytest に対象外設定はありません。
+coverage は `core/mobile_reading.py` を含むパッケージ全体を対象とし、全体・`core/`・`db/` の行 coverage それぞれ 90% 以上を必須にします。GitHub Actions では Windows / Ubuntu の両ジョブで各閾値を個別に検査します。
 
 ```powershell
 uv run playwright install chromium
@@ -70,6 +70,8 @@ uv run ruff format --check
 uv run pyright
 uv run pytest --cov
 uv run coverage report --fail-under=90
+uv run coverage report --include="*/meter_reading_mini/core/*" --fail-under=90
+uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
 ```
 
 - 型検査は `core/`・`db/` を strict、`ui/` を standard とします。
@@ -83,6 +85,8 @@ uv run coverage report --fail-under=90
 ```sh
 QT_QPA_PLATFORM=offscreen uv run pytest --cov
 uv run coverage report --fail-under=90
+uv run coverage report --include="*/meter_reading_mini/core/*" --fail-under=90
+uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
 ```
 
 通常の GUI 起動では `QT_QPA_PLATFORM=offscreen` を設定しません。
@@ -264,7 +268,11 @@ uv run python -m meter_reading_mini
 | `core/meter_master_service.py` | 物理メーターの業務操作・入力検証 |
 | `core/meter_reading_sync_repositories.py` | Repository Protocol と入出力レコード |
 | `core/meter_reading_sync.py` | 検針結果・交換イベントの保存処理 |
-| `core/mobile_reading.py` | MR1 結果テキストのエンベロープ処理と JSON 文字列対応 |
+| `core/decimal_arithmetic.py` | Decimal の丸めなし加減算・乗算 |
+| `core/mobile_reading.py` | MR1 結果テキスト / JSON の検証と同期要求への変換 |
+| `core/mobile_reading_sheet.py` | 検針シートの枠・前回値・単一 HTML 生成 |
+| `core/mobile_reading_assets/` | HTML に内包する検針画面の CSS / JavaScript |
+| `core/previous_reading.py` | 予定枠ごとの前回値と交換境界の判定 |
 | `core/reading_signature.py` | 監査用 SHA-256 署名の生成・検証 |
 | `core/reading_write_orchestration.py` | 保存前の履歴照合、交換境界適用、後続値の再計算 |
 | `core/schedule_settings.py` | 周期・検針枠等のスケジュール設定 |
@@ -272,7 +280,7 @@ uv run python -m meter_reading_mini
 | `core/startup_preparation.py` | 起動時の既定値投入、予定枠補完、自動クローズ |
 | `core/timeutil.py` | 現在時刻の取得、UTC とローカル時刻の変換 |
 | `core/timezone_settings.py` | タイムゾーン・業務日付・予定日時の計算 |
-| `core/usage_delta_calculation.py` | Decimal による使用量差分・ロールオーバー計算 |
+| `core/usage_delta_calculation.py` | Decimal による丸めなし使用量差分・ロールオーバー計算 |
 | `core/work_package_download.py` | 予定枠の補完生成と検針用データの構築 |
 | `db/connection.py` | sqlite3 接続、PRAGMA 設定、トランザクション管理 |
 | `db/schema.sql` | SQLite のテーブル・制約定義 |
@@ -295,13 +303,13 @@ uv run python -m meter_reading_mini
 | --- | --- | --- |
 | Phase 0 | 完了 | リポジトリ骨格・共通基盤・品質ゲートの整備 |
 | Phase 1 | 完了 | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
-| Phase 2 | 予定 | 単一 HTML 検針シート・結果パーサ・ブラウザ往復テスト |
+| Phase 2 | 完了 (2026-10-28) | 単一 HTML 検針シート・途中保存・MR1 / JSON パーサと DB 同期のブラウザ往復テスト |
 | Phase 3 | 予定 | メイン画面・マスタ・PC 直接入力・交換 UI |
 | Phase 4 | 予定 | スマホ検針ダイアログ・プレビュー・一括確定 |
 | Phase 5 | 予定 | 集計・出力・バックアップ / 復元・インストーラー |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。
-Phase 2 では `core/mobile_reading.py` の coverage 除外を解除し、単一 HTML 検針の実装範囲も含めて検査します。
+Phase 2 は Playwright によるブラウザ検証まで完了しています。Android 実機での検証は未実施で、端末・Chrome の版・起動経路・HTML 移動時の復元可否を Phase 4 以降に確認します。
 
 ## commit / PR / merge 方針
 
