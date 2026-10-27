@@ -37,20 +37,12 @@ migration_package/
 │     │  ├─ meter_master_service.py         # 物理メーター CRUD バリデーション (Repository 経由へ書き換え対象)
 │     │  └─ logging_config.py               # ローテーション付きログ設定
 │     ├─ db/                                # 標準 sqlite3 データベース層
-│     │  ├─ connection.py                   # 【同梱済】autocommit=True・WAL・読み取り専用接続・transaction()
-│     │  ├─ schema.sql                      # 【同梱済】標準 sqlite3 用の最新 DDL (将来統合対応)
-│     │  ├─ migrations.py                   # 【同梱済】SCHEMA_VERSION=1・DDL/PRAGMA 厳密照合エンジン・open_database()
-│     │  ├─ backup.py                       # 【同梱済】SQLite 整合性検査・Connection.backup() コピー
-│     │  └─ reference_sqlalchemy/           # 【SQL移植リファレンス】旧 SQLAlchemy 実装 (Phase 1 完了後に削除)
-│     │     ├─ database.py                  # 旧 ORM 定義・build_scheduled_at 等
-│     │     ├─ bootstrap.py                 # 施設内の初期マスタ seed (電気7・ガス3・水道2箇所) と初期設定
-│     │     ├─ planned_reading_repository.py
-│     │     ├─ reading_repository.py
-│     │     ├─ replacement_repository.py
-│     │     ├─ measurement_definition_repository.py
-│     │     ├─ meter_repository.py
-│     │     ├─ settings_repository.py
-│     │     └─ meter_reading_sync_repository_adapter.py
+│     │  ├─ connection.py                  # 【同梱済】autocommit=True・WAL・読み取り専用接続・transaction()
+│     │  ├─ schema.sql                     # 【同梱済】標準 sqlite3 用の最新 DDL (将来統合対応)
+│     │  ├─ migrations.py                  # 【同梱済】SCHEMA_VERSION=1・DDL/PRAGMA 厳密照合エンジン・open_database()
+│     │  ├─ backup.py                      # 【同梱済】SQLite 整合性検査・Connection.backup() コピー
+│     │  ├─ repositories.py                # 【実装済】標準 sqlite3 Repository
+│     │  └─ bootstrap_seeds.py             # 【実装済】既定設定の初期投入
 │     └─ ui/                                # PySide6 UI 層 (Phase 0 共通部品同梱済 / Phase 3〜5 で画面実装)
 │        ├─ single_instance.py              # 【同梱済】QLockFile による多重起動防止
 │        ├─ display_settings.py             # 【同梱済】フォント・文字サイズ設定 (ui_settings.json)
@@ -95,15 +87,12 @@ migration_package/
 2. 備品在庫管理アプリ（`inventory-manager-mini`）由来の Phase 0 共通基盤モジュール（`config.py`, `core/errors.py`, `core/timeutil.py`, `core/mobile_reading.py`, `db/connection.py`, `db/backup.py`, `db/migrations.py`, `ui/single_instance.py`, `ui/display_settings.py`, `ui/dialog_placement.py`, `ui/error_handling.py`, `ui/csv_export.py`）およびその単体テストは**同梱済み**です。起動オーケストレーションと CI workflow も実装されています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS の必須チェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェック時の merge ブロックも確認済みです。完了記録と作業計画書の凍結移動も済み、Phase 0 は完了しています。
 3. コピー先のプロジェクトルートで `uv sync --locked` を実行して環境を構築します。依存関係を追加・変更するときは `uv lock` で `uv.lock` を更新し、差分を確認してから `uv sync --locked` で同期を検証してください。
 
-### Step 2: `core/` 内の import パス整理と `build_scheduled_at` の移動
+### Step 2: `core/` の import 整理と日時ヘルパー移動 (実装済み)
 
-1. `db/reference_sqlalchemy/database.py` にある純粋な日時補助関数 `normalize_to_utc()` と `build_scheduled_at()` を `core/timezone_settings.py`（または `core/timeutil.py`）へ移動します。
-2. `core/` および `tests/` 内の旧 import パスを一括置換します:
-   - `from api.models import` → `from meter_reading_mini.core.contract_models import`
-   - `from application.` → `from meter_reading_mini.core.`
-3. `core/meter_reading_sync.py` の `session.commit()` / `session.rollback()` 呼び出しを、`db/connection.py` の `with transaction(conn):`（または Protocol 化されたトランザクション境界）に置き換えます。
+1. 純粋な日時補助関数 `normalize_to_utc()` と `build_scheduled_at()` は `core/timezone_settings.py` に配置し、DB 実装への依存をなくしています。
+2. `core/` と `tests/` の旧 import を移植先の契約・Service へ移行済みです。契約境界テストで契約から Service・UI・DB 実装への依存がないことを検証します。
+3. 結果保存は標準 `sqlite3` の Repository Protocol と Service 所有のトランザクションに統合済みです。
 
-### Step 3: 標準 `sqlite3` リポジトリ (`db/repositories.py`) の実装
+### Step 3: 標準 `sqlite3` リポジトリ (`db/repositories.py`) の実装 (完了)
 
-`db/reference_sqlalchemy/` 配下の各ファイルに書かれているクエリロジックを参照しながら、`db/schema.sql` に対して標準 `sqlite3` で `core/meter_reading_sync_repositories.py` の Protocol を実装します。
-実装が完了したら `db/reference_sqlalchemy/` フォルダは削除して構いません。
+`db/repositories.py` が `db/schema.sql` に対する Repository Protocol を標準 `sqlite3` で実装しています。単体テストと Service 統合テストが成功した後、旧 SQLAlchemy 参考実装は削除済みです。新たな SQLAlchemy 依存はありません。

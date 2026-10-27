@@ -32,10 +32,6 @@ packages = ["src/meter_reading_mini"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-# Phase 1 で解除: 旧プロジェクト由来の参考実装。
-extend-exclude = [
-    "src/meter_reading_mini/db/reference_sqlalchemy/**",
-]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "UP", "B", "SIM"]
@@ -50,9 +46,6 @@ typeCheckingMode = "standard"
 strict = [
     "src/meter_reading_mini/core",
     "src/meter_reading_mini/db",
-]
-ignore = [
-    "src/meter_reading_mini/db/reference_sqlalchemy/**",
 ]
 
 [tool.pytest.ini_options]
@@ -71,33 +64,8 @@ source = ["meter_reading_mini"]
 branch = false
 
 [tool.coverage.report]
-# Phase 1 で解除: 未移植コードと旧プロジェクト由来のテスト。
-include = [
-    "*/meter_reading_mini/config.py",
-    "*/meter_reading_mini/app.py",
-    "*/meter_reading_mini/core/errors.py",
-    "*/meter_reading_mini/core/logging_config.py",
-    "*/meter_reading_mini/core/contract_models.py",
-    "*/meter_reading_mini/core/meter_reading_sync_repositories.py",
-    "*/meter_reading_mini/core/meter_master_service.py",
-    "*/meter_reading_mini/core/meter_reading_sync.py",
-    "*/meter_reading_mini/core/reading_write_orchestration.py",
-    "*/meter_reading_mini/core/measurement_definition_service.py",
-    "*/meter_reading_mini/core/staff_service.py",
-    "*/meter_reading_mini/core/reading_signature.py",
-    "*/meter_reading_mini/core/schedule_settings.py",
-    "*/meter_reading_mini/core/startup_preparation.py",
-    "*/meter_reading_mini/core/timeutil.py",
-    "*/meter_reading_mini/core/timezone_settings.py",
-    "*/meter_reading_mini/core/usage_delta_calculation.py",
-    "*/meter_reading_mini/db/backup.py",
-    "*/meter_reading_mini/db/bootstrap_seeds.py",
-    "*/meter_reading_mini/db/connection.py",
-    "*/meter_reading_mini/db/migrations.py",
-    "*/meter_reading_mini/db/repositories.py",
-    "*/meter_reading_mini/ui/*.py",
-]
 omit = [
+    # Phase 2 で対象にする。
     "*/meter_reading_mini/core/mobile_reading.py",
     "*/tests/*",
 ]

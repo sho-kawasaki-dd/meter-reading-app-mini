@@ -1,6 +1,6 @@
-"""`POST /api/readings` 用の repository interface と保存要求モデルを定義する。
+"""検針結果の repository interface と保存要求モデルを定義する。
 
-service 層は SQLAlchemy を直接知らず、lookup と upsert に必要な最小責務だけへ依存する。
+Service が利用する Protocol と入出力レコードを提供し、lookup と upsert の責務を分離する。
 このモジュールの dataclass は「永続化へ渡す確定済み要求」を表し、transport contract を
 そのまま DB へ流し込まないための境界になっている。
 """
