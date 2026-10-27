@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
-
+from api.models import ResultStatus
 from application.reading_signature import (
     InvalidMeterReadingSignatureError,
     MissingDeviceIdForSignatureError,
@@ -14,8 +14,6 @@ from application.reading_signature import (
     canonicalize_signature_recorded_at,
     verify_meter_reading_signature,
 )
-from api.models import ResultStatus
-
 
 TEST_DEVICE_ID = "550e8400-e29b-41d4-a716-446655440000"
 

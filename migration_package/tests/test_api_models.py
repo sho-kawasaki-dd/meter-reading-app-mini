@@ -29,12 +29,11 @@ from api.models import (  # noqa: E402
     MeterReadingSubmission,
     MeterReadingSyncRequest,
     MeterReadingSyncResponse,
-    MeterReplacementSubmission,
     PowerFactorPhase,
     PowerFactorReading,
-    RejectedReadingSyncItem,
     ReadingCycle,
     ReadingSession,
+    RejectedReadingSyncItem,
     ResolvedMeterReadingSubmission,
     ResultStatus,
     SyncItemIgnoreCode,
@@ -46,7 +45,6 @@ from api.models import (  # noqa: E402
     resolve_meter_reading_submission,
 )
 from application.reading_signature import calculate_meter_reading_signature  # noqa: E402
-
 
 TEST_DEVICE_ID = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -98,9 +96,7 @@ def build_measurement_definition() -> dict[str, object]:
 
 
 def test_meter_master_data_accepts_physical_meter_fields() -> None:
-    model = MeterMasterData.model_validate(
-        build_meter_master()
-    )
+    model = MeterMasterData.model_validate(build_meter_master())
 
     assert model.category is Category.BOILER
     assert model.meter_name == "Main Incoming Meter"
@@ -260,7 +256,9 @@ def test_power_factor_reading_requires_unity_for_100_percent() -> None:
         )
 
 
-def test_meter_reading_submission_accepts_generic_structured_payload_in_transport_contract() -> None:
+def test_meter_reading_submission_accepts_generic_structured_payload_in_transport_contract() -> (
+    None
+):
     submission = MeterReadingSubmission.model_validate(
         {
             "planned_reading_id": "plan-001",
@@ -709,8 +707,7 @@ def test_api_request_error_response_accepts_fixed_shape() -> None:
 
     relationship_notes = snapshot["relationship_notes"]
     assert any(
-        note.get("model") == "MeterReadingSubmission"
-        and note.get("kind") == "transport_contract"
+        note.get("model") == "MeterReadingSubmission" and note.get("kind") == "transport_contract"
         for note in relationship_notes
     )
     assert any(
