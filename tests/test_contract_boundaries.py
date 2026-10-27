@@ -13,6 +13,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     UpsertDisposition,
     UpsertOutcome,
 )
+from meter_reading_mini.core.mobile_reading import ASSET_FILENAMES, read_sheet_asset
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "meter_reading_mini"
 CORE_ROOT = PACKAGE_ROOT / "core"
@@ -25,6 +26,7 @@ CONTRACT_MODULES = {
 }
 DATABASE_CORE_IMPORTS = CONTRACT_MODULES | {"meter_reading_mini.core.timeutil"}
 LOCALTIME_LITERAL = re.compile(r"""(?i)(['"])localtime\1""")
+EXTERNAL_URL = re.compile(r"(?i)https?://")
 
 
 def _python_files(root: Path) -> list[Path]:
@@ -150,6 +152,28 @@ def test_direct_wall_clock_access_is_limited_to_timeutil() -> None:
 def test_sql_does_not_use_localtime_modifier() -> None:
     for path in (*_python_files(CORE_ROOT), *_python_files(DB_ROOT), *_sql_files(DB_ROOT)):
         assert LOCALTIME_LITERAL.search(path.read_text(encoding="utf-8")) is None, path
+
+
+def test_mobile_reading_assets_load_and_have_no_external_dependencies() -> None:
+    asset_root = CORE_ROOT / "mobile_reading_assets"
+    assert sorted(path.name for path in asset_root.iterdir()) == sorted(ASSET_FILENAMES)
+
+    for name in ASSET_FILENAMES:
+        text = read_sheet_asset(name)
+        assert text == (asset_root / name).read_text(encoding="utf-8")
+        assert EXTERNAL_URL.search(text) is None, name
+        assert "localStorage" not in text, name
+        assert "<script" not in text.lower() or name == "sheet.html"
+        assert "</script" not in text.lower() or name == "sheet.html"
+        assert "</style" not in text.lower() or name == "sheet.html"
+
+    template = read_sheet_asset("sheet.html")
+    for placeholder in ("STYLE", "SCRIPT", "DATA"):
+        assert template.count(f"<!--MRM:{placeholder}-->") == 1
+    assert "Chrome" in template
+    assert "<noscript>" in template
+    assert "<!--MRM:" not in read_sheet_asset("sheet.css")
+    assert "<!--" not in read_sheet_asset("sheet.js")
 
 
 def test_measurement_definition_update_contract_exposes_immutable_fields_for_rejection() -> None:

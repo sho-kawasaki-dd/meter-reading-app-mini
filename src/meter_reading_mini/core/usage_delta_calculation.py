@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from meter_reading_mini.core.contract_models import CalculationMethod, ResultStatus
+from meter_reading_mini.core.decimal_arithmetic import exact_add, exact_multiply, exact_subtract
 from meter_reading_mini.core.errors import NegativeUsageDeltaError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     HistoricalMeasuredReadingRecord,
@@ -73,7 +74,7 @@ class UsageDeltaCalculationService:
             )
             return UsageDeltaCalculationResult(
                 last_reading=last_reading,
-                usage_delta=delta * measurement_definition.multiplier,
+                usage_delta=exact_multiply(delta, measurement_definition.multiplier),
             )
 
         if previous_measured_reading is None:
@@ -88,7 +89,7 @@ class UsageDeltaCalculationService:
 
         return UsageDeltaCalculationResult(
             last_reading=last_reading,
-            usage_delta=delta * measurement_definition.multiplier,
+            usage_delta=exact_multiply(delta, measurement_definition.multiplier),
         )
 
 
@@ -97,7 +98,7 @@ def _calculate_delta(
     last_reading: Decimal,
     rollover_value: Decimal | None,
 ) -> Decimal:
-    delta = raw_reading - last_reading
+    delta = exact_subtract(raw_reading, last_reading)
     if delta >= 0:
         return delta
     if rollover_value is None:
@@ -106,7 +107,7 @@ def _calculate_delta(
             "ロールオーバー値未設定のため使用量を計算できません。"
         )
 
-    corrected_delta = (rollover_value - last_reading) + raw_reading
+    corrected_delta = exact_add(exact_subtract(rollover_value, last_reading), raw_reading)
     if corrected_delta < 0:
         raise NegativeUsageDeltaError(
             f"今回値 {raw_reading} と前回値 {last_reading} から使用量を計算できません。"

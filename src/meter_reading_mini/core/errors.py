@@ -86,6 +86,14 @@ class InactiveMasterError(DomainError):
     pass
 
 
+class SupersededPlannedReadingError(ValidationError):
+    """交換・再構成・定義無効化で置き換えられた予定枠への結果保存を表す。"""
+
+    def __init__(self, planned_reading_id: str) -> None:
+        self.planned_reading_id = planned_reading_id
+        super().__init__(f"置き換え済みの予定枠には検針結果を保存できません: {planned_reading_id}")
+
+
 class MasterInUseError(DomainError):
     pass
 

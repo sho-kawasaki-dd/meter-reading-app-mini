@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar
 import json
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
@@ -28,6 +28,7 @@ from meter_reading_mini.core.errors import (
     MasterInUseError,
     MeterAssignmentResolutionError,
     ScheduleHistoryResolutionError,
+    SupersededPlannedReadingError,
     ValidationError,
 )
 from meter_reading_mini.core.meter_reading_sync_repositories import (
@@ -64,6 +65,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReplacementUpsertRequest,
     ScheduleItem,
     ScheduleSettings,
+    SheetPlannedReadingRecord,
     StaffCreateRequest,
     StaffRecord,
     StaffUpdateRequest,
@@ -106,6 +108,17 @@ def _read_decimal(value: str | None) -> Decimal | None:
     if not parsed.is_finite() or format(parsed, "f") != value:
         raise ValidationError(f"DB の Decimal 値が plain decimal 形式ではありません: {value}")
     return parsed
+
+
+_ID_CHUNK_SIZE = 500
+
+
+def _id_chunks(values: Collection[str]) -> list[tuple[str, ...]]:
+    unique = sorted(set(values))
+    return [
+        tuple(unique[start : start + _ID_CHUNK_SIZE])
+        for start in range(0, len(unique), _ID_CHUNK_SIZE)
+    ]
 
 
 def _json_text(value: dict[str, Any] | None) -> str | None:
@@ -1221,6 +1234,104 @@ class SQLiteRepository:
     def list_open_planned_reading_tasks(self, business_date: date) -> list[PlannedReadingTask]:
         return self.list_open_planned_reading_tasks_for_business_date(business_date)
 
+    def list_planned_reading_tasks_for_sheet(
+        self,
+        business_date: date,
+        task_states: Collection[PlannedReadingTaskState],
+    ) -> list[SheetPlannedReadingRecord]:
+        states = sorted({state.value for state in task_states})
+        if not states:
+            return []
+        placeholders = ", ".join("?" for _ in states)
+        rows = self._conn.execute(
+            "SELECT p.planned_reading_id, p.measurement_definition_id, p.meter_id, p.location_id, "
+            "p.business_date, p.reading_session, p.scheduled_at, d.reading_cycle, p.task_state "
+            "FROM planned_readings AS p JOIN measurement_definitions AS d "
+            "ON d.measurement_definition_id = p.measurement_definition_id "
+            f"WHERE p.business_date = ? AND p.task_state IN ({placeholders}) "
+            "ORDER BY p.release_date, p.business_date, p.reading_session, p.location_id, "
+            "p.measurement_definition_id, p.planned_reading_id",
+            (_date_text(business_date), *states),
+        ).fetchall()
+        return [
+            SheetPlannedReadingRecord(
+                planned_reading_id=str(row[0]),
+                measurement_definition_id=str(row[1]),
+                meter_id=str(row[2]),
+                location_id=str(row[3]),
+                business_date=_read_date(str(row[4])),
+                reading_session=ReadingSession(str(row[5])),
+                scheduled_at=parse_utc(str(row[6])),
+                reading_cycle=ReadingCycle(str(row[7])),
+                task_state=PlannedReadingTaskState(str(row[8])),
+            )
+            for row in rows
+        ]
+
+    def list_sheet_meters(self, meter_ids: Collection[str]) -> list[MeterMasterData]:
+        result: list[MeterMasterData] = []
+        for chunk in _id_chunks(meter_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT meter_id, location_id, location_name, meter_name, category, meter_serial "
+                f"FROM physical_meters WHERE meter_id IN ({placeholders}) "
+                "ORDER BY location_id, meter_id",
+                chunk,
+            ).fetchall()
+            result.extend(
+                MeterMasterData(
+                    meter_id=str(row[0]),
+                    location_id=str(row[1]),
+                    location_name=str(row[2]),
+                    meter_name=str(row[3]),
+                    category=Category(str(row[4])),
+                    meter_serial=str(row[5]) if row[5] is not None else None,
+                )
+                for row in rows
+            )
+        return sorted(result, key=lambda meter: (meter.location_id, meter.meter_id))
+
+    def list_sheet_measurement_definitions(
+        self, measurement_definition_ids: Collection[str]
+    ) -> list[MeasurementDefinitionData]:
+        result: list[MeasurementDefinitionData] = []
+        for chunk in _id_chunks(measurement_definition_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT measurement_definition_id, location_id, display_name, category, unit, "
+                "value_schema, multiplier, decimal_places, warning_threshold, rollover_value, "
+                "calculation_method, reading_cycle, purpose FROM measurement_definitions "
+                f"WHERE measurement_definition_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                multiplier = _read_decimal(str(row[6]))
+                if multiplier is None:
+                    raise ValidationError("測定定義の倍率が NULL です。")
+                result.append(
+                    MeasurementDefinitionData(
+                        measurement_definition_id=str(row[0]),
+                        location_id=str(row[1]),
+                        display_name=str(row[2]),
+                        category=Category(str(row[3])),
+                        unit=str(row[4]),
+                        value_schema=ValueSchema(str(row[5])),
+                        multiplier=multiplier,
+                        decimal_places=int(row[7]) if row[7] is not None else None,
+                        warning_threshold=_read_decimal(
+                            str(row[8]) if row[8] is not None else None
+                        ),
+                        rollover_value=_read_decimal(str(row[9]) if row[9] is not None else None),
+                        calculation_method=CalculationMethod(str(row[10])),
+                        reading_cycle=ReadingCycle(str(row[11])),
+                        purpose=Purpose(str(row[12])),
+                    )
+                )
+        return sorted(
+            result,
+            key=lambda definition: (definition.location_id, definition.measurement_definition_id),
+        )
+
     def auto_close_open_planned_readings(
         self,
         through_business_date: date,
@@ -1441,6 +1552,12 @@ class SQLiteRepository:
         )
 
     def upsert_reading(self, request: ReadingUpsertRequest) -> UpsertOutcome:
+        task_state = self._conn.execute(
+            "SELECT task_state FROM planned_readings WHERE planned_reading_id = ?",
+            (request.planned_reading_id,),
+        ).fetchone()
+        if task_state is not None and str(task_state[0]) == PlannedReadingTaskState.SUPERSEDED:
+            raise SupersededPlannedReadingError(request.planned_reading_id)
         recorded_at = utc_now_str(request.recorded_at)
         client_updated_at = utc_now_str(request.client_updated_at)
         raw_reading = _decimal_text(request.raw_reading)
