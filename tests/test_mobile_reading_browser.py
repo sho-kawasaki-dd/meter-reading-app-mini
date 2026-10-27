@@ -785,4 +785,11 @@ def test_all_operations_are_reachable_at_each_viewport(
         assert box is not None
         assert box["x"] >= 0
         assert box["x"] + box["width"] <= viewport[0]
+    page.locator("#result-copy").scroll_into_view_if_needed()
+    expect(page.locator("#result-copy")).to_be_enabled()
+    expect(page.locator("#result-download")).to_be_enabled()
+    output_box = page.locator("#result-copy").bounding_box()
+    assert output_box is not None
+    assert output_box["x"] >= 0
+    assert output_box["x"] + output_box["width"] <= viewport[0]
     assert_fits()
