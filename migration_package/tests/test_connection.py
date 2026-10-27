@@ -11,6 +11,7 @@ from meter_reading_mini.db.connection import (
     connect_memory,
     connect_readonly,
     read_transaction,
+    savepoint,
     transaction,
 )
 
@@ -118,6 +119,50 @@ def test_transaction_rolls_back_when_commit_fails() -> None:
             conn.execute("INSERT INTO sample VALUES (1)")
         assert not conn.in_transaction
         assert conn.execute("SELECT value FROM sample").fetchall() == []
+    finally:
+        conn.close()
+
+
+def test_savepoint_requires_transaction_and_valid_name() -> None:
+    conn = connect_memory()
+    try:
+        with pytest.raises(RuntimeError, match="トランザクション"), savepoint(conn, "nested_work"):
+            pass
+
+        with transaction(conn):
+            with (
+                pytest.raises(ValueError, match="SAVEPOINT"),
+                savepoint(conn, "nested; DROP TABLE sample"),
+            ):
+                pass
+            with pytest.raises(ValueError, match="SAVEPOINT"), savepoint(conn, "1invalid"):
+                pass
+    finally:
+        conn.close()
+
+
+def test_savepoint_releases_on_success_and_rolls_back_only_its_changes() -> None:
+    conn = connect_memory()
+    conn.execute("CREATE TABLE sample (value INTEGER)")
+    try:
+        with transaction(conn):
+            conn.execute("INSERT INTO sample VALUES (1)")
+            with savepoint(conn, "successful_work"):
+                conn.execute("INSERT INTO sample VALUES (2)")
+            with (
+                pytest.raises(ValueError, match="rollback savepoint"),
+                savepoint(conn, "failed_work"),
+            ):
+                conn.execute("INSERT INTO sample VALUES (3)")
+                raise ValueError("rollback savepoint")
+            conn.execute("INSERT INTO sample VALUES (4)")
+
+        assert conn.execute("SELECT value FROM sample ORDER BY value").fetchall() == [
+            (1,),
+            (2,),
+            (4,),
+        ]
+        assert not conn.in_transaction
     finally:
         conn.close()
 

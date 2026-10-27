@@ -112,8 +112,10 @@ include = [
     "*/meter_reading_mini/core/timezone_settings.py",
     "*/meter_reading_mini/core/usage_delta_calculation.py",
     "*/meter_reading_mini/db/backup.py",
+    "*/meter_reading_mini/db/bootstrap_seeds.py",
     "*/meter_reading_mini/db/connection.py",
     "*/meter_reading_mini/db/migrations.py",
+    "*/meter_reading_mini/db/repositories.py",
     "*/meter_reading_mini/ui/*.py",
 ]
 omit = [
