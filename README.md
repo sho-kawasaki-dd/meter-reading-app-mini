@@ -9,9 +9,8 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 ## 開発状況と仕様の正本
 
 現在は `migration_package/` を基点に開発中です。
-Phase 0 の共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow は実装済みです。GitHub の `main` 保護と必須チェックも設定し、[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) の両 OS 成功・merge、および[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) の未成功チェックによる merge ブロックを確認しました。
-一方、旧 import や SQLAlchemy 実装の移植、メイン画面・起動用 `__main__.py`・標準 sqlite3 Repository は未整備です。
-完了記録 PR の作成・必須チェック成功後の merge と作業計画書の凍結移動は未完了のため、Phase 0 全体はまだ完了していません。
+Phase 0 は完了しました。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
+旧 import や SQLAlchemy 実装の移植、メイン画面・起動用 `__main__.py`・標準 sqlite3 Repository は今後のフェーズで整備します。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -41,7 +40,7 @@ mDNS 探索、ネイティブ Android アプリ、コードペアリング、端
 - 物理メーター・測定定義・スケジュール・担当者の管理
 - 日次・週次・月次・隔月の予定枠生成、未生成分の補完 (backfill)、締め時刻による自動クローズ
 - 単一 HTML 検針シートの出力、結果テキスト / JSON の取込、差分プレビューと一括確定
-- PC 直接入力・訂正、臨時検針枠の作成
+- PC 直接入力・訂正
 - ロールオーバー補正、メーター交換境界の計算、過去の訂正に伴う後続実測値の連鎖再計算
 - 使用量集計、QtCharts によるグラフ、CSV / PNG 出力
 - 手動バックアップ・検査付き復元、多重起動防止、フォント・文字サイズ設定
@@ -68,7 +67,7 @@ uv sync --locked
 以下はプロジェクトディレクトリ (現在は `migration_package`) で実行する共通の品質ゲートです。
 検査対象は [開発計画書の Phase 0 品質ゲート検査対象](docs/plan/ローカル検針管理アプリ開発計画書.md) と
 `pyproject.toml` に定義しています。Phase 1 で統合する移植前の資産は対象外として明示しており、
-このコマンド一覧は CI の実行手順を示すもので、GitHub 上の CI 成功を示すものではありません。
+次のコマンドでローカル実行できます。GitHub Actions では Windows / Ubuntu の両ジョブで品質ゲートを実行します。
 
 Phase 1 で解除する検査対象外は次のとおりです。
 
@@ -250,8 +249,10 @@ uv run python -m meter_reading_mini
 │   └── copilot-instructions.md
 ├── docs/
 │   └── plan/
+│       ├── implemented/
+│       │   └── フェーズ0_共通基盤・CI整備計画.md
+│       ├── フェーズ1_sqlite3統合・コア業務ロジック移植計画.md
 │       ├── ローカル検針管理アプリ開発計画書.md
-│       └── フェーズ0_共通基盤・CI整備計画.md
 └── migration_package/
     ├── README.md
     ├── uv.lock
@@ -272,14 +273,14 @@ Repository の移植・テストが完了した段階で参考資産を削除し
 
 ## 開発フェーズ
 
-| フェーズ | 主な対象 |
-| --- | --- |
-| Phase 0 | リポジトリ骨格・共通基盤・品質ゲートの整備 |
-| Phase 1 | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
-| Phase 2 | 単一 HTML 検針シート・結果パーサ・ブラウザ往復テスト |
-| Phase 3 | メイン画面・マスタ・PC 直接入力・臨時検針・交換 UI |
-| Phase 4 | スマホ検針ダイアログ・プレビュー・一括確定 |
-| Phase 5 | 集計・出力・バックアップ / 復元・インストーラー |
+| フェーズ | 状況 | 主な対象 |
+| --- | --- | --- |
+| Phase 0 | 完了 | リポジトリ骨格・共通基盤・品質ゲートの整備 |
+| Phase 1 | 次フェーズ | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
+| Phase 2 | 予定 | 単一 HTML 検針シート・結果パーサ・ブラウザ往復テスト |
+| Phase 3 | 予定 | メイン画面・マスタ・PC 直接入力・交換 UI |
+| Phase 4 | 予定 | スマホ検針ダイアログ・プレビュー・一括確定 |
+| Phase 5 | 予定 | 集計・出力・バックアップ / 復元・インストーラー |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。
 
@@ -289,9 +290,8 @@ Repository の移植・テストが完了した段階で参考資産を削除し
 
 - `main` は常にテスト成功状態を保ち、`feature/<フェーズ>-<内容>` ブランチで作業します。
 - `main` へ直接 push せず、feature ブランチを push して PR を作成し、CI 成功後にマージします。
-- 必須チェックは `test (windows-latest)`・`test (ubuntu-latest)` とする方針です。
-  **CI workflow は用意済みですが、GitHub 上でのチェック実行・リポジトリルールの設定状況は未確認です。**
-  CI 導入時に両ジョブとブランチ保護を整備し、ジョブ名変更時は必須チェック名も同時に更新します。
+- 必須チェック `test (windows-latest)`・`test (ubuntu-latest)` と `main` のブランチ保護は設定済みです。
+  workflow やジョブ名を変更するときは、必須チェック名も同時に更新します。
 - コミットは Conventional Commits (`feat:`、`fix:`、`test:`、`docs:`、`refactor:` 等) に従い、
   メッセージ本文・UI テキスト・ドキュメント・コード内コメントは日本語を使います。
 - 新機能・仕様変更は実装計画書を作成し、検証済みタスクにチェックを入れます。
