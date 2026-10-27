@@ -43,10 +43,10 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
 | D5 | ピルタブの初期選択 | 未消化の枠が残る最も早い検針枠。全部消化済みなら [すべて] |
 | D6 | 発行済みシートの記録 | DB には記録しない(スキーマ変更なし)。PC 側の検証は `sheet_id` の形式と、各予定枠の存在・状態の照合で行う |
 | D7 | PR の分け方 | 4 PR(2a〜2d)と完了記録 PR |
-| D8 | 時刻(提案) | `format_sheet_timestamps` は業務タイムゾーンを引数で受け取る。シートの出力日時は UTC 文字列で埋め込み、表示はローカル時刻にする |
-| D9 | JavaScript の小数計算(提案) | 数値は文字列で持つ。BigInt を使った固定小数点演算(加減算・乗算・比較)を `sheet.js` に実装し、`Number` / `parseFloat` を業務計算に使わない |
-| D10 | ファイル名(提案) | 全枠: `meter_reading_YYYYMMDD_HHMMSS.html`<br>単一検針枠: `meter_reading_YYYYMMDD_0800_HHMMSS.html`<br>周期だけで絞り込み: `_weekly_` 等<br>複数条件: `_filtered_`<br>日付部は対象業務日、時刻部は出力時のローカル時刻 |
-| D11 | プレビュー計算(提案) | 確定前の差分プレビュー(正本 5.2.3)用の Service は Phase 4 で作る。Phase 2 はパース → 保存要求の構築 → `sync` の往復までとする |
+| D8 | 時刻 | `format_sheet_timestamps` は業務タイムゾーンを引数で受け取る。シートの出力日時は UTC 文字列で埋め込み、表示はローカル時刻にする |
+| D9 | JavaScript の小数計算 | 数値は文字列で持つ。BigInt を使った固定小数点演算(加減算・乗算・比較)を `sheet.js` に実装し、`Number` / `parseFloat` を業務計算に使わない |
+| D10 | ファイル名 | 全枠: `meter_reading_YYYYMMDD_HHMMSS.html`<br>単一検針枠: `meter_reading_YYYYMMDD_0800_HHMMSS.html`<br>周期だけで絞り込み: `_weekly_` 等<br>複数条件: `_filtered_`<br>日付部は対象業務日、時刻部は出力時のローカル時刻 |
+| D11 | プレビュー計算 | 確定前の差分プレビュー(正本 5.2.3)用の Service は Phase 4 で作る。Phase 2 はパース → 保存要求の構築 → `sync` の往復までとする |
 
 D8〜D11 は提案であり、確認後に確定する。
 
