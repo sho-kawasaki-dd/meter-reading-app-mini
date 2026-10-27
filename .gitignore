@@ -17,3 +17,5 @@ dist/
 *.log
 packaging/dependency-sources/*
 !packaging/dependency-sources/manifest.json
+
+mobile_stocktake.py
