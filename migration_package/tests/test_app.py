@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -229,5 +230,5 @@ def test_run_app_migrates_database_and_writes_log_to_app_paths(
     assert paths.db_path.is_file()
     assert paths.log_path == data_dir / "logs" / "app.log"
     assert paths.log_path.is_file()
-    with sqlite3.connect(paths.db_path) as connection:
+    with closing(sqlite3.connect(paths.db_path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
