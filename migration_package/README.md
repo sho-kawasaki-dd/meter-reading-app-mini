@@ -87,12 +87,12 @@ migration_package/
 
 ---
 
-## 2. 新リポジトリへの移行・開発手順 (Phase 0 作業中 〜 Phase 1)
+## 2. 新リポジトリへの移行・開発手順 (Phase 0 完了・Phase 1)
 
 ### Step 1: 新リポジトリへのコピーと環境構築
 
 1. 新しいフォルダ（例: `meter_reading_mini`）を作成し、`migration_package/` 内の全ファイル・フォルダをコピーします。
-2. 備品在庫管理アプリ（`inventory-manager-mini`）由来の Phase 0 共通基盤モジュール（`config.py`, `core/errors.py`, `core/timeutil.py`, `core/mobile_reading.py`, `db/connection.py`, `db/backup.py`, `db/migrations.py`, `ui/single_instance.py`, `ui/display_settings.py`, `ui/dialog_placement.py`, `ui/error_handling.py`, `ui/csv_export.py`）およびその単体テストは**同梱済み**です。起動オーケストレーションと CI workflow も実装されています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS の必須チェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェック時の merge ブロックも確認済みです。完了記録 PR の作成・merge と作業計画書の凍結移動は未完了のため、Phase 0 はまだ完了していません。
+2. 備品在庫管理アプリ（`inventory-manager-mini`）由来の Phase 0 共通基盤モジュール（`config.py`, `core/errors.py`, `core/timeutil.py`, `core/mobile_reading.py`, `db/connection.py`, `db/backup.py`, `db/migrations.py`, `ui/single_instance.py`, `ui/display_settings.py`, `ui/dialog_placement.py`, `ui/error_handling.py`, `ui/csv_export.py`）およびその単体テストは**同梱済み**です。起動オーケストレーションと CI workflow も実装されています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS の必須チェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェック時の merge ブロックも確認済みです。完了記録と作業計画書の凍結移動も済み、Phase 0 は完了しています。
 3. コピー先のプロジェクトルートで `uv sync --locked` を実行して環境を構築します。依存関係を追加・変更するときは `uv lock` で `uv.lock` を更新し、差分を確認してから `uv sync --locked` で同期を検証してください。
 
 ### Step 2: `core/` 内の import パス整理と `build_scheduled_at` の移動
