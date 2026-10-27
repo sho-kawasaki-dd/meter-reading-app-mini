@@ -282,7 +282,7 @@ class PlannedReadingGenerationDefinitionRecord:
 
     measurement_definition_id: str
     location_id: str
-    meter_id: str
+    meter_id: str | None
     reading_cycle: ReadingCycle
     generation_start_date: date
     schedule: ScheduleSettings | None = None
@@ -317,6 +317,7 @@ class PlannedReadingRecompositionRecord:
     meter_id: str
     location_id: str
     business_date: date
+    release_date: date
     reading_session: ReadingSession
     scheduled_at: datetime
     task_state: PlannedReadingTaskState
@@ -443,20 +444,31 @@ class MeasurementDefinitionLookupRepository(Protocol):
 class PlannedReadingGenerationRepository(Protocol):
     """planned reading の backfill 生成に必要な repository。"""
 
-    def get_latest_planned_business_date(self) -> date | None:
-        """Return the latest generated business_date, if any."""
-        ...
-
     def list_planned_reading_generation_definitions(
         self,
     ) -> list[PlannedReadingGenerationDefinitionRecord]:
         """Return measurement definitions eligible for planned reading generation."""
         ...
 
-    def list_measurement_definitions_without_active_assignment(
+    def get_planned_reading_generation_schedule(
+        self, measurement_definition_id: str, reading_cycle: ReadingCycle, business_date: date
+    ) -> ScheduleSettings:
+        """Return the schedule history effective on the requested business date."""
+        ...
+
+    def get_meter_id_for_planned_reading(
+        self, measurement_definition_id: str, scheduled_at: datetime
+    ) -> str:
+        """Resolve the active meter assignment for the scheduled instant."""
+        ...
+
+    def list_planned_reading_logical_slots(
         self,
-    ) -> list[MeasurementDefinitionWithoutActiveAssignmentRecord]:
-        """Return active measurement definitions that have no active meter assignment."""
+        measurement_definition_id: str,
+        from_business_date: date,
+        through_business_date: date,
+    ) -> list[PlannedReadingLogicalSlotRecord]:
+        """Return all stored implementations of logical slots in the date range."""
         ...
 
     def create_planned_reading_if_missing(self, request: PlannedReadingCreateRequest) -> bool:
@@ -473,14 +485,21 @@ class PlannedReadingGenerationRepository(Protocol):
 class MeasurementDefinitionScheduleRepository(Protocol):
     """measurement_definition_schedules の読み書きに必要な repository。"""
 
-    def get_measurement_definition_schedule(self, measurement_definition_id: str) -> str | None:
+    def get_measurement_definition_schedule(
+        self, measurement_definition_id: str, business_date: date | None = None
+    ) -> str | None:
         """Return schedule JSON for the provided measurement definition, if any."""
         ...
 
     def upsert_measurement_definition_schedule(
-        self, measurement_definition_id: str, schedule_json: str
+        self,
+        measurement_definition_id: str,
+        schedule_json: str | None,
+        *,
+        effective_from_date: date,
+        created_at: datetime,
     ) -> None:
-        """Persist schedule JSON for the provided measurement definition."""
+        """Persist schedule history effective from the requested business date."""
         ...
 
     def list_measurement_definition_schedule_history(
@@ -513,6 +532,10 @@ class ReadingCycleScheduleDefaultsRepository(Protocol):
         *,
         created_at: datetime,
     ) -> None: ...
+
+    def list_measurement_definitions_using_cycle_default(
+        self, reading_cycle: ReadingCycle, from_business_date: date
+    ) -> list[str]: ...
 
 
 class ReadingSessionReleaseOffsetsRepository(Protocol):
@@ -699,12 +722,20 @@ class PlannedReadingRecompositionRepository(Protocol):
     def recompose_future_planned_readings(
         self,
         measurement_definition_id: str,
-        reading_cycle: ReadingCycle,
-        schedule: ScheduleSettings,
         *,
-        from_business_date: date | None = None,
+        from_business_date: date,
     ) -> tuple[int, int]:
         """Return `(superseded_count, generated_count)` after recomposition."""
+        ...
+
+
+class ReleaseOffsetRecompositionRepository(Protocol):
+    """配信オフセット変更後に open 予定枠の配信日を再構成する契約。"""
+
+    def recompose_release_dates(
+        self, reading_session: ReadingSession, from_business_date: date
+    ) -> int:
+        """Return the number of open planned readings whose release date changed."""
         ...
 
 

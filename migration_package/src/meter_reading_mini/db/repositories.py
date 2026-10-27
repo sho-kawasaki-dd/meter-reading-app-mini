@@ -26,6 +26,7 @@ from meter_reading_mini.core.errors import (
     InactiveMasterError,
     InvalidTimezoneError,
     MasterInUseError,
+    MeterAssignmentResolutionError,
     ScheduleHistoryResolutionError,
     ValidationError,
 )
@@ -322,54 +323,95 @@ class SQLiteRepository:
             rollover_value=_read_decimal(str(row[5]) if row[5] is not None else None),
         )
 
-    def get_latest_planned_business_date(self) -> date | None:
-        row = self._conn.execute("SELECT MAX(business_date) FROM planned_readings").fetchone()
-        return _read_date(str(row[0])) if row and row[0] is not None else None
-
     def list_planned_reading_generation_definitions(
         self,
     ) -> list[PlannedReadingGenerationDefinitionRecord]:
-        now = utc_now_str(self._now())
         rows = self._conn.execute(
-            "SELECT d.measurement_definition_id, d.location_id, a.meter_id, d.reading_cycle, "
+            "SELECT d.measurement_definition_id, d.location_id, d.reading_cycle, "
             "d.generation_start_date FROM measurement_definitions AS d "
-            "JOIN meter_assignments AS a "
-            "ON a.measurement_definition_id = d.measurement_definition_id "
-            "AND a.effective_from <= ? AND (a.effective_to IS NULL OR a.effective_to > ?) "
-            "JOIN physical_meters AS m ON m.meter_id = a.meter_id AND m.is_active = 1 "
-            "WHERE d.is_active = 1 ORDER BY d.location_id, d.measurement_definition_id",
-            (now, now),
+            "WHERE d.is_active = 1 ORDER BY d.location_id, d.measurement_definition_id"
         ).fetchall()
         definitions: list[PlannedReadingGenerationDefinitionRecord] = []
-        current_date = self._business_date()
         for row in rows:
-            definition_id = str(row[0])
-            cycle = ReadingCycle(str(row[3]))
-            definition_schedule = self.get_measurement_definition_schedule_for_date(
-                definition_id, current_date
-            )
-            raw_schedule = definition_schedule.schedule_json if definition_schedule else None
-            if raw_schedule is None:
-                default = self.get_reading_cycle_schedule_default(cycle, current_date)
-                raw_schedule = default.schedule_json if default else None
-            if raw_schedule is None:
-                raise ScheduleHistoryResolutionError(
-                    definition_id,
-                    str(row[4]),
-                    current_date.isoformat(),
-                    "適用可能なスケジュール履歴がありません",
-                )
             definitions.append(
                 PlannedReadingGenerationDefinitionRecord(
-                    measurement_definition_id=definition_id,
+                    measurement_definition_id=str(row[0]),
                     location_id=str(row[1]),
-                    meter_id=str(row[2]),
-                    reading_cycle=cycle,
-                    generation_start_date=_read_date(str(row[4])),
-                    schedule=_deserialize_schedule(cycle, raw_schedule),
+                    meter_id=None,
+                    reading_cycle=ReadingCycle(str(row[2])),
+                    generation_start_date=_read_date(str(row[3])),
                 )
             )
         return definitions
+
+    def get_planned_reading_generation_schedule(
+        self,
+        measurement_definition_id: str,
+        reading_cycle: ReadingCycle,
+        business_date: date,
+    ) -> ScheduleSettings:
+        definition_schedule = self.get_measurement_definition_schedule_for_date(
+            measurement_definition_id, business_date
+        )
+        raw_schedule = (
+            definition_schedule.schedule_json if definition_schedule is not None else None
+        )
+        if raw_schedule is None:
+            default = self.get_reading_cycle_schedule_default(reading_cycle, business_date)
+            raw_schedule = default.schedule_json if default is not None else None
+        if raw_schedule is None:
+            raise ScheduleHistoryResolutionError(
+                measurement_definition_id,
+                business_date.isoformat(),
+                business_date.isoformat(),
+                "適用可能なスケジュール履歴がありません",
+            )
+        try:
+            return _deserialize_schedule(reading_cycle, raw_schedule)
+        except ValidationError as error:
+            raise ScheduleHistoryResolutionError(
+                measurement_definition_id,
+                (
+                    definition_schedule.effective_from_date.isoformat()
+                    if definition_schedule is not None
+                    else business_date.isoformat()
+                ),
+                business_date.isoformat(),
+                f"スケジュール履歴が不正です: {error}",
+            ) from error
+
+    def get_meter_id_for_planned_reading(
+        self, measurement_definition_id: str, scheduled_at: datetime
+    ) -> str:
+        normalized_at = utc_now_str(scheduled_at)
+        rows = self._conn.execute(
+            "SELECT a.meter_id, m.is_active FROM meter_assignments AS a "
+            "JOIN physical_meters AS m ON m.meter_id = a.meter_id "
+            "WHERE a.measurement_definition_id = ? AND a.effective_from <= ? "
+            "AND (a.effective_to IS NULL OR a.effective_to > ?) "
+            "ORDER BY a.effective_from, a.meter_id",
+            (measurement_definition_id, normalized_at, normalized_at),
+        ).fetchall()
+        scheduled_date = parse_utc(normalized_at).astimezone(self._business_timezone()).date()
+        if not rows:
+            raise MeterAssignmentResolutionError(
+                measurement_definition_id,
+                scheduled_date.isoformat(),
+                scheduled_date.isoformat(),
+                "予定日時に有効な物理メーター割当がありません",
+            )
+        if len(rows) != 1:
+            raise MeterAssignmentResolutionError(
+                measurement_definition_id,
+                scheduled_date.isoformat(),
+                scheduled_date.isoformat(),
+                "予定日時に有効な物理メーター割当が複数あります",
+            )
+        if not bool(rows[0][1]):
+            raise InactiveMasterError(
+                f"無効な物理メーターを予定枠へ割り当てられません: {rows[0][0]}"
+            )
+        return str(rows[0][0])
 
     def list_measurement_definitions_without_active_assignment(
         self,
@@ -418,21 +460,25 @@ class SQLiteRepository:
             inserted += cursor.rowcount
         return inserted
 
-    def get_measurement_definition_schedule(self, measurement_definition_id: str) -> str | None:
+    def get_measurement_definition_schedule(
+        self, measurement_definition_id: str, business_date: date | None = None
+    ) -> str | None:
+        effective_date = business_date or self._business_date()
         row = self._conn.execute(
             "SELECT schedule_json FROM measurement_definition_schedules "
-            "WHERE measurement_definition_id = ? ORDER BY effective_from_date DESC LIMIT 1",
-            (measurement_definition_id,),
+            "WHERE measurement_definition_id = ? AND effective_from_date <= ? "
+            "ORDER BY effective_from_date DESC LIMIT 1",
+            (measurement_definition_id, _date_text(effective_date)),
         ).fetchone()
         return str(row[0]) if row is not None and row[0] is not None else None
 
     def upsert_measurement_definition_schedule(
         self,
         measurement_definition_id: str,
-        schedule_json: str,
+        schedule_json: str | None,
         *,
-        effective_from_date: date | None = None,
-        created_at: datetime | None = None,
+        effective_from_date: date,
+        created_at: datetime,
     ) -> None:
         self._execute(
             "INSERT INTO measurement_definition_schedules "
@@ -442,9 +488,9 @@ class SQLiteRepository:
             "created_at = excluded.created_at",
             (
                 measurement_definition_id,
-                _date_text(effective_from_date or self._business_date()),
+                _date_text(effective_from_date),
                 schedule_json,
-                utc_now_str(created_at or self._now()),
+                utc_now_str(created_at),
             ),
         )
 
@@ -529,6 +575,24 @@ class SQLiteRepository:
                 utc_now_str(created_at),
             ),
         )
+
+    def list_measurement_definitions_using_cycle_default(
+        self, reading_cycle: ReadingCycle, from_business_date: date
+    ) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT d.measurement_definition_id FROM measurement_definitions AS d "
+            "WHERE d.reading_cycle = ? AND d.is_active = 1 AND EXISTS ("
+            "SELECT 1 FROM planned_readings AS p "
+            "WHERE p.measurement_definition_id = d.measurement_definition_id "
+            "AND p.business_date >= ? AND ("
+            "SELECT s.schedule_json FROM measurement_definition_schedules AS s "
+            "WHERE s.measurement_definition_id = d.measurement_definition_id "
+            "AND s.effective_from_date <= p.business_date "
+            "ORDER BY s.effective_from_date DESC LIMIT 1"
+            ") IS NULL) ORDER BY d.measurement_definition_id",
+            (reading_cycle.value, _date_text(from_business_date)),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def get_reading_session_release_offset(
         self, reading_session: ReadingSession, business_date: date
@@ -1100,7 +1164,7 @@ class SQLiteRepository:
     ) -> list[PlannedReadingRecompositionRecord]:
         rows = self._conn.execute(
             "SELECT planned_reading_id, measurement_definition_id, meter_id, location_id, "
-            "business_date, reading_session, scheduled_at, task_state, close_reason, "
+            "business_date, release_date, reading_session, scheduled_at, task_state, close_reason, "
             "superseded_by_planned_reading_id FROM planned_readings "
             "WHERE measurement_definition_id = ? AND business_date >= ? "
             "ORDER BY business_date, reading_session, planned_reading_id",
@@ -1113,11 +1177,12 @@ class SQLiteRepository:
                 meter_id=str(row[2]),
                 location_id=str(row[3]),
                 business_date=_read_date(str(row[4])),
-                reading_session=ReadingSession(str(row[5])),
-                scheduled_at=parse_utc(str(row[6])),
-                task_state=PlannedReadingTaskState(str(row[7])),
-                close_reason=PlannedReadingCloseReason(str(row[8])) if row[8] else None,
-                superseded_by_planned_reading_id=str(row[9]) if row[9] else None,
+                release_date=_read_date(str(row[5])),
+                reading_session=ReadingSession(str(row[6])),
+                scheduled_at=parse_utc(str(row[7])),
+                task_state=PlannedReadingTaskState(str(row[8])),
+                close_reason=PlannedReadingCloseReason(str(row[9])) if row[9] else None,
+                superseded_by_planned_reading_id=str(row[10]) if row[10] else None,
             )
             for row in rows
         ]
@@ -1634,131 +1699,216 @@ class SQLiteRepository:
 
     def _release_date(self, business_date: date, session: ReadingSession) -> date:
         offset = self.get_reading_session_release_offset(session, business_date)
-        return business_date + timedelta(days=offset.offset_days if offset is not None else 0)
+        if offset is None:
+            raise ScheduleHistoryResolutionError(
+                session.value,
+                business_date.isoformat(),
+                business_date.isoformat(),
+                "適用可能な配信オフセット履歴がありません",
+            )
+        return business_date + timedelta(days=offset.offset_days)
+
+    def recompose_release_dates(
+        self, reading_session: ReadingSession, from_business_date: date
+    ) -> int:
+        rows = self._conn.execute(
+            "SELECT planned_reading_id, business_date, scheduled_at, release_date "
+            "FROM planned_readings WHERE reading_session = ? AND task_state = 'open' "
+            "ORDER BY business_date, planned_reading_id",
+            (reading_session.value,),
+        ).fetchall()
+        changed_count = 0
+        for row in rows:
+            scheduled_at = parse_utc(str(row[2]))
+            effective_business_date = scheduled_at.astimezone(self._business_timezone()).date()
+            if effective_business_date < from_business_date:
+                continue
+            release_date = self._release_date(effective_business_date, reading_session)
+            release_date_text = _date_text(release_date)
+            if str(row[3]) == release_date_text:
+                continue
+            cursor = self._execute(
+                "UPDATE planned_readings SET release_date = ? "
+                "WHERE planned_reading_id = ? AND task_state = 'open'",
+                (release_date_text, str(row[0])),
+            )
+            changed_count += cursor.rowcount
+        return changed_count
 
     def recompose_future_planned_readings(
         self,
         measurement_definition_id: str,
-        reading_cycle: ReadingCycle,
-        schedule: ScheduleSettings,
         *,
-        from_business_date: date | None = None,
+        from_business_date: date,
     ) -> tuple[int, int]:
-        start = from_business_date or self._business_date()
-        latest = self._conn.execute(
-            "SELECT MAX(business_date) FROM planned_readings WHERE measurement_definition_id = ?",
-            (measurement_definition_id,),
-        ).fetchone()
-        if latest is None or latest[0] is None or start > _read_date(str(latest[0])):
-            return (0, 0)
-        through = _read_date(str(latest[0]))
         definition = self._conn.execute(
-            "SELECT location_id FROM measurement_definitions WHERE measurement_definition_id = ?",
+            "SELECT location_id, reading_cycle, generation_start_date, is_active "
+            "FROM measurement_definitions WHERE measurement_definition_id = ?",
             (measurement_definition_id,),
         ).fetchone()
         if definition is None:
             raise ValidationError(f"測定定義が見つかりません: {measurement_definition_id}")
+        if not bool(definition[3]):
+            return (0, 0)
 
-        desired: set[tuple[date, ReadingSession]] = set()
-        generated = 0
+        candidates = self.list_planned_reading_recomposition_candidates(
+            measurement_definition_id, from_business_date
+        )
+        if not candidates:
+            return (0, 0)
+        through = max(candidate.business_date for candidate in candidates)
+        start = max(from_business_date, _read_date(str(definition[2])))
+        if start > through:
+            return (0, 0)
+        reading_cycle = ReadingCycle(str(definition[1]))
+        location_id = str(definition[0])
+
+        slots: dict[tuple[date, ReadingSession], list[PlannedReadingRecompositionRecord]] = {}
+        for candidate in candidates:
+            slots.setdefault((candidate.business_date, candidate.reading_session), []).append(
+                candidate
+            )
+
+        desired: dict[tuple[date, ReadingSession], int] = {}
         day = start
         while day <= through:
+            schedule = self.get_planned_reading_generation_schedule(
+                measurement_definition_id, reading_cycle, day
+            )
             for session, day_offset in self._schedule_items(reading_cycle, day, schedule):
-                desired.add((day, session))
-                scheduled = self._scheduled_at(day, session, day_offset)
-                assignment = self.get_meter_assignment(
-                    measurement_definition_id, parse_utc(scheduled)
-                )
-                if assignment is None:
+                key = day, session
+                if key in desired:
                     raise ScheduleHistoryResolutionError(
                         measurement_definition_id,
                         day.isoformat(),
                         day.isoformat(),
-                        "予定日時に有効な物理メーター割当がありません",
+                        f"{session.value} が重複するスケジュールです",
                     )
-                stable_id = (
-                    f"plan-{measurement_definition_id}-{day.isoformat()}-"
-                    f"{session.value.replace(':', '')}"
+                desired[key] = day_offset
+            day += timedelta(days=1)
+
+        now = utc_now_str(self._now())
+        superseded = 0
+        generated = 0
+        for key in sorted(set(slots) | set(desired), key=lambda value: (value[0], value[1].value)):
+            records = slots.get(key, [])
+            current = self._resolve_current_logical_slot(records)
+            day_offset = desired.get(key)
+
+            if day_offset is not None:
+                can_reopen = (
+                    current is not None
+                    and current.task_state is PlannedReadingTaskState.SUPERSEDED
+                    and current.close_reason is PlannedReadingCloseReason.SCHEDULE_RECOMPOSED
+                    and current.superseded_by_planned_reading_id is None
                 )
-                existing = self._conn.execute(
-                    "SELECT task_state, close_reason, meter_id, location_id, release_date, "
-                    "scheduled_at FROM planned_readings WHERE planned_reading_id = ?",
-                    (stable_id,),
-                ).fetchone()
-                if existing is None:
+                if (
+                    current is not None
+                    and current.task_state is not PlannedReadingTaskState.OPEN
+                    and not can_reopen
+                ):
+                    continue
+                scheduled = self._scheduled_at(key[0], key[1], day_offset)
+                meter_id = self.get_meter_id_for_planned_reading(
+                    measurement_definition_id, parse_utc(scheduled)
+                )
+                release_date = _date_text(
+                    self._release_date(key[0] + timedelta(days=day_offset), key[1])
+                )
+                if current is None:
+                    stable_id = (
+                        f"plan-{measurement_definition_id}-{key[0].isoformat()}-"
+                        f"{key[1].value.replace(':', '')}"
+                    )
                     self._execute(
                         "INSERT INTO planned_readings "
-                        "(planned_reading_id, measurement_definition_id, "
-                        "meter_id, location_id, business_date, release_date, "
-                        "reading_session, scheduled_at, "
-                        "task_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
+                        "(planned_reading_id, measurement_definition_id, meter_id, location_id, "
+                        "business_date, release_date, reading_session, scheduled_at, task_state) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')",
                         (
                             stable_id,
                             measurement_definition_id,
-                            assignment.meter_id,
-                            str(definition[0]),
-                            _date_text(day),
-                            _date_text(
-                                self._release_date(day + timedelta(days=day_offset), session)
-                            ),
-                            session.value,
+                            meter_id,
+                            location_id,
+                            _date_text(key[0]),
+                            release_date,
+                            key[1].value,
                             scheduled,
                         ),
                     )
                     generated += 1
-                elif str(existing[0]) == "open" or (
-                    str(existing[0]) == "superseded"
-                    and str(existing[1]) == PlannedReadingCloseReason.SCHEDULE_RECOMPOSED.value
+                    continue
+                if (
+                    current.meter_id != meter_id
+                    or current.location_id != location_id
+                    or utc_now_str(current.scheduled_at) != scheduled
+                    or current.release_date != date.fromisoformat(release_date)
+                    or current.task_state is not PlannedReadingTaskState.OPEN
+                    or current.close_reason is not None
+                    or current.superseded_by_planned_reading_id is not None
                 ):
-                    changed = (
-                        str(existing[2]) != assignment.meter_id
-                        or str(existing[3]) != str(definition[0])
-                        or str(existing[4])
-                        != _date_text(self._release_date(day + timedelta(days=day_offset), session))
-                        or str(existing[5]) != scheduled
-                        or str(existing[0]) != "open"
+                    self._execute(
+                        "UPDATE planned_readings SET meter_id = ?, location_id = ?, "
+                        "release_date = ?, scheduled_at = ?, task_state = 'open', "
+                        "closed_at = NULL, "
+                        "close_reason = NULL, superseded_by_planned_reading_id = NULL "
+                        "WHERE planned_reading_id = ?",
+                        (
+                            meter_id,
+                            location_id,
+                            release_date,
+                            scheduled,
+                            current.planned_reading_id,
+                        ),
                     )
-                    if changed:
-                        self._execute(
-                            "UPDATE planned_readings SET meter_id = ?, location_id = ?, "
-                            "release_date = ?, scheduled_at = ?, task_state = 'open', "
-                            "closed_at = NULL, close_reason = NULL, "
-                            "superseded_by_planned_reading_id = NULL WHERE planned_reading_id = ?",
-                            (
-                                assignment.meter_id,
-                                str(definition[0]),
-                                _date_text(
-                                    self._release_date(day + timedelta(days=day_offset), session)
-                                ),
-                                scheduled,
-                                stable_id,
-                            ),
-                        )
-                        generated += 1
-            day += timedelta(days=1)
+                    generated += 1
+                continue
 
-        candidates = self.list_planned_reading_recomposition_candidates(
-            measurement_definition_id, start
-        )
-        now = utc_now_str(self._now())
-        superseded = 0
-        for candidate in candidates:
-            if (
-                candidate.task_state is PlannedReadingTaskState.OPEN
-                and (
-                    candidate.business_date,
-                    candidate.reading_session,
-                )
-                not in desired
-            ):
+            if current is not None and current.task_state is PlannedReadingTaskState.OPEN:
                 cursor = self._execute(
                     "UPDATE planned_readings SET task_state = 'superseded', closed_at = ?, "
                     "close_reason = 'schedule_recomposed' WHERE planned_reading_id = ? "
                     "AND task_state = 'open'",
-                    (now, candidate.planned_reading_id),
+                    (now, current.planned_reading_id),
                 )
                 superseded += cursor.rowcount
         return superseded, generated
+
+    @staticmethod
+    def _resolve_current_logical_slot(
+        records: list[PlannedReadingRecompositionRecord],
+    ) -> PlannedReadingRecompositionRecord | None:
+        if not records:
+            return None
+        by_id = {record.planned_reading_id: record for record in records}
+        referenced_ids = {
+            record.superseded_by_planned_reading_id
+            for record in records
+            if record.superseded_by_planned_reading_id is not None
+        }
+        roots = [record for record in records if record.planned_reading_id not in referenced_ids]
+        if len(roots) != 1:
+            raise ValidationError("論理予定枠の後継関係が不正です。")
+
+        current = roots[0]
+        visited: set[str] = set()
+        while current.superseded_by_planned_reading_id is not None:
+            if current.planned_reading_id in visited:
+                raise ValidationError("論理予定枠の後継関係に循環があります。")
+            visited.add(current.planned_reading_id)
+            successor = by_id.get(current.superseded_by_planned_reading_id)
+            if successor is None:
+                raise ValidationError(
+                    f"後継予定枠が見つかりません: {current.superseded_by_planned_reading_id}"
+                )
+            if (
+                successor.business_date != current.business_date
+                or successor.reading_session is not current.reading_session
+                or successor.measurement_definition_id != current.measurement_definition_id
+            ):
+                raise ValidationError("論理予定枠の後継が異なる枠を指しています。")
+            current = successor
+        return current
 
 
 __all__ = ["SQLiteRepository"]

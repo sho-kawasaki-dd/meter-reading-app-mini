@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -83,8 +84,14 @@ def build_scheduled_at(
 class TimezoneSettingsService:
     """app timezone を読み書きする service。"""
 
-    def __init__(self, repository: TimezoneSettingsRepository) -> None:
+    def __init__(
+        self,
+        repository: TimezoneSettingsRepository,
+        *,
+        transaction_factory: Callable[[], AbstractContextManager[object]],
+    ) -> None:
         self._repository = repository
+        self._transaction_factory = transaction_factory
 
     def get_timezone(self) -> ZoneInfo:
         """現在の app timezone を返す。未設定なら Asia/Tokyo。"""
@@ -102,9 +109,10 @@ class TimezoneSettingsService:
         """app timezone を保存し、canonical ZoneInfo を返す。"""
 
         normalized = _normalize_timezone_name(timezone_name)
-        if normalized != self.get_timezone().key and self._repository.has_planned_readings():
-            raise TimezoneChangeError("予定枠の生成後は業務タイムゾーンを変更できません。")
-        self._repository.upsert_setting(APP_TIMEZONE_SETTINGS_KEY, normalized)
+        with self._transaction_factory():
+            if normalized != self.get_timezone().key and self._repository.has_planned_readings():
+                raise TimezoneChangeError("予定枠の生成後は業務タイムゾーンを変更できません。")
+            self._repository.upsert_setting(APP_TIMEZONE_SETTINGS_KEY, normalized)
         logger.info("Saved app timezone: %s", normalized)
         return ZoneInfo(normalized)
 

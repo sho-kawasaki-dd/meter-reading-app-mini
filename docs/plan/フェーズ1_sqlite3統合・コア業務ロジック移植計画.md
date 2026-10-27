@@ -1,8 +1,8 @@
 # Phase 1 標準 sqlite3 統合・コア業務ロジック移植計画
 
 - 作成日: 2026-10-25
-- 更新日: 2026-10-27(PR-1b Repository・スキーマ実装)
-- ステータス: 進行中(PR-1a・PR-1b 実装完了、PR-1c〜1e 未着手)
+- 更新日: 2026-10-27(PR-1c 予定枠補完・起動時準備実装)
+- ステータス: 進行中(PR-1a〜1c 実装完了、PR-1d〜1e 未着手)
 - 対象: `migration_package/` を基点とする Phase 1
 - 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md) 8 章 Phase 1
 - 前提: [Phase 0 計画](implemented/フェーズ0_共通基盤・CI整備計画.md) 完了済み(`uv.lock`、CI、`main` 保護)
@@ -226,30 +226,30 @@
 
 ### 5.3 PR-1c `feature/phase1-schedule-generation`: 予定枠の適用履歴・補完・起動時準備
 
-- [ ] `MeasurementDefinitionScheduleService`・`ScheduleSettingsService`(周期別既定)・`ReleaseOffsetSettingsService`(配信オフセット)を適用履歴化し、設定保存は適用履歴更新・影響する予定枠の再構成まで原子的に実行する(D13、D14、3.2、3.3)
+- [x] `MeasurementDefinitionScheduleService`・`ScheduleSettingsService`(周期別既定)・`ReleaseOffsetSettingsService`(配信オフセット)を適用履歴化し、設定保存は適用履歴更新・影響する予定枠の再構成まで原子的に実行する(D13、D14、3.2、3.3)
   - 周期別既定の変更は `schedule_json IS NULL` の該当周期の有効測定定義すべて、配信オフセットの変更は該当 `reading_session` の適用開始日以降の `open` 枠の `release_date` を再構成する
   - 設定保存時の `effective_from_date` は既定を現在業務日とし、現在業務日より前の過去日指定は `DomainError` 派生例外で拒否する。同一 `effective_from_date` の再保存は UPSERT で上書きする
   - 再構成処理は論理枠ごとの現在有効な後継枠(交換後の代替枠を含む)のうち `open` 枠および `schedule_recomposed` 枠のみを対象とし、メーター交換済みの旧枠(`close_reason = 'meter_replaced'`)や測定定義無効化枠(`definition_deactivated`)、`auto_closed` 枠を `open` に戻さない
   - `ActiveDeviceBindingService` 依存分を削除し、件数と理由を 9 章へ記録する
-- [ ] 業務タイムゾーンの保存で、`planned_readings` が 1 件でもあるときの変更を `DomainError` 派生例外で拒否する。初回投入と同じ値の再保存は許可する(D22)
-- [ ] `WorkPackageDownloadService` に次を実装する
+- [x] 業務タイムゾーンの保存で、`planned_readings` が 1 件でもあるときの変更を `DomainError` 派生例外で拒否する。初回投入と同じ値の再保存は許可する(D22)
+- [x] `WorkPackageDownloadService` に次を実装する
   - 3.3 に従う予定枠の補完生成(backfill)。最新生成日方式を廃止し、内部で 14 日ずつ照合して対象日まで完了する。有効な測定定義だけを対象にする(D25)
   - 締め時刻経過後の前日以前の `open` → `auto_closed`
   - 周期区分(`daily` / `weekly` / `monthly` / `every_two_months`)によるグループ化(D10: `ad_hoc` は廃止)
   - `backfill_pending` の旧仕様を新しい完了契約へ置換する
-- [ ] 公開業務操作と共通処理を分け、3.2 のトランザクション所有者を実装する(D13)。補完・再構成の共通処理は呼出元のトランザクション内で動く
-- [ ] 「`bootstrap_seeds` による既定設定投入 → 予定枠補完・自動クローズ」を統括する起動時準備 Service を作り、`app.py` から「DB オープン・マイグレーション → `_initialize_ui`(`QApplication` 確保・表示設定適用) → 起動時準備 Service → (Phase 3 で MainWindow 表示)」の順で呼ぶ。準備全体を単一トランザクションとする
+- [x] 公開業務操作と共通処理を分け、3.2 のトランザクション所有者を実装する(D13)。補完・再構成の共通処理は呼出元のトランザクション内で動く
+- [x] 「`bootstrap_seeds` による既定設定投入 → 予定枠補完・自動クローズ」を統括する起動時準備 Service を作り、`app.py` から「DB オープン・マイグレーション → `_initialize_ui`(`QApplication` 確保・表示設定適用) → 起動時準備 Service → (Phase 3 で MainWindow 表示)」の順で呼ぶ。準備全体を単一トランザクションとする
   - 準備が失敗したときは D24 に従い、ROLLBACK の上で `_initialize_ui` により有効化された `QApplication` 下で汎用エラー通知(注入可能なエラー通知関数、既定はログ記録を含む `show_unexpected_error`)を呼び、`STARTUP_FAILURE`・MainWindow 非表示とする。`test_app.py` を更新し、モーダル待ちを発生させずにエラー通知と DB へ途中結果が残らないことを検証する
-- [ ] 次のテストを移植し、ファイル DB(`tmp_path`)で実行する: `test_measurement_definition_schedule_service`、`test_work_package_download_service`
-- [ ] `schedule_settings.py` を coverage の対象へ戻す(PR-1a から持ち越し)
-- [ ] ロールバック検証を追加する
+- [x] 次のテストを移植し、ファイル DB(`tmp_path`)で実行する: `test_measurement_definition_schedule_service`、`test_work_package_download_service`
+- [x] `schedule_settings.py` を coverage の対象へ戻す(PR-1a から持ち越し)
+- [x] ロールバック検証を追加する
   - 設定保存後・適用履歴更新後・予定枠再構成中に例外が起きた場合
   - 複数の補完区間を処理した後、途中で例外が起きた場合
   - 起動時準備の COMMIT が失敗した場合
-- [ ] 業務ルールの検証を追加する
+- [x] 業務ルールの検証を追加する
   - 締め時刻の境界とサマータイムのあるタイムゾーン
   - 業務タイムゾーンの変更が、運用開始後は拒否され、運用開始前と同じ値の再保存は許可される(D22)
-- [ ] 予定枠補完の受入テストを追加する。旧 14 日打切り・`backfill_pending` 前提のテストは置換理由を記録する
+- [x] 予定枠補完の受入テストを追加する。旧 14 日打切り・`backfill_pending` 前提のテストは置換理由を記録する
   - 他定義の当日枠がある状態で新定義を追加しても、開始日から枠が生成される
   - 中間の日付・同日の一部時間帯の欠落だけを補完し、開始日前は生成しない
   - 14 日を超える長期未起動でも 1 回の業務操作で対象日まで完了する
@@ -259,7 +259,7 @@
   - 交換前後の割当を使い分け、旧枠の復活・代替枠の重複がない
   - 補完した過去枠の締めは現在業務日時で判定し、出力対象日に左右されない
   - 無効な測定定義は補完の対象にならない(D25)
-- [ ] 受け入れテストのために、PR-1d で実装する交換・無効化の結果を表すテスト用データ(`superseded` 枠・`close_reason`)をフィクスチャで用意する
+- [x] 受け入れテストのために、PR-1d で実装する交換・無効化の結果を表すテスト用データ(`superseded` 枠・`close_reason`)をフィクスチャで用意する
 
 ### 5.4 PR-1d `feature/phase1-readings-masters`: 検針結果・マスタ・交換
 
@@ -392,6 +392,9 @@ uv run coverage report --fail-under=90
 - スキーマ点検の結果(CHECK 制約の変更有無): `close_reason` の 4 値、`result_source` の 2 値、`reading_cycle` / `reading_session`、offset の整数、FK を DDL で保護。日付・UTC 時刻・Decimal の形式は Repository 境界で検証し、SQLite の CHECK は追加しない。`SCHEMA_SPECS` は `schema.sql` から生成され、スキーマ検査で変更前 v1 DB を拒否する。
 - 生成開始日・適用履歴・差替え対応のスキーマと、変更前 v1 開発用 DB の取扱い: 生成開始日、測定定義・周期別既定・配信オフセットの適用履歴、差替え後継 ID を v1 DDL に追加。テスト用 `:memory:` と `tmp_path` の WAL DB で検証し、既存実データ DB の自動削除・変換は行わない。
 - 予定枠補完の受入テスト結果と、長期未起動時の処理時間・対象規模:
+- PR-1c の実装・検証結果: スケジュール・周期別既定・配信オフセットを適用履歴化し、UPSERT と予定枠再構成を各 Service の単一トランザクションに統合。補完は測定定義ごとの生成開始日から対象業務日までを 14 日区切りで 1 回の業務操作内に完了し、最新生成日を完了根拠にしない。既存の論理枠・交換後継を照合し、completed / auto_closed / meter_replaced / definition_deactivated を復活させない。WorkPackage の補完・現在業務日時に基づく自動クローズ・取得、起動時の既定値投入・補完・自動クローズは同一トランザクション。`ActiveDeviceBindingService` の参照は実装・テストで 0 件(予定日時の割当を Repository で解決するため Service 依存を置かない)。再構成の廃止・生成件数をログへ記録し、旧最新生成日取得 API を削除。
+- PR-1c の受入・品質ゲート: file DB(`tmp_path`)で 21 日の補完(14 日 + 7 日)、定義ごとの生成開始日、中間日・同日時間帯の欠落、日次・週次・月次・隔月グループ、期間別スケジュール・割当・オフセット、交換後継、締め境界・DST、設定・複数区間・起動時処理・COMMIT の rollback を検証。計測した補完対象規模は 21 日であり、実運用規模 DB の性能計測は未実施。全 240 件中 239 passed / 1 skipped(Windows の `time.tzset()` 制限)、Ruff check / format・Pyright 0 件、設定対象 coverage 94%、`schedule_settings.py` 99%。既存 `test_contract_boundaries` の ResourceWarning 1 件は継続。
+- 旧補完テストの置換理由: 14 日超で段階的に次回呼出しを要求する `backfill_pending` 契約を廃止し、1 回の業務操作で全対象日を完了する設計へ変更。旧 SQLAlchemy import を含む fake テストを削除し、file DB を用いた適用履歴・トランザクション統合テストへ置換。
 - 契約分離・トランザクション境界・再計算・署名前入力の検証結果: PR-1a では契約境界テスト 4 件、署名前モバイル入力と契約語彙、純粋な差分計算・署名時刻・タイムゾーン処理を検証。PR-1b では SAVEPOINT の局所 rollback、Repository の後続更新保存・交換境界を検証。Service の連鎖再計算は PR-1d で検証する。
-- 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果: PR-1b では `result_source` / `close_reason` 制約、stale/tie/duplicate、担当者一意制約、`auto_closed` の使用状況除外、測定定義無効化時の `open` 枠廃止と `completed` / `auto_closed` 維持を検証した。起動時準備失敗は PR-1c で検証する。
-- 各 PR と CI の結果: PR-1a・PR-1b のローカル検査は成功。PR / CI は未実施。
+- 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果: PR-1b では `result_source` / `close_reason` 制約、stale/tie/duplicate、担当者一意制約、`auto_closed` の使用状況除外、測定定義無効化時の `open` 枠廃止と `completed` / `auto_closed` 維持を検証。PR-1c ではタイムゾーン変更拒否、締め境界、起動準備の処理例外・COMMIT 失敗時の rollback とエラー通知を検証した。
+- 各 PR と CI の結果: PR-1a〜1c のローカル検査は成功。PR / CI は未実施。

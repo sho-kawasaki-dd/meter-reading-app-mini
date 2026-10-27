@@ -38,6 +38,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MonthParity,
     PlannedReadingCloseReason,
     PlannedReadingCreateRequest,
+    PlannedReadingTaskState,
     ReadingCycleScheduleDefaultRecord,
     ReadingSessionReleaseOffsetRecord,
     ReadingUpsertRequest,
@@ -210,7 +211,7 @@ def test_generation_and_schedule_history_are_idempotent(
     definitions = sqlite_repository.list_planned_reading_generation_definitions()
     assert len(definitions) == 1
     assert definitions[0].generation_start_date == date(2026, 2, 1)
-    assert definitions[0].meter_id == meter_id
+    assert definitions[0].meter_id is None
     assert (
         sqlite_repository.get_meter_assignment(
             definition_id, datetime(2026, 1, 31, 14, 59, tzinfo=UTC)
@@ -488,7 +489,10 @@ def test_master_assignment_settings_and_query_repositories(
         effective_from_date=date(2026, 2, 5),
         created_at=READ_AT,
     )
-    assert sqlite_repository.get_measurement_definition_schedule(definition_id) is not None
+    assert (
+        sqlite_repository.get_measurement_definition_schedule(definition_id, date(2026, 2, 5))
+        is not None
+    )
     assert len(sqlite_repository.list_measurement_definition_schedule_history(definition_id)) == 2
     assert (
         sqlite_repository.get_measurement_definition_schedule_for_date(
@@ -522,17 +526,35 @@ def test_master_assignment_settings_and_query_repositories(
     }
 
 
+def test_superseded_fixtures_cover_replacement_and_definition_deactivation(
+    sqlite_repository: SQLiteRepository,
+    superseded_planned_reading_ids: tuple[str, str, str],
+) -> None:
+    replaced_id, replacement_id, deactivated_id = superseded_planned_reading_ids
+
+    replaced = sqlite_repository.get_planned_reading(replaced_id)
+    replacement = sqlite_repository.get_planned_reading(replacement_id)
+    deactivated = sqlite_repository.get_planned_reading(deactivated_id)
+
+    assert replaced is not None
+    assert replaced.task_state is PlannedReadingTaskState.SUPERSEDED
+    assert replaced.close_reason is PlannedReadingCloseReason.METER_REPLACED
+    assert replaced.superseded_by_planned_reading_id == replacement_id
+    assert replacement is not None and replacement.task_state is PlannedReadingTaskState.OPEN
+    assert deactivated is not None
+    assert deactivated.task_state is PlannedReadingTaskState.SUPERSEDED
+    assert deactivated.close_reason is PlannedReadingCloseReason.DEFINITION_DEACTIVATED
+
+
 def test_open_task_queries_and_recomposition(
     sqlite_repository: SQLiteRepository,
     sample_master: tuple[str, str],
 ) -> None:
     meter_id, definition_id = sample_master
-    assert sqlite_repository.get_latest_planned_business_date() is None
     assert sqlite_repository.get_planned_reading("missing") is None
     sqlite_repository.create_planned_reading_if_missing(
         _planned("plan-recompose", definition_id, meter_id)
     )
-    assert sqlite_repository.get_latest_planned_business_date() == date(2026, 2, 4)
     assert (
         len(sqlite_repository.list_open_planned_reading_tasks_for_release_date(date(2026, 2, 4)))
         == 1
@@ -546,23 +568,14 @@ def test_open_task_queries_and_recomposition(
         is ReadingCycle.DAILY_1X
     )
 
-    sqlite_repository.create_planned_reading_if_missing(
-        PlannedReadingCreateRequest(
-            planned_reading_id="plan-definition-test-001-2026-02-04-0600",
-            measurement_definition_id=definition_id,
-            meter_id=meter_id,
-            location_id="location-test-001",
-            business_date=date(2026, 2, 4),
-            release_date=date(2026, 2, 3),
-            reading_session=ReadingSession.SESSION_0600,
-            scheduled_at=READ_AT,
-        )
+    sqlite_repository.upsert_measurement_definition_schedule(
+        definition_id,
+        '{"reading_sessions":[{"reading_session":"06:00","day_offset":0}]}',
+        effective_from_date=date(2026, 2, 4),
+        created_at=READ_AT,
     )
-    schedule = DailySchedule((ScheduleItem(ReadingSession.SESSION_0600),))
     result = sqlite_repository.recompose_future_planned_readings(
         definition_id,
-        ReadingCycle.DAILY_1X,
-        schedule,
         from_business_date=date(2026, 2, 4),
     )
     assert result == (1, 1)
@@ -574,7 +587,7 @@ def test_open_task_queries_and_recomposition(
         "plan-definition-test-001-2026-02-04-0600",
     }
     assert sqlite_repository.recompose_future_planned_readings(
-        definition_id, ReadingCycle.DAILY_1X, schedule
+        definition_id, from_business_date=date(2026, 2, 4)
     ) == (0, 0)
     superseded_count = sqlite_repository.supersede_planned_readings(
         ["plan-definition-test-001-2026-02-04-0600"],
@@ -582,7 +595,7 @@ def test_open_task_queries_and_recomposition(
     )
     assert superseded_count == 1
     assert sqlite_repository.recompose_future_planned_readings(
-        definition_id, ReadingCycle.DAILY_1X, schedule
+        definition_id, from_business_date=date(2026, 2, 4)
     ) == (0, 1)
     assert (
         sqlite_repository.supersede_planned_readings(
@@ -606,11 +619,15 @@ def test_repository_timezone_invalid_and_naive_clock_errors(
 
 
 def test_timezone_change_uses_repository_planned_reading_guard(
+    memory_conn: sqlite3.Connection,
     sqlite_repository: SQLiteRepository,
     sample_master: tuple[str, str],
 ) -> None:
     _, definition_id = sample_master
-    timezone_service = TimezoneSettingsService(sqlite_repository)
+    timezone_service = TimezoneSettingsService(
+        sqlite_repository,
+        transaction_factory=lambda: transaction(memory_conn),
+    )
     assert timezone_service.get_timezone().key == "Asia/Tokyo"
     assert timezone_service.save_timezone("Asia/Tokyo").key == "Asia/Tokyo"
     assert not sqlite_repository.has_planned_readings()

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 from meter_reading_mini import app as app_module
 from meter_reading_mini.config import AppPaths, resolve_paths
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
+from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.migrations import SCHEMA_VERSION
 from meter_reading_mini.ui.display_settings import DisplaySettings
 
@@ -93,6 +94,7 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
         database_opener=open_database,
         lock_factory=lambda path: events.append("lock.create") or FakeLock(events),
         logging_configurator=lambda *, log_dir: events.append("logging"),
+        startup_preparer=lambda conn: events.append("startup.prepare"),
     )
 
     assert result == app_module.STARTUP_SUCCESS
@@ -106,6 +108,7 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
         "db.open",
         "settings.load",
         "settings.apply",
+        "startup.prepare",
         "db.close",
         "lock.release",
     ]
@@ -170,6 +173,46 @@ def test_run_app_closes_database_before_releasing_lock_on_ui_failure(
     assert "アプリケーションの起動に失敗しました" in caplog.text
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+def test_run_app_startup_failure_notifies_after_rollback(
+    tmp_path: Path,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    events: list[str] = []
+    connection = _tracked_database(events)
+    connection.execute("CREATE TABLE startup_probe (value TEXT NOT NULL)")
+    monkeypatch.setattr(app_module, "ensure_dirs", lambda actual_paths: None)
+    monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
+    monkeypatch.setattr(app_module, "apply_display_settings", lambda settings: None)
+
+    def fail_startup(conn: sqlite3.Connection) -> None:
+        with transaction(conn):
+            conn.execute("INSERT INTO startup_probe VALUES ('partial')")
+            raise RuntimeError("startup failed")
+
+    rollback_counts: list[int] = []
+
+    def notify_startup_error(error: BaseException) -> None:
+        rollback_counts.append(
+            connection.execute("SELECT COUNT(*) FROM startup_probe").fetchone()[0]
+        )
+        events.append("startup.error")
+
+    result = app_module.run_app(
+        paths,
+        database_opener=lambda *args, **kwargs: connection,
+        lock_factory=lambda path: FakeLock(events),
+        logging_configurator=lambda **kwargs: None,
+        startup_preparer=fail_startup,
+        startup_error_notifier=notify_startup_error,
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert events == ["lock.acquire", "startup.error", "db.close", "lock.release"]
+    assert rollback_counts == [0]
 
 
 def test_run_app_migrates_database_and_writes_log_to_app_paths(

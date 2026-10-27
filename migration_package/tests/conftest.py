@@ -5,8 +5,10 @@ import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from PySide6.QtGui import QFont
@@ -17,14 +19,17 @@ from meter_reading_mini.core.contract_models import (
     Category,
     Purpose,
     ReadingCycle,
+    ReadingSession,
     ValueSchema,
 )
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionCreateRequest,
     MeterMasterCreateRequest,
+    PlannedReadingCloseReason,
+    PlannedReadingCreateRequest,
 )
 from meter_reading_mini.db.bootstrap_seeds import bootstrap_default_settings
-from meter_reading_mini.db.connection import connect_memory
+from meter_reading_mini.db.connection import connect, connect_memory, transaction
 from meter_reading_mini.db.migrations import create_schema
 from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.ui import display_settings
@@ -94,6 +99,32 @@ def sqlite_repository(memory_conn: sqlite3.Connection, fixed_clock: datetime) ->
 
 
 @pytest.fixture
+def file_database_repository(
+    tmp_path: Path, fixed_clock: datetime
+) -> Iterator[tuple[sqlite3.Connection, SQLiteRepository]]:
+    conn = connect(tmp_path / "meter-reading.db")
+    create_schema(conn)
+
+    def clock() -> datetime:
+        return fixed_clock
+
+    def business_date() -> date:
+        return fixed_clock.astimezone(ZoneInfo("Asia/Tokyo")).date()
+
+    with transaction(conn):
+        bootstrap_default_settings(conn, clock=clock)
+    repository = SQLiteRepository(
+        conn,
+        clock=clock,
+        business_date_provider=business_date,
+    )
+    try:
+        yield conn, repository
+    finally:
+        conn.close()
+
+
+@pytest.fixture
 def sample_master(sqlite_repository: SQLiteRepository) -> tuple[str, str]:
     meter_id = "meter-test-001"
     definition_id = "definition-test-001"
@@ -128,3 +159,79 @@ def sample_master(sqlite_repository: SQLiteRepository) -> tuple[str, str]:
         )
     )
     return meter_id, definition_id
+
+
+@pytest.fixture
+def superseded_planned_reading_ids(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+) -> tuple[str, str, str]:
+    meter_id, definition_id = sample_master
+    replaced_id = "fixture-replaced-original"
+    replacement_id = "fixture-replacement-successor"
+    deactivated_id = "fixture-deactivated-slot"
+    with transaction(memory_conn):
+        sqlite_repository.create_planned_readings_if_missing(
+            [
+                PlannedReadingCreateRequest(
+                    planned_reading_id=replaced_id,
+                    measurement_definition_id=definition_id,
+                    meter_id=meter_id,
+                    location_id="location-test-001",
+                    business_date=date(2026, 2, 4),
+                    release_date=date(2026, 2, 4),
+                    reading_session=ReadingSession.SESSION_0800,
+                    scheduled_at=fixed_schedule_datetime(date(2026, 2, 4)),
+                ),
+                PlannedReadingCreateRequest(
+                    planned_reading_id=replacement_id,
+                    measurement_definition_id=definition_id,
+                    meter_id=meter_id,
+                    location_id="location-test-001",
+                    business_date=date(2026, 2, 4),
+                    release_date=date(2026, 2, 4),
+                    reading_session=ReadingSession.SESSION_0800,
+                    scheduled_at=fixed_schedule_datetime(date(2026, 2, 4)),
+                ),
+                PlannedReadingCreateRequest(
+                    planned_reading_id=deactivated_id,
+                    measurement_definition_id=definition_id,
+                    meter_id=meter_id,
+                    location_id="location-test-001",
+                    business_date=date(2026, 2, 5),
+                    release_date=date(2026, 2, 5),
+                    reading_session=ReadingSession.SESSION_0800,
+                    scheduled_at=fixed_schedule_datetime(date(2026, 2, 5)),
+                ),
+            ]
+        )
+        memory_conn.execute(
+            "UPDATE planned_readings SET task_state = 'superseded', closed_at = ?, "
+            "close_reason = ?, superseded_by_planned_reading_id = ? "
+            "WHERE planned_reading_id = ?",
+            (
+                "2026-02-04 03:00:00",
+                PlannedReadingCloseReason.METER_REPLACED.value,
+                replacement_id,
+                replaced_id,
+            ),
+        )
+        memory_conn.execute(
+            "UPDATE planned_readings SET task_state = 'superseded', closed_at = ?, "
+            "close_reason = ? WHERE planned_reading_id = ?",
+            (
+                "2026-02-04 03:00:00",
+                PlannedReadingCloseReason.DEFINITION_DEACTIVATED.value,
+                deactivated_id,
+            ),
+        )
+    return replaced_id, replacement_id, deactivated_id
+
+
+def fixed_schedule_datetime(business_date: date) -> datetime:
+    return datetime.combine(
+        business_date,
+        time(8),
+        tzinfo=ZoneInfo("Asia/Tokyo"),
+    ).astimezone(UTC)

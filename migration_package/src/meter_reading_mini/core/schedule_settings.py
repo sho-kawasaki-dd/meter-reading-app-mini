@@ -10,11 +10,12 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from datetime import date, time, timedelta
+from contextlib import AbstractContextManager
+from datetime import date, datetime, time, timedelta
 from typing import TypeGuard
 
 from meter_reading_mini.core.contract_models import ReadingCycle, ReadingSession
-from meter_reading_mini.core.errors import ScheduleValidationError
+from meter_reading_mini.core.errors import ScheduleHistoryResolutionError, ScheduleValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
     EveryTwoMonthsSchedule,
@@ -23,36 +24,24 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MonthlyScheduleSelectorType,
     MonthParity,
     PlannedReadingRecompositionRepository,
+    ReadingCycleScheduleDefaultsRepository,
+    ReadingSessionReleaseOffsetsRepository,
     ReleaseDateCalculator,
+    ReleaseOffsetRecompositionRepository,
     ScheduleItem,
     ScheduleSettings,
     ScheduleSettingsRepository,
     WeeklySchedule,
 )
+from meter_reading_mini.core.timeutil import utc_now
 from meter_reading_mini.core.timezone_settings import build_business_date_provider
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# app_settings key naming
+# app settings keys
 # ---------------------------------------------------------------------------
-
-_SCHEDULE_KEY_PREFIX = "planned_reading_schedule"
-_SCHEDULE_KEY_VERSION = "v1"
-
-SCHEDULE_SETTINGS_KEYS: dict[ReadingCycle, str] = {
-    cycle: f"{_SCHEDULE_KEY_PREFIX}.{cycle.value}.{_SCHEDULE_KEY_VERSION}" for cycle in ReadingCycle
-}
-
-_RELEASE_OFFSET_KEY_PREFIX = "planned_reading_release_offset"
-_RELEASE_OFFSET_KEY_VERSION = "v1"
-
-RELEASE_OFFSET_SETTINGS_KEYS: dict[ReadingSession, str] = {
-    session: f"{_RELEASE_OFFSET_KEY_PREFIX}.{session.value}.{_RELEASE_OFFSET_KEY_VERSION}"
-    for session in ReadingSession
-}
-
 
 # ---------------------------------------------------------------------------
 # JSON serialization / deserialization
@@ -186,15 +175,15 @@ def validate_schedule_type_for_reading_cycle(
     """reading_cycle と schedule 型の対応を検証する。"""
 
     if reading_cycle in _DAILY_CYCLES and not isinstance(schedule, DailySchedule):
-        raise ValueError(f"{reading_cycle.value} requires DailySchedule.")
+        raise ScheduleValidationError([f"{reading_cycle.value} には日次スケジュールが必要です。"])
     if reading_cycle is ReadingCycle.WEEKLY and not isinstance(schedule, WeeklySchedule):
-        raise ValueError("weekly requires WeeklySchedule.")
+        raise ScheduleValidationError(["weekly には週次スケジュールが必要です。"])
     if reading_cycle is ReadingCycle.MONTHLY and not isinstance(schedule, MonthlySchedule):
-        raise ValueError("monthly requires MonthlySchedule.")
+        raise ScheduleValidationError(["monthly には月次スケジュールが必要です。"])
     if reading_cycle is ReadingCycle.EVERY_TWO_MONTHS and not isinstance(
         schedule, EveryTwoMonthsSchedule
     ):
-        raise ValueError("every_two_months requires EveryTwoMonthsSchedule.")
+        raise ScheduleValidationError(["every_two_months には隔月スケジュールが必要です。"])
 
 
 def _parse_monthly_schedule(data: dict[str, object]) -> MonthlySchedule:
@@ -285,12 +274,6 @@ def _serialize_release_offset_days(offset_days: int) -> str:
     """release offset を app_settings 向けの文字列へ変換する。"""
 
     return str(int(offset_days))
-
-
-def _deserialize_release_offset_days(raw: str) -> int:
-    """app_settings の release offset 文字列を整数へ変換する。"""
-
-    return int(raw)
 
 
 _DAILY_CYCLE_RE = re.compile(r"^daily_(\d+)x$")
@@ -427,30 +410,110 @@ DEFAULT_RELEASE_OFFSETS: dict[ReadingSession, int] = {
 # service
 # ---------------------------------------------------------------------------
 
+TransactionFactory = Callable[[], AbstractContextManager[object]]
+
+
+def _resolve_effective_date(
+    effective_from_date: date | None, current_business_date_provider: Callable[[], date]
+) -> date:
+    current_business_date = current_business_date_provider()
+    resolved_date = effective_from_date or current_business_date
+    if resolved_date < current_business_date:
+        raise ScheduleValidationError(["適用開始日に過去の日付は指定できません。"])
+    return resolved_date
+
+
+def _deserialize_default_history(
+    repository: ReadingCycleScheduleDefaultsRepository,
+    reading_cycle: ReadingCycle,
+    business_date: date,
+) -> ScheduleSettings:
+    record = repository.get_reading_cycle_schedule_default(reading_cycle, business_date)
+    if record is None:
+        raise ScheduleHistoryResolutionError(
+            reading_cycle.value,
+            business_date.isoformat(),
+            business_date.isoformat(),
+            "適用可能な周期別既定スケジュール履歴がありません",
+        )
+    try:
+        return deserialize_schedule(reading_cycle, record.schedule_json)
+    except (TypeError, ValueError) as error:
+        raise ScheduleHistoryResolutionError(
+            reading_cycle.value,
+            record.effective_from_date.isoformat(),
+            business_date.isoformat(),
+            f"スケジュール履歴が不正です: {error}",
+        ) from error
+
 
 class ScheduleSettingsService:
-    """reading_cycle ごとのスケジュール設定を読み書きする service。"""
+    """周期別既定スケジュールを履歴管理する service。"""
 
-    def __init__(self, repository: ScheduleSettingsRepository) -> None:
+    def __init__(
+        self,
+        repository: ReadingCycleScheduleDefaultsRepository,
+        *,
+        recomposition_repository: PlannedReadingRecompositionRepository,
+        transaction_factory: TransactionFactory,
+        current_business_date_provider: Callable[[], date] | None = None,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> None:
         self._repository = repository
+        self._recomposition_repository = recomposition_repository
+        self._transaction_factory = transaction_factory
+        self._current_business_date_provider = (
+            current_business_date_provider or build_business_date_provider()
+        )
+        self._clock = clock
 
-    def get_schedule(self, reading_cycle: ReadingCycle) -> ScheduleSettings:
-        """指定 reading_cycle のスケジュール設定を返す。未設定ならデフォルト。"""
+    def get_schedule(
+        self, reading_cycle: ReadingCycle, business_date: date | None = None
+    ) -> ScheduleSettings:
+        """指定日に有効な周期別既定スケジュールを返す。"""
 
-        key = SCHEDULE_SETTINGS_KEYS[reading_cycle]
-        raw = self._repository.get_setting(key)
-        if raw is None:
-            return DEFAULT_SCHEDULES[reading_cycle]
-        return deserialize_schedule(reading_cycle, raw)
+        effective_date = business_date or self._current_business_date_provider()
+        return _deserialize_default_history(self._repository, reading_cycle, effective_date)
 
-    def save_schedule(self, reading_cycle: ReadingCycle, schedule: ScheduleSettings) -> None:
-        """指定 reading_cycle のスケジュール設定を保存する。"""
+    def save_schedule(
+        self,
+        reading_cycle: ReadingCycle,
+        schedule: ScheduleSettings,
+        *,
+        effective_from_date: date | None = None,
+    ) -> None:
+        """適用履歴を保存し、既定値を使う有効定義の枠を再構成する。"""
 
         validate_schedule_type_for_reading_cycle(reading_cycle, schedule)
-        # 期待日次件数等の業務ルール検証を必須実行
         validate_expected_daily_count(reading_cycle, schedule)
-        key = SCHEDULE_SETTINGS_KEYS[reading_cycle]
-        self._repository.upsert_setting(key, serialize_schedule(schedule))
+        effective_date = _resolve_effective_date(
+            effective_from_date, self._current_business_date_provider
+        )
+        with self._transaction_factory():
+            self._repository.save_reading_cycle_schedule_default(
+                reading_cycle,
+                effective_date,
+                serialize_schedule(schedule),
+                created_at=self._clock(),
+            )
+            for (
+                measurement_definition_id
+            ) in self._repository.list_measurement_definitions_using_cycle_default(
+                reading_cycle, effective_date
+            ):
+                superseded_count, generated_count = (
+                    self._recomposition_repository.recompose_future_planned_readings(
+                        measurement_definition_id,
+                        from_business_date=effective_date,
+                    )
+                )
+                logger.info(
+                    "周期別既定スケジュールを再構成しました: definition=%s "
+                    "superseded=%d generated=%d",
+                    measurement_definition_id,
+                    superseded_count,
+                    generated_count,
+                )
         logger.info("Saved schedule for %s", reading_cycle.value)
 
     @classmethod
@@ -464,89 +527,118 @@ class ScheduleSettingsService:
 
 
 class MeasurementDefinitionScheduleService:
-    """measurement_definition 単位の planned reading スケジュールを読み書きする service。"""
+    """測定定義別スケジュールを適用履歴として管理する service。"""
 
     def __init__(
         self,
         repository: MeasurementDefinitionScheduleRepository,
         *,
-        recomposition_repository: PlannedReadingRecompositionRepository | None = None,
+        schedule_defaults_repository: ReadingCycleScheduleDefaultsRepository,
+        recomposition_repository: PlannedReadingRecompositionRepository,
+        transaction_factory: TransactionFactory,
         current_business_date_provider: Callable[[], date] | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._repository = repository
+        self._schedule_defaults_repository = schedule_defaults_repository
         self._recomposition_repository = recomposition_repository
+        self._transaction_factory = transaction_factory
         self._current_business_date_provider = (
             current_business_date_provider or build_business_date_provider()
         )
+        self._clock = clock
 
     def get_schedule(
-        self, measurement_definition_id: str, reading_cycle: ReadingCycle
+        self,
+        measurement_definition_id: str,
+        reading_cycle: ReadingCycle,
+        business_date: date | None = None,
     ) -> ScheduleSettings:
-        """指定 measurement_definition_id のスケジュールを返す。未設定なら default を返す。"""
+        """指定日に有効な定義別設定を返し、NULL 履歴は周期別既定へ委譲する。"""
 
-        raw = self._repository.get_measurement_definition_schedule(measurement_definition_id)
-        if raw is None:
-            return DEFAULT_SCHEDULES[reading_cycle]
-        return deserialize_schedule(reading_cycle, raw)
+        effective_date = business_date or self._current_business_date_provider()
+        record = self._repository.get_measurement_definition_schedule_for_date(
+            measurement_definition_id, effective_date
+        )
+        if record is None or record.schedule_json is None:
+            return _deserialize_default_history(
+                self._schedule_defaults_repository, reading_cycle, effective_date
+            )
+        try:
+            return deserialize_schedule(reading_cycle, record.schedule_json)
+        except (TypeError, ValueError) as error:
+            raise ScheduleHistoryResolutionError(
+                measurement_definition_id,
+                record.effective_from_date.isoformat(),
+                effective_date.isoformat(),
+                f"測定定義別スケジュール履歴が不正です: {error}",
+            ) from error
 
     def save_schedule(
         self,
         measurement_definition_id: str,
         reading_cycle: ReadingCycle,
         schedule: ScheduleSettings,
+        *,
+        effective_from_date: date | None = None,
     ) -> None:
-        """measurement_definition 単位のスケジュールを保存する。"""
+        """適用履歴を保存し、同じトランザクションで予定枠を再構成する。"""
 
         validate_schedule_type_for_reading_cycle(reading_cycle, schedule)
-        # 期待日次件数等の業務ルール検証を必須実行
         validate_expected_daily_count(reading_cycle, schedule)
-        self._repository.upsert_measurement_definition_schedule(
-            measurement_definition_id, serialize_schedule(schedule)
+        effective_date = _resolve_effective_date(
+            effective_from_date, self._current_business_date_provider
         )
-        logger.info(
-            "Saved measurement definition schedule for %s (%s)",
-            measurement_definition_id,
-            reading_cycle.value,
-        )
-        if self._recomposition_repository is not None:
-            from_business_date = self._current_business_date_provider()
+        with self._transaction_factory():
+            self._repository.upsert_measurement_definition_schedule(
+                measurement_definition_id,
+                serialize_schedule(schedule),
+                effective_from_date=effective_date,
+                created_at=self._clock(),
+            )
             superseded_count, generated_count = (
                 self._recomposition_repository.recompose_future_planned_readings(
                     measurement_definition_id,
-                    reading_cycle,
-                    schedule,
-                    from_business_date=from_business_date,
+                    from_business_date=effective_date,
                 )
             )
             logger.info(
-                "Recomposed future planned readings for %s (%s) from %s: "
-                "superseded=%d generated=%d",
+                "予定枠を再構成しました: definition=%s cycle=%s from=%s superseded=%d generated=%d",
                 measurement_definition_id,
                 reading_cycle.value,
-                from_business_date.isoformat(),
+                effective_date.isoformat(),
                 superseded_count,
                 generated_count,
             )
 
     def ensure_default_schedule(
-        self, measurement_definition_id: str, reading_cycle: ReadingCycle
+        self,
+        measurement_definition_id: str,
+        reading_cycle: ReadingCycle,
+        *,
+        effective_from_date: date | None = None,
     ) -> ScheduleSettings:
-        """未作成なら default schedule を作成し、現在値を返す。"""
+        """未作成なら NULL の適用履歴を作り、周期別既定を返す。"""
 
-        current = self._repository.get_measurement_definition_schedule(measurement_definition_id)
-        if current is not None:
-            return deserialize_schedule(reading_cycle, current)
-
-        default_schedule = DEFAULT_SCHEDULES[reading_cycle]
-        self._repository.upsert_measurement_definition_schedule(
-            measurement_definition_id, serialize_schedule(default_schedule)
+        date_for_history = _resolve_effective_date(
+            effective_from_date, self._current_business_date_provider
         )
-        logger.info(
-            "Created default measurement definition schedule for %s (%s)",
-            measurement_definition_id,
-            reading_cycle.value,
+        current = self._repository.get_measurement_definition_schedule_for_date(
+            measurement_definition_id, date_for_history
         )
-        return default_schedule
+        if current is None:
+            with self._transaction_factory():
+                self._repository.upsert_measurement_definition_schedule(
+                    measurement_definition_id,
+                    None,
+                    effective_from_date=date_for_history,
+                    created_at=self._clock(),
+                )
+                self._recomposition_repository.recompose_future_planned_readings(
+                    measurement_definition_id,
+                    from_business_date=date_for_history,
+                )
+        return self.get_schedule(measurement_definition_id, reading_cycle, date_for_history)
 
     @classmethod
     def serialize_default(cls, reading_cycle: ReadingCycle) -> str:
@@ -556,31 +648,79 @@ class MeasurementDefinitionScheduleService:
 
 
 class ReleaseOffsetSettingsService(ReleaseDateCalculator):
-    """reading_session ごとの release offset を読み書きする service。"""
+    """検針時間ごとの配信オフセットを適用履歴として管理する service。"""
 
-    def __init__(self, repository: ScheduleSettingsRepository) -> None:
+    def __init__(
+        self,
+        repository: ReadingSessionReleaseOffsetsRepository,
+        *,
+        recomposition_repository: ReleaseOffsetRecompositionRepository,
+        transaction_factory: TransactionFactory,
+        current_business_date_provider: Callable[[], date] | None = None,
+        clock: Callable[[], datetime] = utc_now,
+    ) -> None:
         self._repository = repository
+        self._recomposition_repository = recomposition_repository
+        self._transaction_factory = transaction_factory
+        self._current_business_date_provider = (
+            current_business_date_provider or build_business_date_provider()
+        )
+        self._clock = clock
 
-    def get_release_offset_days(self, reading_session: ReadingSession) -> int:
-        """指定 session の release offset を返す。未設定ならデフォルトを使う。"""
+    def get_release_offset_days(
+        self, reading_session: ReadingSession, business_date: date | None = None
+    ) -> int:
+        """指定日に有効な配信オフセットを返す。"""
 
-        key = RELEASE_OFFSET_SETTINGS_KEYS[reading_session]
-        raw = self._repository.get_setting(key)
-        if raw is None:
-            return DEFAULT_RELEASE_OFFSETS.get(reading_session, 0)
-        return _deserialize_release_offset_days(raw)
+        effective_date = business_date or self._current_business_date_provider()
+        record = self._repository.get_reading_session_release_offset(
+            reading_session, effective_date
+        )
+        if record is None:
+            raise ScheduleHistoryResolutionError(
+                reading_session.value,
+                effective_date.isoformat(),
+                effective_date.isoformat(),
+                "適用可能な配信オフセット履歴がありません",
+            )
+        return record.offset_days
 
-    def save_release_offset_days(self, reading_session: ReadingSession, offset_days: int) -> None:
-        """指定 session の release offset を保存する。"""
+    def save_release_offset_days(
+        self,
+        reading_session: ReadingSession,
+        offset_days: int,
+        *,
+        effective_from_date: date | None = None,
+    ) -> None:
+        """配信オフセット履歴を保存し、open 枠の配信日を同時に再構成する。"""
 
-        key = RELEASE_OFFSET_SETTINGS_KEYS[reading_session]
-        self._repository.upsert_setting(key, _serialize_release_offset_days(offset_days))
+        effective_date = _resolve_effective_date(
+            effective_from_date, self._current_business_date_provider
+        )
+        with self._transaction_factory():
+            self._repository.save_reading_session_release_offset(
+                reading_session,
+                effective_date,
+                offset_days,
+                created_at=self._clock(),
+            )
+            changed_count = self._recomposition_repository.recompose_release_dates(
+                reading_session, effective_date
+            )
         logger.info("Saved release offset for %s: %s", reading_session.value, offset_days)
+        logger.info(
+            "配信日を再構成しました: session=%s from=%s changed=%d",
+            reading_session.value,
+            effective_date.isoformat(),
+            changed_count,
+        )
 
     def compute_release_date(self, business_date: date, reading_session: ReadingSession) -> date:
         """business_date と session から配布可能日を計算する。"""
 
-        return business_date + timedelta(days=self.get_release_offset_days(reading_session))
+        return business_date + timedelta(
+            days=self.get_release_offset_days(reading_session, business_date)
+        )
 
     @classmethod
     def serialize_default(cls, reading_session: ReadingSession) -> str:
@@ -633,8 +773,6 @@ __all__ = [
     "DEFAULT_SCHEDULES",
     "ReleaseOffsetSettingsService",
     "MeasurementDefinitionScheduleService",
-    "RELEASE_OFFSET_SETTINGS_KEYS",
-    "SCHEDULE_SETTINGS_KEYS",
     "deserialize_schedule",
     "ScheduleSettingsProvider",
     "ScheduleSettingsService",
