@@ -1,308 +1,110 @@
-# pyright: reportMissingImports=false
-
-"""MeterReadingSyncService の batch transaction 機能をテストするモジュール。
-
-Step 5 で実装された nested savepoint による item 単位の error handling と
-batch-level transaction の動作を検証する。
-"""
-
 from __future__ import annotations
 
-import sys
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime
-from decimal import Decimal
-from pathlib import Path
+import sqlite3
+from datetime import UTC, datetime
+from typing import cast
 
 import pytest
-
-sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
-
-from meter_reading_mini.core.contract_models import (
-    MeterReadingSyncRequest,
-    ResultStatus,  # noqa: E402
-    ValueSchema,
+from reading_service_helpers import (
+    build_services,
+    confirmation_context,
+    create_plan,
+    mobile_submission,
+    sync_request,
 )
+
 from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
-    MeasurementDefinitionRecord,
-    PlannedReadingRecord,
     ReadingUpsertRequest,
-    ReplacementUpsertRequest,
-    UpsertDisposition,
+    ReadingWriteService,
     UpsertOutcome,
 )
-from meter_reading_mini.core.reading_signature import calculate_meter_reading_signature
-from conftest import FakeSession  # noqa: E402
-
-TEST_DEVICE_ID = "550e8400-e29b-41d4-a716-446655440000"
+from meter_reading_mini.db.repositories import SQLiteRepository
 
 
-@dataclass
-class TrackingRepository:
-    """Batch transaction テスト用の repository。
-
-    各 item の upsert に対して制御された outcome を返し、
-    どの item が処理されたかを記録する。
-    """
-
-    planned_readings: dict[str, PlannedReadingRecord] = field(default_factory=dict)
-    measurement_definitions: dict[str, MeasurementDefinitionRecord] = field(default_factory=dict)
-    reading_outcomes: list[UpsertOutcome] = field(default_factory=list)
-    replacement_outcomes: list[UpsertOutcome] = field(default_factory=list)
-
-    upserted_reading_ids: list[str] = field(default_factory=list)
-    upserted_replacement_ids: list[str] = field(default_factory=list)
-    raise_on_reading_index: int | None = None
-    raise_on_replacement_index: int | None = None
-
-    def get_planned_reading(self, planned_reading_id: str) -> PlannedReadingRecord | None:
-        return self.planned_readings.get(planned_reading_id)
-
-    def get_measurement_definition(
-        self,
-        measurement_definition_id: str,
-    ) -> MeasurementDefinitionRecord | None:
-        return self.measurement_definitions.get(measurement_definition_id)
-
-    def upsert_reading(self, request: ReadingUpsertRequest) -> UpsertOutcome:
-        idx = len(self.upserted_reading_ids)
-        if self.raise_on_reading_index == idx:
-            raise ValueError(f"Simulated error at reading index {idx}")
-        self.upserted_reading_ids.append(request.planned_reading_id)
-        if self.reading_outcomes:
-            return self.reading_outcomes.pop(0)
-        return UpsertOutcome(UpsertDisposition.INSERTED)
-
-    def upsert_replacement(self, request: ReplacementUpsertRequest) -> UpsertOutcome:
-        idx = len(self.upserted_replacement_ids)
-        if self.raise_on_replacement_index == idx:
-            raise ValueError(f"Simulated error at replacement index {idx}")
-        self.upserted_replacement_ids.append(request.replacement_event_id)
-        if self.replacement_outcomes:
-            return self.replacement_outcomes.pop(0)
-        return UpsertOutcome(UpsertDisposition.INSERTED)
-
-    def reflect_replacement(self, request: ReplacementUpsertRequest) -> None:
-        pass
+def _scheduled(hour: int) -> datetime:
+    return datetime(2026, 2, 4, hour, 0, tzinfo=UTC)
 
 
-def build_reading_item(
-    *,
-    planned_reading_id: str,
-    result_status: str = "measured",
-    raw_reading: str | None = None,
-    recorded_at: str = "2026-04-01T08:00:00+09:00",
-    client_updated_at: str = "2026-04-01T08:05:00+09:00",
-    device_id: str = TEST_DEVICE_ID,
-    updated_by: str = "android-01",
-) -> dict[str, object]:
-    item: dict[str, object] = {
-        "planned_reading_id": planned_reading_id,
-        "result_status": result_status,
-        "recorded_at": recorded_at,
-        "client_updated_at": client_updated_at,
-        "device_id": device_id,
-        "updated_by": updated_by,
-    }
-    if raw_reading is not None:
-        item["raw_reading"] = raw_reading
-    signature = calculate_meter_reading_signature(
-        planned_reading_id=planned_reading_id,
-        result_status=ResultStatus(result_status),
-        raw_reading=Decimal(raw_reading) if raw_reading is not None else None,
-        structured_payload_json=None,
-        recorded_at=datetime.fromisoformat(recorded_at),
-        device_id=device_id,
-    )
-    item["signature"] = signature
-    return item
-
-
-def test_batch_txn_partial_rejection_accepts_remaining_items() -> None:
-    """複数 reading item 中で 1 つが validation error になっても、
-    残りが処理されることを確認する（nested savepoint による個別 rollback）。
-    """
-
-    repository = TrackingRepository(
-        planned_readings={
-            "plan-good-1": PlannedReadingRecord(
-                planned_reading_id="plan-good-1",
-                measurement_definition_id="md-1",
-                meter_id="meter-1",
-            ),
-            "plan-bad-1": PlannedReadingRecord(
-                planned_reading_id="plan-bad-1",
-                measurement_definition_id="md-bad",
-                meter_id="meter-1",
-            ),
-            "plan-good-2": PlannedReadingRecord(
-                planned_reading_id="plan-good-2",
-                measurement_definition_id="md-1",
-                meter_id="meter-1",
-            ),
-        },
-        measurement_definitions={
-            "md-1": MeasurementDefinitionRecord(
-                measurement_definition_id="md-1",
-                value_schema=ValueSchema.DECIMAL_STRING,
-            ),
-            # md-bad は未設定 → resolve で MissingMeasurementDefinitionError
-        },
-    )
-    service = MeterReadingSyncService(
-        session=FakeSession(),
-        planned_reading_repository=repository,
-        measurement_definition_repository=repository,
-        reading_repository=repository,
-        replacement_repository=repository,
-        replacement_reflection_repository=None,
-    )
-    request = MeterReadingSyncRequest.model_validate(
-        {
-            "reading_items": [
-                build_reading_item(planned_reading_id="plan-good-1", raw_reading="10.0"),
-                build_reading_item(planned_reading_id="plan-bad-1", raw_reading="20.0"),
-                build_reading_item(planned_reading_id="plan-good-2", raw_reading="30.0"),
-            ],
-            "replacement_items": [],
-        }
+def _build_sync_with_connection(
+    conn: sqlite3.Connection,
+    repository: SQLiteRepository,
+    writer: ReadingWriteService,
+) -> MeterReadingSyncService:
+    return MeterReadingSyncService(
+        conn,
+        repository,
+        repository,
+        writer,
+        repository,
+        repository,
+        replacement_reflection_repository=repository,
     )
 
-    response = service.sync(request)
 
-    # 1 件目と 3 件目は accepted、2 件目は rejected
-    assert response.accepted_reading_items == 2
-    assert response.rejected_reading_items[0].item_index == 1
-    assert response.rejected_reading_items[0].planned_reading_id == "plan-bad-1"
-    # Repository には 1 件目と 3 件目が記録される
-    assert repository.upserted_reading_ids == ["plan-good-1", "plan-good-2"]
+def test_unexpected_error_rolls_back_every_prior_item(
+    file_database_repository: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    service = _build_sync_with_connection(conn, repository, writer)
+    create_plan(repository, "plan-accepted", _scheduled(4))
+    create_plan(repository, "plan-fails", _scheduled(5))
+    original_upsert = writer.upsert_reading
 
+    def write_then_fail(request: ReadingUpsertRequest) -> UpsertOutcome:
+        outcome = original_upsert(request)
+        if request.planned_reading_id == "plan-fails":
+            raise RuntimeError("予期しない障害")
+        return outcome
 
-def test_batch_txn_error_on_upsert_rejects_item_but_continues() -> None:
-    """upsert 中に例外が発生した item は rejected として記録され、
-    他の item は続行されることを確認する。
-    """
-
-    call_count = {"reading": 0}  # 呼び出し回数をカウント
-
-    class CountingRepository(TrackingRepository):
-        def upsert_reading(self, request: ReadingUpsertRequest) -> UpsertOutcome:
-            if call_count["reading"] == 1:  # 2 番目の呼び出しで例外を raise
-                call_count["reading"] += 1
-                raise ValueError(f"Simulated error at reading call #{call_count['reading']}")
-            call_count["reading"] += 1
-            self.upserted_reading_ids.append(request.planned_reading_id)
-            return UpsertOutcome(UpsertDisposition.INSERTED)
-
-    repository = CountingRepository(
-        planned_readings={
-            "plan-1": PlannedReadingRecord(
-                planned_reading_id="plan-1",
-                measurement_definition_id="md-1",
-                meter_id="meter-1",
+    monkeypatch.setattr(writer, "upsert_reading", write_then_fail)
+    with pytest.raises(RuntimeError, match="予期しない障害"):
+        service.sync(
+            sync_request(
+                mobile_submission("plan-accepted", "10"),
+                mobile_submission("plan-fails", "20"),
             ),
-            "plan-2": PlannedReadingRecord(
-                planned_reading_id="plan-2",
-                measurement_definition_id="md-1",
-                meter_id="meter-1",
-            ),
-            "plan-3": PlannedReadingRecord(
-                planned_reading_id="plan-3",
-                measurement_definition_id="md-1",
-                meter_id="meter-1",
-            ),
-        },
-        measurement_definitions={
-            "md-1": MeasurementDefinitionRecord(
-                measurement_definition_id="md-1",
-                value_schema=ValueSchema.DECIMAL_STRING,
-            ),
-        },
-    )
-    service = MeterReadingSyncService(
-        session=FakeSession(),
-        planned_reading_repository=repository,
-        measurement_definition_repository=repository,
-        reading_repository=repository,
-        replacement_repository=repository,
-        replacement_reflection_repository=None,
-    )
-    request = MeterReadingSyncRequest.model_validate(
-        {
-            "reading_items": [
-                build_reading_item(planned_reading_id="plan-1", raw_reading="10.0"),
-                build_reading_item(planned_reading_id="plan-2", raw_reading="20.0"),
-                build_reading_item(planned_reading_id="plan-3", raw_reading="30.0"),
-            ],
-            "replacement_items": [],
-        }
-    )
+            confirmation_context(),
+        )
 
-    response = service.sync(request)
-
-    # 1 件目と 3 件目は accepted、2 件目は rejected
-    assert response.accepted_reading_items == 2
-    assert response.rejected_reading_items[0].item_index == 1
-    assert response.rejected_reading_items[0].planned_reading_id == "plan-2"
-    # Repository には 1 件目と 3 件目だけが記録
-    assert repository.upserted_reading_ids == ["plan-1", "plan-3"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reading_transactions WHERE planned_reading_id IN (?, ?)",
+        ("plan-accepted", "plan-fails"),
+    ).fetchone() == (0,)
 
 
-def test_batch_txn_unexpected_outer_error_rolls_back_all_items() -> None:
-    """外側トランザクション内の想定外エラーで全体ロールバックが発生することを確認する。
+class _FailingCommitConnection:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
 
-    本テストでは、reading と replacement 両方の processing 外で例外が発生したシナリオをシミュレートします。
-    これにより、全体ロールバックが発生し、何も accepted にはならないことを確認します。
-    """
+    @property
+    def in_transaction(self) -> bool:
+        return self._conn.in_transaction
 
-    class BrokenSession(FakeSession):
-        """begin トランザクション内で想定外エラーを raise する session。"""
+    def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
+        if sql == "COMMIT":
+            raise sqlite3.OperationalError("simulated COMMIT failure")
+        return self._conn.execute(sql, parameters)
 
-        def begin(self):
-            """Context manager がエラーを raise する。"""
 
-            @contextmanager
-            def error_context():
-                raise RuntimeError("Simulated outer transaction failure")
-                yield  # 到達不可能
-                # This prevents "finally:" blocks from being reached
+def test_commit_failure_rolls_back_completed_batch(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    create_plan(repository, "plan-commit-fails", _scheduled(4))
+    failing_conn = cast(sqlite3.Connection, _FailingCommitConnection(conn))
+    service = _build_sync_with_connection(failing_conn, repository, writer)
 
-            return error_context()
+    with pytest.raises(sqlite3.OperationalError, match="simulated COMMIT failure"):
+        service.sync(
+            sync_request(mobile_submission("plan-commit-fails", "10")),
+            confirmation_context(),
+        )
 
-    repository = TrackingRepository(
-        planned_readings={
-            "plan-1": PlannedReadingRecord(
-                planned_reading_id="plan-1",
-                measurement_definition_id="md-1",
-                meter_id="meter-1",
-            ),
-        },
-        measurement_definitions={
-            "md-1": MeasurementDefinitionRecord(
-                measurement_definition_id="md-1",
-                value_schema=ValueSchema.DECIMAL_STRING,
-            ),
-        },
-    )
-    service = MeterReadingSyncService(
-        session=BrokenSession(),
-        planned_reading_repository=repository,
-        measurement_definition_repository=repository,
-        reading_repository=repository,
-        replacement_repository=repository,
-        replacement_reflection_repository=None,
-    )
-    request = MeterReadingSyncRequest.model_validate(
-        {
-            "reading_items": [
-                build_reading_item(planned_reading_id="plan-1", raw_reading="10.0"),
-            ],
-            "replacement_items": [],
-        }
-    )
-
-    # 外側トランザクション内のエラーで RuntimeError が raise される
-    with pytest.raises(RuntimeError, match="Simulated outer transaction failure"):
-        service.sync(request)
+    assert conn.in_transaction is False
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reading_transactions WHERE planned_reading_id = 'plan-commit-fails'"
+    ).fetchone() == (0,)

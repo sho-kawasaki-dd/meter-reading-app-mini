@@ -58,6 +58,8 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReadingCycleScheduleDefaultRecord,
     ReadingSessionReleaseOffsetRecord,
     ReadingUpsertRequest,
+    ReplacementBoundaryCalculationRecord,
+    ReplacementBoundaryCalculationUpdate,
     ReplacementBoundaryRecord,
     ReplacementUpsertRequest,
     ScheduleItem,
@@ -305,7 +307,9 @@ class SQLiteRepository:
     ) -> MeasurementDefinitionRecord | None:
         row = self._conn.execute(
             "SELECT measurement_definition_id, value_schema, calculation_method, multiplier, "
-            "decimal_places, rollover_value FROM measurement_definitions "
+            "decimal_places, rollover_value, location_id, reading_cycle, is_active, "
+            "generation_start_date, display_name, category, unit, purpose "
+            "FROM measurement_definitions "
             "WHERE measurement_definition_id = ?",
             (measurement_definition_id,),
         ).fetchone()
@@ -321,6 +325,14 @@ class SQLiteRepository:
             multiplier=multiplier,
             decimal_places=int(row[4]) if row[4] is not None else None,
             rollover_value=_read_decimal(str(row[5]) if row[5] is not None else None),
+            location_id=str(row[6]),
+            reading_cycle=ReadingCycle(str(row[7])),
+            is_active=bool(row[8]),
+            generation_start_date=_read_date(str(row[9])),
+            display_name=str(row[10]),
+            category=Category(str(row[11])),
+            unit=str(row[12]),
+            purpose=Purpose(str(row[13])),
         )
 
     def list_planned_reading_generation_definitions(
@@ -440,6 +452,26 @@ class SQLiteRepository:
             if request.planned_reading_id in seen:
                 continue
             seen.add(request.planned_reading_id)
+            existing = self._conn.execute(
+                "SELECT 1 FROM planned_readings WHERE planned_reading_id = ?",
+                (request.planned_reading_id,),
+            ).fetchone()
+            if existing is not None:
+                continue
+            meter = self.get_meter_master(request.meter_id)
+            if meter is None or not meter.is_active:
+                raise InactiveMasterError(
+                    f"有効な物理メーターを予定枠へ指定してください: {request.meter_id}"
+                )
+            definition = self._conn.execute(
+                "SELECT is_active FROM measurement_definitions WHERE measurement_definition_id = ?",
+                (request.measurement_definition_id,),
+            ).fetchone()
+            if definition is not None and not bool(definition[0]):
+                raise InactiveMasterError(
+                    "無効な測定定義の新しい予定枠は生成できません: "
+                    f"{request.measurement_definition_id}"
+                )
             cursor = self._execute(
                 "INSERT INTO planned_readings (planned_reading_id, measurement_definition_id, "
                 "meter_id, location_id, business_date, release_date, "
@@ -680,6 +712,16 @@ class SQLiteRepository:
         ).fetchone()
         return self._meter_record(row) if row is not None else None
 
+    def list_meter_masters(self, *, include_inactive: bool = False) -> list[MeterMasterRecord]:
+        sql = (
+            "SELECT meter_id, location_id, location_name, meter_name, category, meter_serial, "
+            "is_active FROM physical_meters"
+        )
+        if not include_inactive:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY location_id, meter_id"
+        return [self._meter_record(row) for row in self._conn.execute(sql).fetchall()]
+
     @staticmethod
     def _meter_record(row: tuple[Any, ...]) -> MeterMasterRecord:
         return MeterMasterRecord(
@@ -827,6 +869,43 @@ class SQLiteRepository:
         measurement_definition_id: str,
         request: MeasurementDefinitionUpdateRequest,
     ) -> None:
+        immutable = self._conn.execute(
+            "SELECT location_id, reading_cycle, value_schema, calculation_method "
+            "FROM measurement_definitions WHERE measurement_definition_id = ?",
+            (measurement_definition_id,),
+        ).fetchone()
+        if immutable is None:
+            raise ValidationError(f"測定定義が見つかりません: {measurement_definition_id}")
+        protected_values = (
+            (request.location_id, str(immutable[0]), "集計場所"),
+            (
+                request.reading_cycle.value if request.reading_cycle is not None else None,
+                str(immutable[1]),
+                "検針周期",
+            ),
+            (
+                request.value_schema.value if request.value_schema is not None else None,
+                str(immutable[2]),
+                "値形式",
+            ),
+            (
+                request.calculation_method.value
+                if request.calculation_method is not None
+                else None,
+                str(immutable[3]),
+                "計算方法",
+            ),
+        )
+        for requested, stored, label in protected_values:
+            if requested is not None and requested != stored:
+                raise ValidationError(f"作成後に{label}は変更できません。")
+
+        try:
+            purpose = Purpose(request.purpose).value
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "集計目的は operational / billing / audit のいずれかです。"
+            ) from exc
         cursor = self._execute(
             "UPDATE measurement_definitions SET display_name = ?, category = ?, unit = ?, "
             "multiplier = ?, decimal_places = ?, warning_threshold = ?, rollover_value = ?, "
@@ -839,7 +918,7 @@ class SQLiteRepository:
                 request.decimal_places,
                 _decimal_text(request.warning_threshold),
                 _decimal_text(request.rollover_value),
-                request.purpose,
+                purpose,
                 measurement_definition_id,
             ),
         )
@@ -1296,6 +1375,43 @@ class SQLiteRepository:
                 )
         return result
 
+    def list_measured_readings_on_or_after(
+        self,
+        measurement_definition_id: str,
+        meter_id: str,
+        *,
+        from_scheduled_at: datetime,
+    ) -> list[HistoricalMeasuredReadingRecord]:
+        rows = self._conn.execute(
+            "SELECT p.planned_reading_id, p.meter_id, p.scheduled_at, "
+            "rt.raw_reading, rt.recorded_at "
+            "FROM planned_readings AS p JOIN reading_transactions AS rt "
+            "ON rt.planned_reading_id = p.planned_reading_id "
+            "WHERE p.measurement_definition_id = ? AND p.meter_id = ? "
+            "AND rt.result_status = 'measured' AND rt.raw_reading IS NOT NULL "
+            "AND p.scheduled_at >= ? "
+            "ORDER BY p.scheduled_at, p.planned_reading_id",
+            (
+                measurement_definition_id,
+                meter_id,
+                utc_now_str(from_scheduled_at),
+            ),
+        ).fetchall()
+        result: list[HistoricalMeasuredReadingRecord] = []
+        for row in rows:
+            raw_reading = _read_decimal(str(row[3]))
+            if raw_reading is not None:
+                result.append(
+                    HistoricalMeasuredReadingRecord(
+                        planned_reading_id=str(row[0]),
+                        raw_reading=raw_reading,
+                        recorded_at=parse_utc(str(row[4])),
+                        meter_id=str(row[1]),
+                        scheduled_at=parse_utc(str(row[2])),
+                    )
+                )
+        return result
+
     @staticmethod
     def _reading_content_matches(row: tuple[Any, ...], request: ReadingUpsertRequest) -> bool:
         stored_payload: str | None = None
@@ -1421,6 +1537,13 @@ class SQLiteRepository:
                 f"再計算対象の検針結果が見つかりません: {update.planned_reading_id}"
             )
 
+    def get_reading_client_updated_at(self, planned_reading_id: str) -> datetime | None:
+        row = self._conn.execute(
+            "SELECT client_updated_at FROM reading_transactions WHERE planned_reading_id = ?",
+            (planned_reading_id,),
+        ).fetchone()
+        return parse_utc(str(row[0])) if row is not None else None
+
     def upsert_replacement(self, request: ReplacementUpsertRequest) -> UpsertOutcome:
         client_updated_at = utc_now_str(request.client_updated_at)
         existing = self._conn.execute(
@@ -1523,6 +1646,65 @@ class SQLiteRepository:
             replaced_at=parse_utc(str(row[4])),
         )
 
+    @staticmethod
+    def _replacement_boundary_calculation_record(
+        row: tuple[Any, ...],
+    ) -> ReplacementBoundaryCalculationRecord:
+        return ReplacementBoundaryCalculationRecord(
+            replacement_event_id=str(row[0]),
+            measurement_definition_id=str(row[1]),
+            old_meter_id=str(row[2]),
+            new_meter_id=str(row[3]),
+            replaced_at=parse_utc(str(row[4])),
+            old_final_reading=_read_decimal(str(row[5]) if row[5] is not None else None),
+        )
+
+    def list_replacement_boundaries_for_event(
+        self, replacement_event_id: str
+    ) -> list[ReplacementBoundaryCalculationRecord]:
+        rows = self._conn.execute(
+            "SELECT replacement_event_id, measurement_definition_id, old_meter_id, new_meter_id, "
+            "replaced_at, old_final_reading FROM replacement_boundaries "
+            "WHERE replacement_event_id = ? "
+            "ORDER BY measurement_definition_id",
+            (replacement_event_id,),
+        ).fetchall()
+        return [self._replacement_boundary_calculation_record(row) for row in rows]
+
+    def list_replacement_boundaries_for_old_meter(
+        self, measurement_definition_id: str, old_meter_id: str
+    ) -> list[ReplacementBoundaryCalculationRecord]:
+        rows = self._conn.execute(
+            "SELECT replacement_event_id, measurement_definition_id, old_meter_id, new_meter_id, "
+            "replaced_at, old_final_reading FROM replacement_boundaries "
+            "WHERE measurement_definition_id = ? AND old_meter_id = ? "
+            "ORDER BY replaced_at, replacement_event_id",
+            (measurement_definition_id, old_meter_id),
+        ).fetchall()
+        return [self._replacement_boundary_calculation_record(row) for row in rows]
+
+    def update_replacement_boundary_calculation(
+        self, update: ReplacementBoundaryCalculationUpdate
+    ) -> None:
+        cursor = self._execute(
+            "UPDATE replacement_boundaries SET previous_measured_reading = ?, "
+            "previous_measured_planned_reading_id = ?, old_meter_usage_delta = ?, updated_at = ? "
+            "WHERE replacement_event_id = ? AND measurement_definition_id = ?",
+            (
+                _decimal_text(update.previous_measured_reading),
+                update.previous_measured_planned_reading_id,
+                _decimal_text(update.old_meter_usage_delta),
+                utc_now_str(self._now()),
+                update.replacement_event_id,
+                update.measurement_definition_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ValidationError(
+                "更新対象の交換境界が見つかりません: "
+                f"{update.replacement_event_id}/{update.measurement_definition_id}"
+            )
+
     def reflect_replacement(self, request: ReplacementUpsertRequest) -> None:
         new_meter = self.get_meter_master(request.new_meter_id)
         if new_meter is None or not new_meter.is_active:
@@ -1593,7 +1775,7 @@ class SQLiteRepository:
                     request.replacement_event_id,
                     definition_id,
                     request.location_id,
-                    _date_text(request.replaced_at.date()),
+                    _date_text(parse_utc(replaced_at).astimezone(self._business_timezone()).date()),
                     request.old_meter_id,
                     request.new_meter_id,
                     replaced_at,
@@ -1634,6 +1816,22 @@ class SQLiteRepository:
                         str(planned[5]),
                     ),
                 )
+                successor = self._conn.execute(
+                    "SELECT measurement_definition_id, meter_id, location_id, business_date, "
+                    "release_date, reading_session, scheduled_at FROM planned_readings "
+                    "WHERE planned_reading_id = ?",
+                    (new_id,),
+                ).fetchone()
+                if successor is None or tuple(str(value) for value in successor) != (
+                    definition_id,
+                    request.new_meter_id,
+                    str(planned[1]),
+                    str(planned[2]),
+                    str(planned[3]),
+                    str(planned[4]),
+                    str(planned[5]),
+                ):
+                    raise ValidationError(f"交換後の予定枠を一意に確定できません: {new_id}")
                 self._execute(
                     "UPDATE planned_readings SET task_state = 'superseded', closed_at = ?, "
                     "close_reason = 'meter_replaced', superseded_by_planned_reading_id = ? "

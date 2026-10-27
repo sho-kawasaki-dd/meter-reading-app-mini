@@ -41,6 +41,22 @@ class UsageDeltaCalculationService:
         if reading_request.raw_reading is None:
             return UsageDeltaCalculationResult(last_reading=None, usage_delta=None)
 
+        return self.calculate_measured_reading(
+            measurement_definition,
+            reading_request.raw_reading,
+            previous_measured_reading,
+            replacement_boundary,
+        )
+
+    def calculate_measured_reading(
+        self,
+        measurement_definition: MeasurementDefinitionRecord,
+        raw_reading: Decimal,
+        previous_measured_reading: HistoricalMeasuredReadingRecord | None,
+        replacement_boundary: ReplacementBoundaryRecord | None = None,
+    ) -> UsageDeltaCalculationResult:
+        """保存済み実測値の差分を、前回実測または交換境界から計算する。"""
+
         if measurement_definition.calculation_method is CalculationMethod.RAW_ONLY:
             return UsageDeltaCalculationResult(last_reading=None, usage_delta=None)
 
@@ -51,7 +67,7 @@ class UsageDeltaCalculationService:
         ):
             last_reading = replacement_boundary.new_initial_reading
             delta = _calculate_delta(
-                reading_request.raw_reading,
+                raw_reading,
                 last_reading,
                 measurement_definition.rollover_value,
             )
@@ -65,7 +81,7 @@ class UsageDeltaCalculationService:
 
         last_reading = previous_measured_reading.raw_reading
         delta = _calculate_delta(
-            reading_request.raw_reading,
+            raw_reading,
             last_reading,
             measurement_definition.rollover_value,
         )

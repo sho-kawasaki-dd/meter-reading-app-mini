@@ -8,10 +8,11 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Callable
 from decimal import Decimal
 
-logger = logging.getLogger(__name__)
+from pydantic import ValidationError as PydanticValidationError
 
 from meter_reading_mini.core.contract_models import (
     IgnoredReadingSyncItem,
@@ -28,30 +29,35 @@ from meter_reading_mini.core.contract_models import (
     ValueSchema,
     resolve_meter_reading_submission,
 )
+from meter_reading_mini.core.errors import DomainError, InactiveMasterError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionLookupRepository,
     MeasurementDefinitionRecord,
     PlannedReadingLookupRepository,
     PlannedReadingRecord,
-    ReadingUpsertRepository,
+    ReadingConfirmationContext,
     ReadingUpsertRequest,
+    ReadingWriteService,
     ReplacementEventUpsertRepository,
     ReplacementReflectionRepository,
     ReplacementUpsertRequest,
+    ResultSource,
+    StaffRepository,
     UpsertDisposition,
     UpsertOutcome,
 )
+from meter_reading_mini.core.mobile_reading import validate_note, validate_sheet_id
 from meter_reading_mini.core.reading_signature import (
-    InvalidMeterReadingSignatureError,
-    MissingDeviceIdForSignatureError,
     SignatureCanonicalizationError,
-    verify_meter_reading_signature,
+    calculate_meter_reading_signature,
 )
-from pydantic import ValidationError
-from sqlalchemy.orm import Session
+from meter_reading_mini.core.timeutil import parse_utc, utc_now_str
+from meter_reading_mini.db.connection import savepoint, transaction
+
+logger = logging.getLogger(__name__)
 
 
-class MeterReadingSyncServiceError(ValueError):
+class MeterReadingSyncServiceError(DomainError):
     """sync 中に item 単位で処理できなかったことを表す基底例外。"""
 
     code: SyncItemRejectCode
@@ -89,44 +95,10 @@ class InvalidReadingSubmissionError(MeterReadingSyncServiceError):
         self.planned_reading_id = planned_reading_id
 
 
-class MissingDeviceIdError(MeterReadingSyncServiceError):
-    """signature seed に必要な device_id が空だったことを表す。"""
-
-    code = SyncItemRejectCode.MISSING_DEVICE_ID
-
-    def __init__(self, planned_reading_id: str) -> None:
-        super().__init__(f"Missing device_id for planned_reading_id {planned_reading_id}.")
-        self.planned_reading_id = planned_reading_id
-
-
-class SignatureCanonicalizationFailedError(MeterReadingSyncServiceError):
-    """署名検証用の canonical JSON を生成できなかったことを表す。"""
-
-    code = SyncItemRejectCode.SIGNATURE_CANONICALIZATION_FAILED
-
-    def __init__(self, planned_reading_id: str) -> None:
-        super().__init__(
-            "structured_payload could not be canonicalized for signature verification "
-            f"for planned_reading_id {planned_reading_id}."
-        )
-        self.planned_reading_id = planned_reading_id
-
-
-class InvalidSignatureError(MeterReadingSyncServiceError):
-    """サーバー再計算した署名と一致しないことを表す。"""
-
-    code = SyncItemRejectCode.INVALID_SIGNATURE
-
-    def __init__(self, planned_reading_id: str) -> None:
-        super().__init__(f"Invalid signature for planned_reading_id {planned_reading_id}.")
-        self.planned_reading_id = planned_reading_id
-
-
 ReadingSubmissionResolver = Callable[
     [MeterReadingSubmission, str, ValueSchema, int | None, Decimal | None],
     ResolvedMeterReadingSubmission,
 ]
-ReadingSignatureVerifier = Callable[[ResolvedMeterReadingSubmission], None]
 
 
 def _default_reading_submission_resolver(
@@ -147,54 +119,36 @@ def _default_reading_submission_resolver(
     )
 
 
-def _default_reading_signature_verifier(submission: ResolvedMeterReadingSubmission) -> None:
-    """既定の署名 verifier として canonical JSON 化と SHA-256 検証を呼び出す。"""
-
-    verify_meter_reading_signature(
-        planned_reading_id=submission.planned_reading_id,
-        result_status=submission.result_status,
-        raw_reading=submission.raw_reading,
-        structured_payload_json=submission.structured_payload,
-        recorded_at=submission.recorded_at,
-        device_id=submission.device_id,
-        signature=submission.signature,
-    )
-
-
 class MeterReadingSyncService:
-    """metadata lookup、resolved validation、upsert を順番にまとめる service。"""
+    """検針結果を確定し、バッチ全体のトランザクションを所有する service。"""
 
     def __init__(
         self,
-        session: Session,
+        conn: sqlite3.Connection,
         planned_reading_repository: PlannedReadingLookupRepository,
         measurement_definition_repository: MeasurementDefinitionLookupRepository,
-        reading_repository: ReadingUpsertRepository,
+        reading_repository: ReadingWriteService,
         replacement_repository: ReplacementEventUpsertRepository,
-        replacement_reflection_repository: ReplacementReflectionRepository | None = None,
+        staff_repository: StaffRepository,
+        replacement_reflection_repository: ReplacementReflectionRepository,
         *,
         resolve_submission: ReadingSubmissionResolver = _default_reading_submission_resolver,
-        verify_signature: ReadingSignatureVerifier = _default_reading_signature_verifier,
     ) -> None:
-        self._session = session
+        self._conn = conn
         self._planned_reading_repository = planned_reading_repository
         self._measurement_definition_repository = measurement_definition_repository
         self._reading_repository = reading_repository
         self._replacement_repository = replacement_repository
+        self._staff_repository = staff_repository
         self._replacement_reflection_repository = replacement_reflection_repository
         self._resolve_submission = resolve_submission
-        self._verify_signature = verify_signature
 
-    def sync(self, request: MeterReadingSyncRequest) -> MeterReadingSyncResponse:
-        """バッチ request を item 単位で処理し、accepted/ignored/rejected を集計する。
-
-        外側トランザクションで全体を保護し、各 item は nested savepoint で個別に扱う。
-        個別エラーは rollback し item を rejected として記録、残り item は続行。
-
-        トランザクション分岐ロジック：
-        - 既にトランザクション中（外側から開始済み）：savepoint のみ使用
-        - トランザクション未開始：begin() で開始して保護
-        """
+    def sync(
+        self,
+        request: MeterReadingSyncRequest,
+        confirmation_context: ReadingConfirmationContext,
+    ) -> MeterReadingSyncResponse:
+        """業務拒否だけを item の SAVEPOINT で戻し、予期しない例外はバッチを戻す。"""
 
         accepted_reading_items = 0
         accepted_replacement_items = 0
@@ -203,90 +157,78 @@ class MeterReadingSyncService:
         rejected_reading_items: list[RejectedReadingSyncItem] = []
         rejected_replacement_items: list[RejectedReplacementSyncItem] = []
 
-        def _process_items() -> None:
-            """reading_items と replacement_items を処理する内部メソッド。"""
-            nonlocal accepted_reading_items, accepted_replacement_items
-            nonlocal ignored_reading_items, ignored_replacement_items
-            nonlocal rejected_reading_items, rejected_replacement_items
+        with transaction(self._conn):
+            sheet_id = validate_sheet_id(confirmation_context.sheet_id)
+            staff = self._staff_repository.get_staff(confirmation_context.staff_id)
+            if staff is None or not staff.is_active:
+                raise InactiveMasterError(
+                    f"有効な確定担当者を指定してください: {confirmation_context.staff_id}"
+                )
+            updated_by = staff.display_name.strip()
+            if not updated_by:
+                raise InactiveMasterError("確定担当者名が空の担当者は指定できません。")
 
             for item_index, submission in enumerate(request.reading_items):
-                sp = self._session.begin_nested()  # SavePoint
                 try:
-                    # まず planned reading と measurement definition を解決しないと、
-                    # value_schema に応じた厳密検証へ進めない。
-                    reading_request = self._build_reading_upsert_request(submission)
-                    outcome = self._reading_repository.upsert_reading(reading_request)
-                    if outcome.accepted:
-                        accepted_reading_items += 1
-                        sp.commit()
-                    else:
-                        sp.commit()
-                        ignored_reading_items.append(
-                            IgnoredReadingSyncItem(
-                                item_index=item_index,
-                                planned_reading_id=submission.planned_reading_id,
-                                code=SyncItemIgnoreCode.STALE_CLIENT_UPDATE,
-                                detail=outcome.detail,
-                            )
+                    with savepoint(self._conn, f"reading_item_{item_index}"):
+                        reading_request = self._build_reading_upsert_request(
+                            submission,
+                            device_id=sheet_id,
+                            updated_by=updated_by,
                         )
-                except MeterReadingSyncServiceError as exc:
-                    sp.rollback()
+                        outcome = self._reading_repository.upsert_reading(reading_request)
+                except DomainError as exc:
+                    code = (
+                        exc.code
+                        if isinstance(exc, MeterReadingSyncServiceError)
+                        else SyncItemRejectCode.INVALID_READING_SUBMISSION
+                    )
                     logger.warning(
                         "Rejected reading item %s at index %d with code=%s: %s",
                         submission.planned_reading_id,
                         item_index,
-                        exc.code.value,
+                        code.value,
                         str(exc),
                     )
                     rejected_reading_items.append(
                         RejectedReadingSyncItem(
                             item_index=item_index,
                             planned_reading_id=submission.planned_reading_id,
-                            code=exc.code,
+                            code=code,
                             detail=str(exc),
                         )
                     )
-                except Exception as exc:
-                    sp.rollback()
-                    logger.warning(
-                        "Rejected reading item %s at index %d (unexpected error): %s",
-                        submission.planned_reading_id,
-                        item_index,
-                        str(exc),
-                    )
-                    rejected_reading_items.append(
-                        RejectedReadingSyncItem(
-                            item_index=item_index,
-                            planned_reading_id=submission.planned_reading_id,
-                            code=SyncItemRejectCode.UNEXPECTED_ERROR,
-                            detail=str(exc),
-                        )
-                    )
-
-            for item_index, submission in enumerate(request.replacement_items):
-                sp = self._session.begin_nested()  # SavePoint
-                try:
-                    replacement_request = self._build_replacement_upsert_request(submission)
-                    outcome = self._replacement_repository.upsert_replacement(replacement_request)
+                else:
                     if outcome.accepted:
-                        if self._replacement_reflection_repository is not None:
-                            self._replacement_reflection_repository.reflect_replacement(
-                                replacement_request
-                            )
-                        accepted_replacement_items += 1
-                        sp.commit()
+                        accepted_reading_items += 1
                     else:
-                        sp.commit()
-                        ignored_replacement_items.append(
-                            IgnoredReplacementSyncItem(
+                        ignored_reading_items.append(
+                            IgnoredReadingSyncItem(
                                 item_index=item_index,
-                                replacement_event_id=submission.replacement_event_id,
-                                code=SyncItemIgnoreCode.STALE_CLIENT_UPDATE,
+                                planned_reading_id=submission.planned_reading_id,
+                                code=_ignore_code(outcome),
                                 detail=outcome.detail,
                             )
                         )
-                except Exception as exc:
-                    sp.rollback()
+
+            for item_index, submission in enumerate(request.replacement_items):
+                try:
+                    with savepoint(self._conn, f"replacement_item_{item_index}"):
+                        replacement_request = self._build_replacement_upsert_request(
+                            submission,
+                            updated_by=updated_by,
+                        )
+                        outcome = self._replacement_repository.upsert_replacement(
+                            replacement_request
+                        )
+                        if outcome.accepted:
+                            self._replacement_reflection_repository.reflect_replacement(
+                                replacement_request
+                            )
+                            self._reading_repository.recalculate_after_replacement(
+                                replacement_request
+                            )
+                except DomainError as exc:
                     logger.warning(
                         "Rejected replacement item %s at index %d: %s",
                         submission.replacement_event_id,
@@ -297,34 +239,37 @@ class MeterReadingSyncService:
                         RejectedReplacementSyncItem(
                             item_index=item_index,
                             replacement_event_id=submission.replacement_event_id,
-                            code=SyncItemRejectCode.UNEXPECTED_ERROR,
+                            code=SyncItemRejectCode.INVALID_REPLACEMENT_SUBMISSION,
                             detail=str(exc),
                         )
                     )
+                else:
+                    if outcome.accepted:
+                        accepted_replacement_items += 1
+                    else:
+                        ignored_replacement_items.append(
+                            IgnoredReplacementSyncItem(
+                                item_index=item_index,
+                                replacement_event_id=submission.replacement_event_id,
+                                code=_ignore_code(outcome),
+                                detail=outcome.detail,
+                            )
+                        )
 
-        try:
-            # トランザクション分岐：既に開始済みなら外側 begin() をスキップ
-            if self._session.in_transaction():
-                _process_items()
-            else:
-                with self._session.begin():
-                    _process_items()
-        except Exception as exc:
-            # 想定外エラー: 全体ロールバック
-            logger.error("Unexpected error during sync, rolling back entire batch: %s", str(exc))
-            raise
-
+        duplicate_reading_items = sum(
+            item.code is SyncItemIgnoreCode.DUPLICATE_SUBMISSION for item in ignored_reading_items
+        )
         logger.info(
-            "Sync batch: readings accepted=%d ignored=%d rejected=%d; "
+            "Sync batch: readings accepted=%d ignored=%d duplicate=%d rejected=%d; "
             "replacements accepted=%d ignored=%d rejected=%d",
             accepted_reading_items,
             len(ignored_reading_items),
+            duplicate_reading_items,
             len(rejected_reading_items),
             accepted_replacement_items,
             len(ignored_replacement_items),
             len(rejected_replacement_items),
         )
-
         return MeterReadingSyncResponse(
             accepted_reading_items=accepted_reading_items,
             accepted_replacement_items=accepted_replacement_items,
@@ -334,6 +279,7 @@ class MeterReadingSyncService:
             rejected_replacement_items=rejected_replacement_items,
             detail=_build_response_detail(
                 ignored_reading_items=len(ignored_reading_items),
+                duplicate_reading_items=duplicate_reading_items,
                 ignored_replacement_items=len(ignored_replacement_items),
                 rejected_reading_items=len(rejected_reading_items),
                 rejected_replacement_items=len(rejected_replacement_items),
@@ -341,25 +287,25 @@ class MeterReadingSyncService:
         )
 
     def _build_reading_upsert_request(
-        self, submission: MeterReadingSubmission
+        self,
+        submission: MeterReadingSubmission,
+        *,
+        device_id: str,
+        updated_by: str,
     ) -> ReadingUpsertRequest:
-        """transport contract を resolved 済みの保存要求へ変換する。"""
+        """未署名入力を検証し、PC 側監査情報と署名を付ける。"""
 
         planned_reading = self._planned_reading_repository.get_planned_reading(
             submission.planned_reading_id
         )
         if planned_reading is None:
             raise MissingPlannedReadingError(submission.planned_reading_id)
-
         measurement_definition = self._measurement_definition_repository.get_measurement_definition(
             planned_reading.measurement_definition_id
         )
         if measurement_definition is None:
             raise MissingMeasurementDefinitionError(planned_reading.measurement_definition_id)
-
         try:
-            # measurement definition が解決できたあとでだけ、
-            # raw_reading / structured_payload の厳密な妥当性を判断できる。
             resolved_submission = self._resolve_submission(
                 submission,
                 measurement_definition.measurement_definition_id,
@@ -367,56 +313,73 @@ class MeterReadingSyncService:
                 measurement_definition.decimal_places,
                 measurement_definition.rollover_value,
             )
-        except ValidationError as exc:
+        except PydanticValidationError as exc:
             raise InvalidReadingSubmissionError(
                 submission.planned_reading_id,
                 _format_validation_error(exc),
             ) from exc
 
+        recorded_at = parse_utc(utc_now_str(resolved_submission.recorded_at))
+        client_updated_at = parse_utc(utc_now_str(resolved_submission.client_updated_at))
         try:
-            self._verify_signature(resolved_submission)
-        except MissingDeviceIdForSignatureError as exc:
-            raise MissingDeviceIdError(submission.planned_reading_id) from exc
+            signature = calculate_meter_reading_signature(
+                planned_reading_id=resolved_submission.planned_reading_id,
+                result_status=resolved_submission.result_status,
+                raw_reading=resolved_submission.raw_reading,
+                structured_payload_json=resolved_submission.structured_payload,
+                recorded_at=recorded_at,
+                device_id=device_id,
+            )
         except SignatureCanonicalizationError as exc:
-            raise SignatureCanonicalizationFailedError(submission.planned_reading_id) from exc
-        except InvalidMeterReadingSignatureError as exc:
-            raise InvalidSignatureError(submission.planned_reading_id) from exc
+            raise InvalidReadingSubmissionError(
+                submission.planned_reading_id,
+                str(exc),
+            ) from exc
 
         return ReadingUpsertRequest(
             planned_reading_id=resolved_submission.planned_reading_id,
             measurement_definition_id=resolved_submission.measurement_definition_id,
             result_status=resolved_submission.result_status,
-            recorded_at=resolved_submission.recorded_at,
-            client_updated_at=resolved_submission.client_updated_at,
+            recorded_at=recorded_at,
+            client_updated_at=client_updated_at,
             raw_reading=resolved_submission.raw_reading,
             structured_payload_json=resolved_submission.structured_payload,
-            device_id=resolved_submission.device_id,
-            updated_by=resolved_submission.updated_by,
-            signature=resolved_submission.signature,
-            note=resolved_submission.note,
+            device_id=device_id,
+            updated_by=updated_by,
+            signature=signature,
+            note=validate_note(resolved_submission.note),
+            result_source=ResultSource.MOBILE_HTML,
         )
 
     def _build_replacement_upsert_request(
         self,
         submission: MeterReplacementSubmission,
+        *,
+        updated_by: str,
     ) -> ReplacementUpsertRequest:
-        """交換イベントの transport contract を保存要求へ正規化する。"""
+        """交換イベントの確定担当者を PC 側で補完する。"""
 
         return ReplacementUpsertRequest(
             replacement_event_id=submission.replacement_event_id,
             location_id=submission.location_id,
             old_meter_id=submission.old_meter_id,
             new_meter_id=submission.new_meter_id,
-            replaced_at=submission.replaced_at,
-            client_updated_at=submission.client_updated_at,
+            replaced_at=parse_utc(utc_now_str(submission.replaced_at)),
+            client_updated_at=parse_utc(utc_now_str(submission.client_updated_at)),
             old_final_reading=submission.old_final_reading,
             new_initial_reading=submission.new_initial_reading,
-            updated_by=submission.updated_by,
+            updated_by=updated_by,
             note=submission.note,
         )
 
 
-def _format_validation_error(exc: ValidationError) -> str:
+def _ignore_code(outcome: UpsertOutcome) -> SyncItemIgnoreCode:
+    if outcome.disposition is UpsertDisposition.IGNORED_DUPLICATE:
+        return SyncItemIgnoreCode.DUPLICATE_SUBMISSION
+    return SyncItemIgnoreCode.STALE_CLIENT_UPDATE
+
+
+def _format_validation_error(exc: PydanticValidationError) -> str:
     """Pydantic の ValidationError を API response 向けの短い文字列へ整える。"""
 
     issues = exc.errors(include_url=False)
@@ -428,6 +391,7 @@ def _format_validation_error(exc: ValidationError) -> str:
 def _build_response_detail(
     *,
     ignored_reading_items: int,
+    duplicate_reading_items: int,
     ignored_replacement_items: int,
     rejected_reading_items: int,
     rejected_replacement_items: int,
@@ -435,8 +399,11 @@ def _build_response_detail(
     """ignored / rejected 件数から、オペレーター向けの概要メッセージを組み立てる。"""
 
     detail_parts: list[str] = []
-    if ignored_reading_items:
-        detail_parts.append(f"Ignored {ignored_reading_items} stale reading item(s).")
+    stale_reading_items = ignored_reading_items - duplicate_reading_items
+    if stale_reading_items:
+        detail_parts.append(f"Ignored {stale_reading_items} stale reading item(s).")
+    if duplicate_reading_items:
+        detail_parts.append(f"Ignored {duplicate_reading_items} duplicate reading item(s).")
     if ignored_replacement_items:
         detail_parts.append(f"Ignored {ignored_replacement_items} stale replacement item(s).")
     if rejected_reading_items:
@@ -453,18 +420,16 @@ __all__ = [
     "MeasurementDefinitionRecord",
     "MeterReadingSyncService",
     "MeterReadingSyncServiceError",
-    "InvalidSignatureError",
     "MissingMeasurementDefinitionError",
-    "MissingDeviceIdError",
     "MissingPlannedReadingError",
     "PlannedReadingRecord",
     "PlannedReadingLookupRepository",
     "MeasurementDefinitionLookupRepository",
-    "ReadingUpsertRepository",
+    "ReadingConfirmationContext",
+    "ReadingWriteService",
     "ReadingUpsertRequest",
     "ReplacementEventUpsertRepository",
     "ReplacementUpsertRequest",
-    "SignatureCanonicalizationFailedError",
     "UpsertDisposition",
     "UpsertOutcome",
 ]

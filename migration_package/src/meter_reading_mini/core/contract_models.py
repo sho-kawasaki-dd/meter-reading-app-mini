@@ -545,6 +545,7 @@ class SyncItemRejectCode(StrEnum):
     UNKNOWN_PLANNED_READING = "unknown_planned_reading"
     UNKNOWN_MEASUREMENT_DEFINITION = "unknown_measurement_definition"
     INVALID_READING_SUBMISSION = "invalid_reading_submission"
+    INVALID_REPLACEMENT_SUBMISSION = "invalid_replacement_submission"
     UNEXPECTED_ERROR = "unexpected_error"
 
 

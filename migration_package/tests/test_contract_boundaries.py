@@ -38,18 +38,15 @@ def test_contract_modules_do_not_import_services_ui_or_database() -> None:
                     assert module == "meter_reading_mini.core.contract_models"
 
 
-def test_measurement_definition_update_contract_omits_immutable_fields() -> None:
+def test_measurement_definition_update_contract_exposes_immutable_fields_for_rejection() -> None:
     update_fields = {field.name for field in fields(MeasurementDefinitionUpdateRequest)}
 
-    assert (
-        not {
-            "reading_cycle",
-            "value_schema",
-            "calculation_method",
-            "location_id",
-        }
-        & update_fields
-    )
+    assert {
+        "reading_cycle",
+        "value_schema",
+        "calculation_method",
+        "location_id",
+    } <= update_fields
 
 
 def test_contract_vocabularies_cover_replacement_and_duplicate_outcomes() -> None:

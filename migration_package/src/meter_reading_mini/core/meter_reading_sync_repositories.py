@@ -202,7 +202,11 @@ class MeasurementDefinitionUpdateRequest:
     decimal_places: int | None
     warning_threshold: Decimal | None
     rollover_value: Decimal | None
-    purpose: str
+    purpose: Purpose | str
+    location_id: str | None = None
+    reading_cycle: ReadingCycle | None = None
+    value_schema: ValueSchema | None = None
+    calculation_method: CalculationMethod | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +232,16 @@ class ReadingConfirmationContext:
     sheet_id: str
     staff_id: str
     staff_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManualReadingInput:
+    planned_reading_id: str
+    result_status: ResultStatus
+    recorded_at: datetime
+    raw_reading: Decimal | None
+    structured_payload_json: dict[str, Any] | None
+    note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +288,14 @@ class MeasurementDefinitionRecord:
     multiplier: Decimal = Decimal("1.0")
     decimal_places: int | None = None
     rollover_value: Decimal | None = None
+    location_id: str | None = None
+    reading_cycle: ReadingCycle | None = None
+    is_active: bool = True
+    generation_start_date: date | None = None
+    display_name: str | None = None
+    category: Category | None = None
+    unit: str | None = None
+    purpose: Purpose | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +417,25 @@ class ReplacementBoundaryRecord:
     new_initial_reading: Decimal | None
     new_meter_id: str | None = None
     replaced_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementBoundaryCalculationRecord:
+    replacement_event_id: str
+    measurement_definition_id: str
+    old_meter_id: str
+    new_meter_id: str
+    replaced_at: datetime
+    old_final_reading: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementBoundaryCalculationUpdate:
+    replacement_event_id: str
+    measurement_definition_id: str
+    previous_measured_reading: Decimal | None
+    previous_measured_planned_reading_id: str | None
+    old_meter_usage_delta: Decimal | None
 
 
 class UpsertDisposition(StrEnum):
@@ -576,6 +617,8 @@ class TimezoneSettingsRepository(Protocol):
 
 
 class MeterMasterWriteRepository(Protocol):
+    def list_meter_masters(self, *, include_inactive: bool = False) -> list[MeterMasterRecord]: ...
+
     def get_meter_master(self, meter_id: str) -> MeterMasterRecord | None: ...
 
     def create_meter_master(self, request: MeterMasterCreateRequest) -> MeterMasterRecord: ...
@@ -650,6 +693,14 @@ class MeterMasterQueryRepository(Protocol):
     def list_meter_master_data(self) -> list[MeterMasterData]:
         """Return all physical meters required by the Android client."""
         ...
+
+
+class MeasurementDefinitionManagementRepository(
+    MeasurementDefinitionWriteRepository,
+    MeasurementDefinitionLookupRepository,
+    Protocol,
+):
+    """測定定義の読み書きをまとめる管理用境界。"""
 
 
 class MeasurementDefinitionQueryRepository(Protocol):
@@ -747,6 +798,12 @@ class ReadingUpsertRepository(Protocol):
         ...
 
 
+class ReadingWriteService(ReadingUpsertRepository, Protocol):
+    """共通書込経路を使った交換後の再計算契約。"""
+
+    def recalculate_after_replacement(self, request: ReplacementUpsertRequest) -> None: ...
+
+
 class HistoricalMeasuredReadingLookupRepository(Protocol):
     """usage_delta 計算用に直近 measured 読値を返す repository。"""
 
@@ -774,6 +831,16 @@ class HistoricalMeasuredReadingLookupRepository(Protocol):
         """Return later measured readings in deterministic schedule order."""
         ...
 
+    def list_measured_readings_on_or_after(
+        self,
+        measurement_definition_id: str,
+        meter_id: str,
+        *,
+        from_scheduled_at: datetime,
+    ) -> list[HistoricalMeasuredReadingRecord]:
+        """Return measured readings at or after a replacement boundary."""
+        ...
+
 
 class ReadingPersistenceRepository(Protocol):
     """計算済み reading request を永続化する low-level repository。"""
@@ -784,6 +851,10 @@ class ReadingPersistenceRepository(Protocol):
 
     def save_calculated_usage(self, update: CalculatedUsageUpdate) -> None:
         """Persist calculated usage fields without changing audit metadata."""
+        ...
+
+    def get_reading_client_updated_at(self, planned_reading_id: str) -> datetime | None:
+        """Return the stored conflict timestamp for PC correction sequencing."""
         ...
 
 
@@ -819,6 +890,22 @@ class ReplacementBoundaryLookupRepository(Protocol):
         ...
 
 
+class ReplacementBoundaryMaintenanceRepository(Protocol):
+    """交換境界の旧メーター基準値・使用量を維持する契約。"""
+
+    def list_replacement_boundaries_for_event(
+        self, replacement_event_id: str
+    ) -> list[ReplacementBoundaryCalculationRecord]: ...
+
+    def list_replacement_boundaries_for_old_meter(
+        self, measurement_definition_id: str, old_meter_id: str
+    ) -> list[ReplacementBoundaryCalculationRecord]: ...
+
+    def update_replacement_boundary_calculation(
+        self, update: ReplacementBoundaryCalculationUpdate
+    ) -> None: ...
+
+
 __all__ = [
     "CalculatedUsageUpdate",
     "DailySchedule",
@@ -826,6 +913,7 @@ __all__ = [
     "MeasurementDefinitionCreateRequest",
     "MeasurementDefinitionData",
     "MeasurementDefinitionLookupRepository",
+    "MeasurementDefinitionManagementRepository",
     "MeasurementDefinitionQueryRepository",
     "MeasurementDefinitionRecord",
     "MeasurementDefinitionScheduleRecord",
@@ -863,6 +951,7 @@ __all__ = [
     "PlannedReadingTaskState",
     "PlannedReadingTaskQueryRepository",
     "ReadingConfirmationContext",
+    "ManualReadingInput",
     "ReadingCycleScheduleDefaultRecord",
     "ReadingCycleScheduleDefaultsRepository",
     "ReleaseDateCalculator",
@@ -870,8 +959,12 @@ __all__ = [
     "ReadingSessionReleaseOffsetRecord",
     "ReadingSessionReleaseOffsetsRepository",
     "ReadingUpsertRepository",
+    "ReadingWriteService",
     "ReadingUpsertRequest",
     "ReplacementBoundaryLookupRepository",
+    "ReplacementBoundaryCalculationRecord",
+    "ReplacementBoundaryCalculationUpdate",
+    "ReplacementBoundaryMaintenanceRepository",
     "ReplacementBoundaryRecord",
     "ReplacementReflectionRepository",
     "ReplacementEventUpsertRepository",
