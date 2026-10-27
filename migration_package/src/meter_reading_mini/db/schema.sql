@@ -37,15 +37,38 @@ CREATE TABLE measurement_definitions (
     reading_cycle IN ('daily_1x','daily_2x','daily_3x','weekly','monthly','every_two_months')
   ),
   purpose TEXT NOT NULL DEFAULT 'operational' CHECK (purpose IN ('operational','billing','audit')),
+  generation_start_date TEXT NOT NULL,
   is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
 );
 CREATE INDEX idx_measurement_defs_location ON measurement_definitions(location_id);
 
 CREATE TABLE measurement_definition_schedules (
-  measurement_definition_id TEXT PRIMARY KEY
+  measurement_definition_id TEXT NOT NULL
     REFERENCES measurement_definitions(measurement_definition_id),
+  effective_from_date TEXT NOT NULL,
+  schedule_json TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (measurement_definition_id, effective_from_date)
+);
+
+CREATE TABLE reading_cycle_schedule_defaults (
+  reading_cycle TEXT NOT NULL CHECK (
+    reading_cycle IN ('daily_1x','daily_2x','daily_3x','weekly','monthly','every_two_months')
+  ),
+  effective_from_date TEXT NOT NULL,
   schedule_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (reading_cycle, effective_from_date)
+);
+
+CREATE TABLE reading_session_release_offsets (
+  reading_session TEXT NOT NULL CHECK (
+    reading_session IN ('00:00','06:00','08:00','14:00','17:00','22:00')
+  ),
+  effective_from_date TEXT NOT NULL,
+  offset_days INTEGER NOT NULL CHECK (typeof(offset_days) = 'integer'),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (reading_session, effective_from_date)
 );
 
 CREATE TABLE meter_assignments (
@@ -71,7 +94,12 @@ CREATE TABLE planned_readings (
     task_state IN ('open','completed','auto_closed','superseded')
   ),
   closed_at TEXT,
-  close_reason TEXT
+  close_reason TEXT CHECK (
+    close_reason IS NULL OR close_reason IN (
+      'cutoff_elapsed','meter_replaced','schedule_recomposed','definition_deactivated'
+    )
+  ),
+  superseded_by_planned_reading_id TEXT REFERENCES planned_readings(planned_reading_id)
 );
 CREATE INDEX idx_planned_readings_def_sched
   ON planned_readings(measurement_definition_id, scheduled_at, planned_reading_id);
@@ -94,7 +122,7 @@ CREATE TABLE reading_transactions (
   updated_by TEXT NOT NULL,
   signature TEXT NOT NULL,
   note TEXT,
-  result_source TEXT,
+  result_source TEXT NOT NULL CHECK (result_source IN ('mobile_html','manual')),
   arrival_sequence INTEGER NOT NULL DEFAULT 1
 );
 

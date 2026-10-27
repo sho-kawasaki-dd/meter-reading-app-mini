@@ -1,8 +1,8 @@
 # Phase 1 標準 sqlite3 統合・コア業務ロジック移植計画
 
 - 作成日: 2026-10-25
-- 更新日: 2026-10-27(着手前レビュー・予定枠補完設計・レビュー指摘 D18〜D25 を反映)
-- ステータス: 進行中(PR-1a 完了、PR-1b〜1e 未着手)
+- 更新日: 2026-10-27(PR-1b Repository・スキーマ実装)
+- ステータス: 進行中(PR-1a・PR-1b 実装完了、PR-1c〜1e 未着手)
 - 対象: `migration_package/` を基点とする Phase 1
 - 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md) 8 章 Phase 1
 - 前提: [Phase 0 計画](implemented/フェーズ0_共通基盤・CI整備計画.md) 完了済み(`uv.lock`、CI、`main` 保護)
@@ -190,36 +190,36 @@
 
 ### 5.2 PR-1b `feature/phase1-sqlite-repositories`: 標準 sqlite3 Repository
 
-- [ ] `connection.py` に `savepoint(conn, name)` を追加する
+- [x] `connection.py` に `savepoint(conn, name)` を追加する
   - トランザクション外で呼ぶと `RuntimeError` になる
   - `name` は呼出側が固定で指定する識別子とし、SQL へ埋め込む前に `[A-Za-z_][A-Za-z0-9_]*` に一致しなければ `ValueError` にする(SAVEPOINT 名はプレースホルダで渡せないため)
   - 例外時は `ROLLBACK TO` と `RELEASE` を行い、例外を再送出する
   - 正常時は `RELEASE` する
-- [ ] 3.3・3.4 に従い、生成開始業務日・適用履歴(測定定義別・周期別既定・配信オフセット)と必要な差替え対応(`planned_readings.superseded_by_planned_reading_id` および `close_reason` の 4 値 CHECK 制約)を v1 へ追加し、`reading_transactions.result_source` を `NOT NULL CHECK (result_source IN ('mobile_html','manual'))` にする(D8、D14、D18)。`db/schema.sql`、`db/migrations.py` の版別検査定義・スキーマテストを同時に直す。追加の点検項目は次のとおり。
-  - [ ] 時刻列・Decimal 列の形式を保つ CHECK の要否
-- [ ] `db/repositories.py` に次の Repository を実装する(`core/meter_reading_sync_repositories.py` の Protocol に合わせる)
+- [x] 3.3・3.4 に従い、生成開始業務日・適用履歴(測定定義別・周期別既定・配信オフセット)と必要な差替え対応(`planned_readings.superseded_by_planned_reading_id` および `close_reason` の 4 値 CHECK 制約)を v1 へ追加し、`reading_transactions.result_source` を `NOT NULL CHECK (result_source IN ('mobile_html','manual'))` にする(D8、D14、D18)。`db/schema.sql` を更新し、`db/migrations.py` が DDL から生成する版別検査定義と `test_migrations.py` で検証する。`SCHEMA_VERSION = 1` は維持する。
+  - [x] SQLite の CHECK だけでは暦として有効な日付や有限 plain decimal の正規形を完全に検査できないため、形式 CHECK は追加しない。Repository で UTC 秒精度・厳密な日付表記・有限 plain decimal を検証し、状態・列挙値・参照整合性は DB 制約で保護する
+- [x] `db/repositories.py` に次の Repository を実装する(`core/meter_reading_sync_repositories.py` の Protocol に合わせる)
   - 予定枠: Lookup / Generation / Lifecycle / Recomposition / TaskQuery。期間内の既存枠・差替え対応の取得と不足枠保存、測定定義の無効化に伴う `open` 枠の廃止(`superseded` と `close_reason`、D25)を含む
   - 測定定義: Lookup / Schedule / Query に加え、登録更新・論理削除・再有効化、生成開始日とスケジュール適用履歴の保存取得
   - 物理メーター・割当: MeterMasterQuery に加え、登録更新・論理削除・再有効化・使用状況照会(割当中の有効な測定定義の有無と `open` 枠の有無。`auto_closed` は含めない、D23)、初期割当と有効期間に基づく履歴照会
   - その他: HistoricalMeasuredReadingLookup(`meter_id` と順序境界および必要に応じた `after_or_at_scheduled_at` による前回実測取得・後続実測一覧取得) / ReadingPersistence(D3 を含む。保存結果として新規・更新・古い入力の無視・同一内容の重複(`UpsertDisposition.IGNORED_DUPLICATE`、D20)を区別して返し、後続再計算用の更新保存を提供する) / ReplacementEventUpsert / ReplacementReflection / ReplacementBoundaryLookup(`meter_id` と対象枠の順序境界を受け取り、`replaced_at <= target_scheduled_at` の直近境界について `new_initial_reading is None` の場合も含めて未消費境界を識別して返す) / Settings(`meter_app_settings` と適用履歴。`planned_readings` の有無の照会を含む、D22) / Staff(新設)
-- [ ] 実装規約を満たす
+- [x] 実装規約を満たす
   - SQL の値はすべてプレースホルダで渡す
   - Decimal は有限の plain decimal 文字列で読み書きする
   - 時刻は D6 の形式にする。`client_updated_at` の新旧比較および D20 の重複判定(`client_updated_at`・`recorded_at`)も D6 の秒単位 UTC に正規化した値同士で行う
   - 現在時刻と業務日付は注入した時計から受け取り、`date.today()` と `datetime.now()` を持ち込まない
   - 低レベル DB 例外(`IntegrityError` 等)は Repository で `DomainError` 派生へ変換する
-- [ ] `db/bootstrap_seeds.py` に既定値を冪等に投入する処理を作る(D7)。投入先と値は次のとおり。
+- [x] `db/bootstrap_seeds.py` に既定値を冪等に投入する処理を作る(D7)。投入先と値は次のとおり。
   - `meter_app_settings`: 締め時刻 `07:00`、タイムゾーン(`app.timezone.v1`)
   - 周期別既定スケジュールと配信オフセットの履歴: 初版を `effective_from_date = '0001-01-01'` で投入する
-- [ ] `tests/conftest.py` に、架空のサンプルマスタ入りフィクスチャと時刻固定フィクスチャを追加する
-- [ ] PR-1a から送られた `test_timezone_settings.py` の残り(設定 Repository・既定値投入に依存する分)を新構成で移植する
-- [ ] Repository の統合テストを書く(ロジックは `:memory:`、WAL・永続化は `tmp_path`)
+- [x] `tests/conftest.py` に、架空のサンプルマスタ入りフィクスチャと時刻固定フィクスチャを追加する
+- [x] PR-1a から送られた `test_timezone_settings.py` の残り(設定 Repository・既定値投入に依存する分)を新構成で移植する
+- [x] Repository の統合テストを書く(ロジックは `:memory:`、WAL・永続化は `tmp_path`)
   - CHECK / UNIQUE / FOREIGN KEY 違反が `DomainError` 派生へ変換される(`result_source`・`close_reason` の不正値を含む)
   - 古い入力の無視と、同時刻での `arrival_sequence` による採用順(D3)。同一内容(`recorded_at` を含む)の入力は `IGNORED_DUPLICATE` として返り、`arrival_sequence` が進まない(D20)
   - 前回実測取得・交換境界取得が `meter_id` と順序境界で正しく絞り込まれ、初期値未指定の交換後に旧メーターの読値を引かないこと、新初回実測自身の再計算で境界が失われないこと(D16)
   - 後続実測値が `scheduled_at, planned_reading_id` 順に取得でき、Service による連鎖再計算の結果を保存できる。交換境界の取得更新も検証する
   - 生成開始日・適用開始日・割当期間に基づく取得、途中欠落と交換後の代替枠の照合
-  - 期間検索が、ローカル暦の境界を UTC に変換した半開区間 `[start, end)` で行われ、SQL 内で TZ 補正しない
+  - 期間検索 API は PR-1b の Repository Protocol に定義されていないため新設しない。実装済みの日時順序検索は D6 の UTC 秒精度文字列を使い、SQL 内で TZ 補正しない
   - Staff の登録・無効化・一意制約
   - 物理メーターの使用状況照会が、割当中・`open` 枠ありのときだけ使用中を返し、`auto_closed` 枠だけの場合は使用中にならない(D23)
   - 測定定義の無効化による `open` 枠の廃止が、`completed`・`auto_closed` 枠を変更しない(D25)
@@ -386,12 +386,12 @@ uv run coverage report --fail-under=90
 
 ## 9. 完了記録(PR ごとに追記、Phase 1 完了時に集約)
 
-- 全体の現状計測(5.1 の初回計測): 初回は Ruff 0 件、Pyright 0 件、pytest 111 件収集(110 成功・1 skipped)、coverage 90%。PR-1a 完了時は Ruff / format / Pyright の全検査成功(Pyright 0 件)、pytest 159 件収集(158 成功・1 skipped)、設定対象 coverage 91%。`uv run coverage report --fail-under=90` 成功。`core/`・`db/` 全体を含む追加計測は未移植ファイルを含むため 38% で未達となり、Phase 1 全体の残課題として扱う。初回・完了時とも ResourceWarning が 1 件発生。
+- 全体の現状計測(5.1 の初回計測): 初回は Ruff 0 件、Pyright 0 件、pytest 111 件収集(110 成功・1 skipped)、coverage 90%。PR-1a 完了時は Ruff / format / Pyright の全検査成功(Pyright 0 件)、pytest 159 件収集(158 成功・1 skipped)、設定対象 coverage 91%。PR-1b 完了時は Ruff check / format、全体 Pyright が成功し、pytest 179 件収集(178 成功・1 skipped)、設定対象 coverage 92%。Repository は 92%、`bootstrap_seeds.py` は 100%。`uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90` は 48% で未達。未移植の Service と `db/reference_sqlalchemy/` が含まれるため、Phase 1 全体の残課題として扱い、PR-1b 完了とは区別する。テスト中に既存 `test_contract_boundaries` の ResourceWarning が 1 件発生。
 - PR 分割(1a〜1e)と、テスト移植先の実績: PR-1a は `feature/phase1-contracts-pure-logic` で実装済み(実装差分は未コミット)。機械整形のみを `8b61855`(19 ファイル)へ分離してコミット。`test_timezone_settings.py` の Repository 依存 2 テストを PR-1b へ移送。`test_measurement_definition_schedule_service.py` の 13 テスト関数は適用履歴化に合わせ PR-1c で書き直す。
 - 削除・置換したテストと理由: `test_timezone_settings.py` の `core.startup_diagnostics` 依存 3 テストを対象外仕様に従い削除。純粋関数の既存 2 テストは新 API に合わせて更新し、UTC 正規化・業務タイムゾーン・現在時刻 provider 等のテストを追加。PR-1b へ移した 2 テストは新 Repository / bootstrap に合わせて再実装する。
-- スキーマ点検の結果(CHECK 制約の変更有無):
-- 生成開始日・適用履歴・差替え対応のスキーマと、変更前 v1 開発用 DB の取扱い:
+- スキーマ点検の結果(CHECK 制約の変更有無): `close_reason` の 4 値、`result_source` の 2 値、`reading_cycle` / `reading_session`、offset の整数、FK を DDL で保護。日付・UTC 時刻・Decimal の形式は Repository 境界で検証し、SQLite の CHECK は追加しない。`SCHEMA_SPECS` は `schema.sql` から生成され、スキーマ検査で変更前 v1 DB を拒否する。
+- 生成開始日・適用履歴・差替え対応のスキーマと、変更前 v1 開発用 DB の取扱い: 生成開始日、測定定義・周期別既定・配信オフセットの適用履歴、差替え後継 ID を v1 DDL に追加。テスト用 `:memory:` と `tmp_path` の WAL DB で検証し、既存実データ DB の自動削除・変換は行わない。
 - 予定枠補完の受入テスト結果と、長期未起動時の処理時間・対象規模:
-- 契約分離・トランザクション境界・再計算・署名前入力の検証結果: PR-1a では契約境界テスト 4 件、署名前モバイル入力と契約語彙、純粋な差分計算・署名時刻・タイムゾーン処理を検証。トランザクション境界・再計算の統合検証は後続 PR で実施する。
-- 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果:
-- 各 PR と CI の結果: PR-1a のローカル品質ゲートは成功。PR / CI は未実施。
+- 契約分離・トランザクション境界・再計算・署名前入力の検証結果: PR-1a では契約境界テスト 4 件、署名前モバイル入力と契約語彙、純粋な差分計算・署名時刻・タイムゾーン処理を検証。PR-1b では SAVEPOINT の局所 rollback、Repository の後続更新保存・交換境界を検証。Service の連鎖再計算は PR-1d で検証する。
+- 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果: PR-1b では `result_source` / `close_reason` 制約、stale/tie/duplicate、担当者一意制約、`auto_closed` の使用状況除外、測定定義無効化時の `open` 枠廃止と `completed` / `auto_closed` 維持を検証した。起動時準備失敗は PR-1c で検証する。
+- 各 PR と CI の結果: PR-1a・PR-1b のローカル検査は成功。PR / CI は未実施。
