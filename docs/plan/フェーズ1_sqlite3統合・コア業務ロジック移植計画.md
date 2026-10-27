@@ -263,37 +263,37 @@
 
 ### 5.4 PR-1d `feature/phase1-readings-masters`: 検針結果・マスタ・交換
 
-- [ ] `MeterReadingSyncService` から `Session` を外し、`conn` と `transaction`、`savepoint` で作り直す(D2)
+- [x] `MeterReadingSyncService` から `Session` を外し、`conn` と `transaction`、`savepoint` で作り直す(D2)
   - 業務拒否は SAVEPOINT 単位で戻し、拒否として集計する
   - 予期しない例外は全体を ROLLBACK して再送出する
   - 旧実装の `except Exception` による拒否扱いを廃止する
   - 同一内容の再取込を重複として集計し、何も更新しない(D20)
-- [ ] 署名は PC の確定時に生成する(D4)。スマホ側署名の検証を外し、`device_id = sheet_id`、`updated_by = 確定担当者名`、`result_source = 'mobile_html'` を受け取って確定時に署名を生成・記録できるようにする
+- [x] 署名は PC の確定時に生成する(D4)。スマホ側署名の検証を外し、`device_id = sheet_id`、`updated_by = 確定担当者名`、`result_source = 'mobile_html'` を受け取って確定時に署名を生成・記録できるようにする
   - 未署名入力を検証し、有効な担当者とシート ID から保存要求を構築する。時刻を D21 の形式へ正規化してから署名を生成し、保存値から再現できることを検証する
-- [ ] `ReadingWriteOrchestrationService` を、PC 直接入力とスマホ取込で共通の経路にする。結果保存・監査署名・交換境界・予定枠更新・後続すべての実測値の連鎖再計算(`UsageDeltaCalculationService` に一元化)を同一トランザクションで整合させる
+- [x] `ReadingWriteOrchestrationService` を、PC 直接入力とスマホ取込で共通の経路にする。結果保存・監査署名・交換境界・予定枠更新・後続すべての実測値の連鎖再計算(`UsageDeltaCalculationService` に一元化)を同一トランザクションで整合させる
   - 実測と非実測の相互変更、交換前の訂正による境界更新、新初回の訂正・非実測化を 3.2 に従って処理する。負の差分等の業務拒否では元の書込と副作用を一緒に戻す
   - PC 直接入力・訂正は `device_id = 'pc-direct'`・`result_source = 'manual'` で署名を生成し、D3 の「古い入力の無視」を適用せず、`client_updated_at` を D19 の規則で決める
   - `auto_closed` 枠への後日入力を `completed` にして再計算する処理(無効化済みメーターの既存枠を含む、D23)
-- [ ] メーター交換を原子的に実行する
+- [x] メーター交換を原子的に実行する
   - `planned_reading.scheduled_at >= replaced_at`(UTC 正規化後)で対象枠を判定し、先に新メーター枠を INSERT する(旧枠の `scheduled_at` と `release_date` を引き継いで明示設定する)
   - 新メーター枠の INSERT 後に、旧メーターの `open` / `auto_closed` 枠を `close_reason = 'meter_replaced'`・`superseded_by_planned_reading_id = 新枠ID` で `superseded` に UPDATE する
   - 割当を切り替える(旧メーターは自動で無効化しない、D23)
   - 交換境界(`old_meter_usage_delta` への倍率・ロールオーバー適用およびロールオーバー未設定時の負の差分拒否を含む)と交換記録を保存し、遅延交換時の完了済み新メーター実測値も倍率・ロールオーバー込みで再計算する
-- [ ] `MeterMasterService` を Repository 経由に作り直す。物理削除は行わず、有効な測定定義に割当中または `open` 予定枠を持つ物理メーターの無効化は `MasterInUseError` で拒否し(`auto_closed` は拒否の対象にしない)、無効化済みマスタの新規利用(割当・交換先指定・新規枠生成)は `InactiveMasterError` で拒否する(D11、D23)
-- [ ] 測定定義・初期割当の登録更新と論理削除・再有効化を Service 経由で提供する(D15)。登録時の生成開始日・初期履歴・割当保存を原子的に行い、無効化済みマスタの新規利用を各操作で拒否する
+- [x] `MeterMasterService` を Repository 経由に作り直す。物理削除は行わず、有効な測定定義に割当中または `open` 予定枠を持つ物理メーターの無効化は `MasterInUseError` で拒否し(`auto_closed` は拒否の対象にしない)、無効化済みマスタの新規利用(割当・交換先指定・新規枠生成)は `InactiveMasterError` で拒否する(D11、D23)
+- [x] 測定定義・初期割当の登録更新と論理削除・再有効化を Service 経由で提供する(D15)。登録時の生成開始日・初期履歴・割当保存を原子的に行い、無効化済みマスタの新規利用を各操作で拒否する
   - 測定定義の更新で `reading_cycle`・`value_schema`・`calculation_method`・`location_id` の変更が指定された場合は `DomainError` 派生例外で拒否する(D15)
   - 測定定義の無効化は、現在業務日以降の `open` 枠を同一トランザクションで `superseded`(`close_reason = 'definition_deactivated'`)にする。`completed`・`auto_closed` 枠と結果は変更しない(D25)
   - 再有効化は枠を復活させず、生成開始業務日を `max(既存値, 現在業務日)` へ更新する(D25)
-- [ ] `StaffService` を新設する(D9、D11: 無効化済み担当者の指定は `InactiveMasterError` で拒否)
-- [ ] 次のテストを移植し、ファイル DB(`tmp_path`)で実行する: `test_meter_master_service`、`test_meter_reading_sync_service`、`test_meter_reading_sync_service_batch_txn`、`test_reading_write_orchestration`
-- [ ] ロールバック検証を追加する
+- [x] `StaffService` を新設する(D9、D11: 無効化済み担当者の指定は `InactiveMasterError` で拒否)
+- [x] 次のテストを移植し、ファイル DB(`tmp_path`)で実行する: `test_meter_master_service`、`test_meter_reading_sync_service`、`test_meter_reading_sync_service_batch_txn`、`test_reading_write_orchestration`
+- [x] ロールバック検証を追加する
   - 結果保存後に例外が起きた場合
   - 交換境界の更新中に例外が起きた場合
   - 後続再計算の途中で例外が起きた場合
   - 測定定義の無効化で `open` 枠の廃止中に例外が起きた場合(D25)
   - COMMIT が失敗した場合
   - SAVEPOINT で一部だけ戻した後、ほかの結果が確定している場合
-- [ ] 業務ルールの検証を追加する
+- [x] 業務ルールの検証を追加する
   - Decimal の精度
   - ロールオーバーの有無(未設定の負の差分は拒否)
   - 新メーター初期値の有無(未指定のときだけ初回使用量 0)
@@ -304,20 +304,20 @@
   - 新初回実測の訂正・非実測化で交換初期値の適用先が正しく決まる
   - `auto_closed` からの復活(無効化済みメーターの既存枠への後日入力を含む、D23)
   - `purpose` ごとの集計に必要なデータ保持
-- [ ] 監査情報・同期規則の検証を追加する(D18〜D21)
+- [x] 監査情報・同期規則の検証を追加する(D18〜D21)
   - PC 直接入力・訂正が `device_id = 'pc-direct'`・`result_source = 'manual'` で署名され、後続再計算で `result_source`・署名・`updated_by` が変わらない(D18)
   - スマホの時計が進んだ状態で PC 訂正し、その後に古い MR1 を再取込しても PC の訂正が残る(D19)
   - 同一内容の再取込は何も更新せず重複として集計され、内容が異なる同時刻の入力だけ `arrival_sequence` が進む(D20)
   - 署名が `YYYY-MM-DD HH:MM:SS`(UTC・秒単位)で生成され、保存値から再現できる(D21)
-- [ ] マスタ保護の検証を追加する(D11、D15、D23、D25)
+- [x] マスタ保護の検証を追加する(D11、D15、D23、D25)
   - 交換前に `auto_closed` 枠が残っていても、旧メーターを無効化できる
   - 無効化した旧メーターの `auto_closed` 枠に後日入力すると `completed` になり、交換境界と後続が再計算される
   - 割当中または `open` 枠のあるメーターの無効化は `MasterInUseError` で拒否される
   - 無効化したメーターを交換先・割当に指定すると `InactiveMasterError` で拒否される
   - 測定定義の更新で `reading_cycle`・`value_schema`・`calculation_method`・`location_id` の変更が `DomainError` 派生例外で拒否される(D15)
   - 測定定義の無効化で現在業務日以降の `open` 枠だけが `superseded`(`definition_deactivated`)になり、`completed`・`auto_closed` 枠と結果は変わらない。再有効化後に枠が復活せず、無効期間の補完もされない
-- [ ] マスタ登録更新・再有効化、未署名入力から PC 署名保存までの Service 統合テストを追加する
-- [ ] 残りの `core/` 対象ファイルを検査対象へ戻し、pyright strict で 0 件になる
+- [x] マスタ登録更新・再有効化、未署名入力から PC 署名保存までの Service 統合テストを追加する
+- [x] 残りの `core/` 対象ファイルを検査対象へ戻し、pyright strict で 0 件になる
 
 ### 5.5 PR-1e `feature/phase1-gate-cleanup`: 検査対象外の解除と参考資産の削除
 

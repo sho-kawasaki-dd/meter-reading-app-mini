@@ -1,186 +1,325 @@
-# pyright: reportMissingImports=false
-
 from __future__ import annotations
 
-import sys
-from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from pathlib import Path
+from functools import partial
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
-
-from meter_reading_mini.core.contract_models import CalculationMethod, ResultStatus, ValueSchema
-from meter_reading_mini.core.meter_reading_sync_repositories import (
-    HistoricalMeasuredReadingRecord,
-    MeasurementDefinitionRecord,
-    PlannedReadingRecord,
-    ReadingUpsertRequest,
-    UpsertDisposition,
-    UpsertOutcome,
+import pytest
+from reading_service_helpers import (
+    DEFINITION_ID,
+    METER_ID,
+    STAFF_ID,
+    TEST_NOW,
+    build_services,
+    create_plan,
 )
-from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
-from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationResult
+
+from meter_reading_mini.core.contract_models import ResultStatus
+from meter_reading_mini.core.errors import InactiveMasterError, ValidationError
+from meter_reading_mini.core.measurement_definition_service import (
+    MeasurementDefinitionService,
+)
+from meter_reading_mini.core.meter_master_service import MeterMasterService
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    CalculatedUsageUpdate,
+    ManualReadingInput,
+    PlannedReadingCloseReason,
+)
+from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
+from meter_reading_mini.core.reading_write_orchestration import (
+    ReadingWriteOrchestrationService,
+)
+from meter_reading_mini.core.staff_service import StaffService
+from meter_reading_mini.core.timeutil import parse_utc
+from meter_reading_mini.db.connection import transaction
 
 
-@dataclass
-class FakeOrchestrationRepository:
-    measurement_definition: MeasurementDefinitionRecord | None = None
-    planned_reading: PlannedReadingRecord | None = None
-    previous_measured_reading: HistoricalMeasuredReadingRecord | None = None
-    persisted_requests: list[ReadingUpsertRequest] = field(default_factory=list)
-    recalculated_next_readings: list[tuple[str, datetime]] = field(default_factory=list)
-    call_log: list[str] = field(default_factory=list)
-
-    def get_measurement_definition(
-        self, measurement_definition_id: str
-    ) -> MeasurementDefinitionRecord | None:
-        self.call_log.append(f"measurement:{measurement_definition_id}")
-        return self.measurement_definition
-
-    def get_planned_reading(self, planned_reading_id: str) -> PlannedReadingRecord | None:
-        self.call_log.append(f"planned:{planned_reading_id}")
-        return self.planned_reading
-
-    def get_latest_measured_reading(
-        self,
-        measurement_definition_id: str,
-        *,
-        before_scheduled_at: datetime,
-        before_planned_reading_id: str | None = None,
-        excluding_planned_reading_id: str | None = None,
-    ) -> HistoricalMeasuredReadingRecord | None:
-        self.call_log.append(f"history:{measurement_definition_id}:{excluding_planned_reading_id}")
-        return self.previous_measured_reading
-
-    def upsert_reading(self, request: ReadingUpsertRequest) -> UpsertOutcome:
-        self.call_log.append(f"persist:{request.planned_reading_id}")
-        self.persisted_requests.append(request)
-        return UpsertOutcome(UpsertDisposition.INSERTED)
-
-    def recalculate_following_measured_reading(
-        self,
-        measurement_definition_id: str,
-        *,
-        after_scheduled_at: datetime,
-        after_planned_reading_id: str | None = None,
-    ) -> int:
-        self.call_log.append(f"recalc:{measurement_definition_id}:{after_planned_reading_id}")
-        self.recalculated_next_readings.append((measurement_definition_id, after_scheduled_at))
-        return 1
+def _recorded_at(hour: int) -> datetime:
+    return datetime(2026, 2, 4, hour, 0, tzinfo=UTC)
 
 
-class FakeCalculationService:
-    def __init__(self, result: UsageDeltaCalculationResult) -> None:
-        self.result = result
-        self.calls: list[
-            tuple[
-                MeasurementDefinitionRecord,
-                ReadingUpsertRequest,
-                HistoricalMeasuredReadingRecord | None,
-            ]
-        ] = []
+def test_common_write_path_recalculates_all_following_measured_values(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    for index, hour in enumerate((4, 5, 6), start=1):
+        create_plan(repository, f"plan-{index}", _recorded_at(hour))
 
-    def calculate(
-        self,
-        measurement_definition,
-        reading_request,
-        previous_measured_reading,
-        replacement_boundary=None,
-    ):
-        self.calls.append((measurement_definition, reading_request, previous_measured_reading))
-        return self.result
-
-
-def build_request() -> ReadingUpsertRequest:
-    return ReadingUpsertRequest(
-        planned_reading_id="plan-001",
-        measurement_definition_id="md-001",
-        result_status=ResultStatus.MEASURED,
-        recorded_at=datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
-        client_updated_at=datetime(2026, 4, 1, 8, 5, tzinfo=UTC),
-        raw_reading=Decimal("12.5"),
-        structured_payload_json=None,
-        updated_by="android-01",
-        signature="sig-001",
-        note=None,
+    writer.save_manual_reading(
+        ManualReadingInput("plan-1", ResultStatus.MEASURED, _recorded_at(4), Decimal("100"), None),
+        staff_id=STAFF_ID,
+    )
+    writer.save_manual_reading(
+        ManualReadingInput("plan-2", ResultStatus.MEASURED, _recorded_at(5), Decimal("120"), None),
+        staff_id=STAFF_ID,
+    )
+    writer.save_manual_reading(
+        ManualReadingInput("plan-3", ResultStatus.MEASURED, _recorded_at(6), Decimal("150"), None),
+        staff_id=STAFF_ID,
     )
 
-
-def test_orchestration_service_loads_history_runs_calculator_and_persists_result() -> None:
-    repository = FakeOrchestrationRepository(
-        measurement_definition=MeasurementDefinitionRecord(
-            measurement_definition_id="md-001",
-            value_schema=ValueSchema.DECIMAL_STRING,
-            calculation_method=CalculationMethod.DELTA,
-            multiplier=Decimal("1.0"),
-        ),
-        planned_reading=PlannedReadingRecord(
-            planned_reading_id="plan-001",
-            measurement_definition_id="md-001",
-            meter_id="meter-001",
-            scheduled_at=datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
-        ),
-        previous_measured_reading=HistoricalMeasuredReadingRecord(
-            planned_reading_id="plan-prev",
-            raw_reading=Decimal("10.0"),
-            recorded_at=datetime(2026, 4, 1, 7, 0, tzinfo=UTC),
-        ),
-    )
-    calculator = FakeCalculationService(
-        UsageDeltaCalculationResult(last_reading=Decimal("10.0"), usage_delta=Decimal("2.5"))
-    )
-    service = ReadingWriteOrchestrationService(
-        measurement_definition_repository=repository,
-        historical_reading_repository=repository,
-        persistence_repository=repository,
-        planned_reading_repository=repository,
-        calculation_service=calculator,
+    writer.save_manual_reading(
+        ManualReadingInput("plan-2", ResultStatus.SKIPPED, _recorded_at(5), None, None),
+        staff_id=STAFF_ID,
     )
 
-    outcome = service.upsert_reading(build_request())
-
-    assert outcome.disposition is UpsertDisposition.INSERTED
-    assert repository.call_log == [
-        "measurement:md-001",
-        "planned:plan-001",
-        "history:md-001:plan-001",
-        "persist:plan-001",
-        "recalc:md-001:plan-001",
+    rows = conn.execute(
+        "SELECT planned_reading_id, result_status, last_reading, usage_delta "
+        "FROM reading_transactions ORDER BY planned_reading_id"
+    ).fetchall()
+    assert rows == [
+        ("plan-1", "measured", None, "0"),
+        ("plan-2", "skipped", None, None),
+        ("plan-3", "measured", "100", "50"),
     ]
-    assert calculator.calls[0][2] is repository.previous_measured_reading
-    assert repository.persisted_requests[0].last_reading == Decimal("10.0")
-    assert repository.persisted_requests[0].usage_delta == Decimal("2.5")
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "plan-2",
+            ResultStatus.MEASURED,
+            _recorded_at(5),
+            Decimal("120"),
+            None,
+        ),
+        staff_id=STAFF_ID,
+    )
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions "
+        "WHERE planned_reading_id = 'plan-3'"
+    ).fetchone() == ("120", "30")
 
 
-def test_orchestration_service_skips_following_recalc_for_non_measured_reading() -> None:
-    repository = FakeOrchestrationRepository(
-        measurement_definition=MeasurementDefinitionRecord(
-            measurement_definition_id="md-001",
-            value_schema=ValueSchema.DECIMAL_STRING,
-            calculation_method=CalculationMethod.DELTA,
-            multiplier=Decimal("1.0"),
-        ),
-        planned_reading=PlannedReadingRecord(
-            planned_reading_id="plan-001",
-            measurement_definition_id="md-001",
-            meter_id="meter-001",
-            scheduled_at=datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
-        ),
+def test_manual_write_generates_pc_signature_and_monotonic_update_time(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, sync_service = build_services(conn, repository)
+    create_plan(repository, "plan-manual", _recorded_at(4))
+    from reading_service_helpers import (
+        confirmation_context,
+        mobile_submission,
+        sync_request,
     )
-    calculator = FakeCalculationService(
-        UsageDeltaCalculationResult(last_reading=None, usage_delta=None)
+
+    submission = mobile_submission(
+        "plan-manual",
+        "12.5",
+        recorded_at="2026-02-04T08:00:00.987654+09:00",
+        client_updated_at="2030-01-01T00:00:00+09:00",
     )
-    service = ReadingWriteOrchestrationService(
-        measurement_definition_repository=repository,
-        historical_reading_repository=repository,
-        persistence_repository=repository,
+    response = sync_service.sync(
+        sync_request(submission),
+        confirmation_context(),
+    )
+    assert response.accepted_reading_items == 1
+
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "plan-manual",
+            ResultStatus.MEASURED,
+            _recorded_at(4),
+            Decimal("13.5"),
+            None,
+        ),
+        staff_id=STAFF_ID,
+    )
+    stale_response = sync_service.sync(
+        sync_request(submission),
+        confirmation_context(),
+    )
+    assert stale_response.ignored_reading_items[0].code.value == "stale_client_update"
+
+    stored = conn.execute(
+        "SELECT result_status, recorded_at, client_updated_at, raw_reading, device_id, "
+        "updated_by, signature, result_source, arrival_sequence FROM reading_transactions "
+        "WHERE planned_reading_id = 'plan-manual'"
+    ).fetchone()
+    assert stored == (
+        "measured",
+        "2026-02-04 04:00:00",
+        "2029-12-31 15:00:01",
+        "13.5",
+        "pc-direct",
+        "試験担当",
+        stored[6],
+        "manual",
+        2,
+    )
+    verify_meter_reading_signature(
+        planned_reading_id="plan-manual",
+        result_status=ResultStatus.MEASURED,
+        raw_reading=Decimal("13.5"),
+        structured_payload_json=None,
+        recorded_at=parse_utc(stored[1]),
+        device_id="pc-direct",
+        signature=stored[6],
+    )
+
+
+def test_downstream_recalculation_failure_rolls_back_manual_write(
+    file_database_repository: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    create_plan(repository, "plan-before", _recorded_at(4))
+    create_plan(repository, "plan-edited", _recorded_at(5))
+    create_plan(repository, "plan-after", _recorded_at(6))
+
+    for planned_id, hour, raw in (
+        ("plan-before", 4, "100"),
+        ("plan-edited", 5, "120"),
+        ("plan-after", 6, "150"),
+    ):
+        writer.save_manual_reading(
+            ManualReadingInput(
+                planned_id,
+                ResultStatus.MEASURED,
+                _recorded_at(hour),
+                Decimal(raw),
+                None,
+            ),
+            staff_id=STAFF_ID,
+        )
+
+    original_save = repository.save_calculated_usage
+
+    def fail_recalculation(update: CalculatedUsageUpdate) -> None:
+        if update.planned_reading_id == "plan-after":
+            raise RuntimeError("後続再計算の障害")
+        original_save(update)
+
+    monkeypatch.setattr(repository, "save_calculated_usage", fail_recalculation)
+    with pytest.raises(RuntimeError, match="後続再計算の障害"):
+        writer.save_manual_reading(
+            ManualReadingInput(
+                "plan-edited",
+                ResultStatus.SKIPPED,
+                _recorded_at(5),
+                None,
+                None,
+            ),
+            staff_id=STAFF_ID,
+        )
+
+    state = conn.execute(
+        "SELECT result_status, raw_reading FROM reading_transactions "
+        "WHERE planned_reading_id = 'plan-edited'"
+    ).fetchone()
+    assert state == ("measured", "120")
+    assert conn.execute(
+        "SELECT usage_delta FROM reading_transactions WHERE planned_reading_id = 'plan-after'"
+    ).fetchone() == ("30",)
+
+
+def test_auto_closed_slot_on_deactivated_meter_can_be_completed_later(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    create_plan(repository, "plan-auto-closed", TEST_NOW)
+    repository.auto_close_open_planned_readings(
+        date(2026, 2, 4),
+        closed_at=TEST_NOW,
+        close_reason=PlannedReadingCloseReason.CUTOFF_ELAPSED,
+    )
+    transaction_factory = partial(transaction, conn)
+    definition_service = MeasurementDefinitionService(
+        repository,
+        repository,
+        repository,
+        transaction_factory=transaction_factory,
+    )
+    definition_service.deactivate_measurement_definition(DEFINITION_ID)
+    meter_service = MeterMasterService(
+        repository,
+        transaction_factory=transaction_factory,
+    )
+    meter_service.deactivate_meter(METER_ID)
+
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "plan-auto-closed",
+            ResultStatus.MEASURED,
+            TEST_NOW,
+            Decimal("10"),
+            None,
+        ),
+        staff_id=STAFF_ID,
+    )
+
+    slot = repository.get_planned_reading("plan-auto-closed")
+    assert slot is not None
+    assert slot.task_state.value == "completed"
+    assert conn.execute(
+        "SELECT raw_reading FROM reading_transactions WHERE planned_reading_id = 'plan-auto-closed'"
+    ).fetchone() == ("10",)
+
+
+def test_manual_write_requires_configured_transaction_and_active_staff(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    create_plan(repository, "plan-staff-check", _recorded_at(4))
+    unconfigured = ReadingWriteOrchestrationService(
+        repository,
+        repository,
+        repository,
         planned_reading_repository=repository,
-        calculation_service=calculator,
+        boundary_repository=repository,
+        boundary_maintenance_repository=repository,
     )
+    reading = ManualReadingInput(
+        "plan-staff-check",
+        ResultStatus.MEASURED,
+        _recorded_at(4),
+        Decimal("1"),
+        None,
+    )
+    with pytest.raises(RuntimeError, match="トランザクション"):
+        unconfigured.save_manual_reading(reading, staff_id=STAFF_ID)
 
-    request = replace(build_request(), result_status=ResultStatus.SKIPPED, raw_reading=None)
-    outcome = service.upsert_reading(request)
+    staff_service = StaffService(
+        repository,
+        transaction_factory=partial(transaction, conn),
+    )
+    staff_service.deactivate_staff(STAFF_ID)
+    with pytest.raises(InactiveMasterError):
+        writer.save_manual_reading(reading, staff_id=STAFF_ID)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM reading_transactions WHERE planned_reading_id = ?",
+        ("plan-staff-check",),
+    ).fetchone() == (0,)
 
-    assert outcome.disposition is UpsertDisposition.INSERTED
-    assert not any(entry.startswith("recalc:") for entry in repository.call_log)
+
+def test_manual_write_validates_payload_and_note(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    create_plan(repository, "plan-invalid-manual", _recorded_at(4))
+
+    with pytest.raises(ValidationError):
+        writer.save_manual_reading(
+            ManualReadingInput(
+                "plan-invalid-manual",
+                ResultStatus.MEASURED,
+                _recorded_at(4),
+                None,
+                None,
+            ),
+            staff_id=STAFF_ID,
+        )
+    with pytest.raises(ValidationError, match="500"):
+        writer.save_manual_reading(
+            ManualReadingInput(
+                "plan-invalid-manual",
+                ResultStatus.MEASURED,
+                _recorded_at(4),
+                Decimal("1"),
+                None,
+                note="x" * 501,
+            ),
+            staff_id=STAFF_ID,
+        )

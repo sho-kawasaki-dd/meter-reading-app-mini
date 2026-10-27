@@ -629,6 +629,7 @@ def test_schema_snapshot_exposes_work_package_shape_and_enums() -> None:
         "unknown_planned_reading",
         "unknown_measurement_definition",
         "invalid_reading_submission",
+        "invalid_replacement_submission",
         "unexpected_error",
     ]
 
