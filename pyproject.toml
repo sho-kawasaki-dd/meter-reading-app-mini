@@ -65,7 +65,5 @@ branch = false
 
 [tool.coverage.report]
 omit = [
-    # Phase 2 で対象にする。
-    "*/meter_reading_mini/core/mobile_reading.py",
     "*/tests/*",
 ]

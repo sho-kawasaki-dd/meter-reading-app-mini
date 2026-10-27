@@ -352,6 +352,94 @@ label.field > .field-label {
   text-align: center;
 }
 
+.draft-tools {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.draft-tools h2 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.draft-storage-status,
+.draft-storage-message,
+.draft-feedback {
+  margin: 6px 0;
+}
+
+.draft-storage-status[data-status="saved"] {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.draft-storage-status[data-status="error"],
+.draft-storage-message {
+  color: var(--error);
+}
+
+.draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.draft-button {
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--accent);
+  font: inherit;
+}
+
+.draft-button:disabled {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.draft-file-label,
+.draft-import-label {
+  display: block;
+  margin: 8px 0;
+}
+
+.draft-file-label input {
+  display: block;
+  max-width: 100%;
+  margin-top: 6px;
+}
+
+.draft-json {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  margin: 6px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: 0.85rem/1.4 ui-monospace, monospace;
+}
+
+.draft-confirmation,
+.draft-conflict {
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  background: #fffbeb;
+}
+
+.draft-confirmation p,
+.draft-conflict p {
+  margin: 0 0 8px;
+}
+
 @media (max-height: 420px) {
   .tabs-bar {
     padding: 2px 12px;
