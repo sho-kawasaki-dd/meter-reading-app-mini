@@ -73,3 +73,9 @@ jobs:
 
       - name: Check coverage threshold
         run: uv run coverage report --fail-under=90
+
+      - name: Check core coverage threshold
+        run: uv run coverage report --include="*/meter_reading_mini/core/*" --fail-under=90
+
+      - name: Check db coverage threshold
+        run: uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
