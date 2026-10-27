@@ -8,18 +8,16 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 
 ## 開発状況と仕様の正本
 
-現在は `migration_package/` を基点に開発中です。
+現在はリポジトリ直下をプロジェクト基点として開発中です。
 Phase 0 は完了しています。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
 Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロジックを統合し、全品質ゲートが Windows / Ubuntu の必須 CI で成功しました。完了記録と作業計画書の凍結移動も済んでいます。メイン画面・起動用 `__main__.py`・スマホ検針の完成機能は後続フェーズの対象です。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
-- **移行資産と移植手順**: [移行パッケージの README](migration_package/README.md)
 - **開発規約**: [Copilot 開発ガイドライン](.github/copilot-instructions.md)
-- **旧構成の参考記録**: [旧企画書](migration_package/docs/plan/オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md)
+- **旧構成の参考記録**: [旧企画書](docs/plan/archive/オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md)
 
-旧企画書は変更せず、仕様が異なる場合は開発計画書を正とします。
-本 README の整備では移行パッケージを展開せず、既存の配置を維持しています。
+旧企画書は変更せず、仕様が異なる場合は開発計画書を正とします。旧企画書は旧サーバー・Android 構成の参考記録であり、その構成を現行アプリへ持ち込みません。
 
 ## 対象環境
 
@@ -48,23 +46,19 @@ mDNS 探索、ネイティブ Android アプリ、コードペアリング、端
 
 ## 開発環境の準備
 
-現在のプロジェクト定義は [migration_package/pyproject.toml](migration_package/pyproject.toml) にあります。
+プロジェクト定義はリポジトリ直下の [pyproject.toml](pyproject.toml) にあります。
 Python 3.13 と uv を用意し、リポジトリのルートから PowerShell で実行します。
 
 ```powershell
-Set-Location .\migration_package
 uv sync --locked
 ```
 
 依存関係を追加・変更するときは `uv lock` で `uv.lock` を更新し、差分を確認してから
 `uv sync --locked` でロックファイルどおりに同期します。通常の環境構築・CI では `uv sync --locked` を使用します。
 
-将来、移行パッケージの内容をリポジトリ直下へ正式配置した場合は、以降のコマンドをリポジトリのルートで
-実行する構成に統一し、関連文書・設定のパスも同時に更新します。
-
 ## 検査・テスト
 
-以下はプロジェクトディレクトリ (現在は `migration_package`) で実行する共通の品質ゲートです。
+以下はリポジトリのルートで実行する共通の品質ゲートです。
 検査対象は `pyproject.toml` に定義しています。Phase 1 の統合により、Ruff・Pyright・pytest の対象外設定はありません。
 coverage はパッケージ全体を対象とし、Phase 2 で機能とテストを整備する
 `core/mobile_reading.py` だけを一時的に集計から除外しています。GitHub Actions では Windows / Ubuntu の両ジョブで品質ゲートを実行します。
@@ -98,7 +92,7 @@ uv run coverage report --fail-under=90
 
 起動オーケストレーション自体は `app.py` に実装済みですが、画面と起動用 `__main__.py` は未実装です。
 そのため、現時点では次のコマンドでは起動できません。Phase 3 で画面・`__main__.py` を実装した後、
-プロジェクトディレクトリで実行する予定です。
+リポジトリのルートで実行する予定です。
 
 ```powershell
 uv sync --locked
@@ -181,7 +175,7 @@ CSV の日時はローカル時刻で出力し、文字列セルの数式注入�
 
 ## データ保存先
 
-パス解決は [config.py](migration_package/src/meter_reading_mini/config.py) に実装済みです。
+パス解決は [config.py](src/meter_reading_mini/config.py) に実装済みです。
 
 - DB・バックアップ・表示設定・ロック: `%APPDATA%\meter-reading-mini`
 - ログ: `%LOCALAPPDATA%\meter-reading-mini\Logs`
@@ -228,7 +222,7 @@ uv run python -m meter_reading_mini
 - インストール・更新・復元後の再起動・既定保存先の検証は、実データのない Sandbox / VM で行います。
   開発 PC では一時保存先を設定して exe を直接起動し、表示される DB パスを確認します。
 
-## ディレクトリ構成 (現在)
+## ディレクトリ構成と主なモジュール
 
 ```text
 .
@@ -237,26 +231,63 @@ uv run python -m meter_reading_mini
 │   └── copilot-instructions.md
 ├── docs/
 │   └── plan/
+│       ├── archive/
+│       │   └── オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md
 │       ├── implemented/
 │       │   ├── フェーズ0_共通基盤・CI整備計画.md
 │       │   └── フェーズ1_sqlite3統合・コア業務ロジック移植計画.md
-│       └── ローカル検針管理アプリ開発計画書.md
-└── migration_package/
-    ├── README.md
-    ├── uv.lock
-    ├── pyproject.toml
-    ├── docs/plan/
-    ├── src/meter_reading_mini/
-    │   ├── app.py
-    │   ├── config.py
-    │   ├── core/
-    │   ├── db/
-
-    │   └── ui/
-    └── tests/
+│       ├── ローカル検針管理アプリ開発計画書.md
+│       └── ルート配置移行計画.md
+├── pyproject.toml
+├── uv.lock
+├── src/
+│   └── meter_reading_mini/
+│       ├── app.py
+│       ├── config.py
+│       ├── core/
+│       ├── db/
+│       └── ui/
+└── tests/
 ```
 
-`db/repositories.py` が標準 `sqlite3` Repository を実装しています。旧 SQLAlchemy 参考資産は統合テスト成功後に削除済みです。
+以下の `core/`・`db/`・`ui/` は `src/meter_reading_mini/` 配下です。
+
+| ファイル / ディレクトリ | 役割 |
+| --- | --- |
+| `src/meter_reading_mini/app.py` | 起動処理を統括し、DB と起動時準備を画面表示前に実行 |
+| `src/meter_reading_mini/config.py` | アプリデータ・ログ等の保存先を解決 |
+| 各 `__init__.py` | `meter_reading_mini`・`core`・`db`・`ui` を Python パッケージとして定義 |
+| `core/contract_models.py` | Enum、DTO、Decimal 文字列等のデータ契約 |
+| `core/errors.py` | 業務例外の基底型と共通例外 |
+| `core/logging_config.py` | ローテーション付きログの設定 |
+| `core/measurement_definition_service.py` | 測定定義の業務操作・入力検証 |
+| `core/meter_master_service.py` | 物理メーターの業務操作・入力検証 |
+| `core/meter_reading_sync_repositories.py` | Repository Protocol と入出力レコード |
+| `core/meter_reading_sync.py` | 検針結果・交換イベントの保存処理 |
+| `core/mobile_reading.py` | MR1 結果テキストのエンベロープ処理と JSON 文字列対応 |
+| `core/reading_signature.py` | 監査用 SHA-256 署名の生成・検証 |
+| `core/reading_write_orchestration.py` | 保存前の履歴照合、交換境界適用、後続値の再計算 |
+| `core/schedule_settings.py` | 周期・検針枠等のスケジュール設定 |
+| `core/staff_service.py` | 担当者の業務操作・入力検証 |
+| `core/startup_preparation.py` | 起動時の既定値投入、予定枠補完、自動クローズ |
+| `core/timeutil.py` | 現在時刻の取得、UTC とローカル時刻の変換 |
+| `core/timezone_settings.py` | タイムゾーン・業務日付・予定日時の計算 |
+| `core/usage_delta_calculation.py` | Decimal による使用量差分・ロールオーバー計算 |
+| `core/work_package_download.py` | 予定枠の補完生成と検針用データの構築 |
+| `db/connection.py` | sqlite3 接続、PRAGMA 設定、トランザクション管理 |
+| `db/schema.sql` | SQLite のテーブル・制約定義 |
+| `db/migrations.py` | スキーマの移行と版別検査 |
+| `db/repositories.py` | 標準 `sqlite3` による Repository 実装 |
+| `db/bootstrap_seeds.py` | DB の既定設定の初期投入 |
+| `db/backup.py` | SQLite バックアップ関連処理 |
+| `ui/single_instance.py` | QLockFile による多重起動防止 |
+| `ui/display_settings.py` | フォント・文字サイズ等の表示設定 |
+| `ui/dialog_placement.py` | ダイアログの画面内配置 |
+| `ui/error_handling.py` | 業務例外・予期しない例外の UI 通知 |
+| `ui/csv_export.py` | CSV 等のファイル出力ダイアログ |
+| `tests/` | コア業務ロジック、DB、UI 共通部品の自動テスト |
+
+`core/` は純 Python の業務ロジック、`db/` は SQLite 永続化、`ui/` は PySide6 の UI 共通部品を配置します。`db/repositories.py` が標準 `sqlite3` Repository を実装しています。旧 SQLAlchemy 参考資産は統合テスト成功後に削除済みです。
 
 ## 開発フェーズ
 
