@@ -1,11 +1,11 @@
 # Phase 1 標準 sqlite3 統合・コア業務ロジック移植計画
 
 - 作成日: 2026-10-25
-- 更新日: 2026-10-27(PR-1e 検査対象外解除・参考資産削除)
-- ステータス: 進行中(PR-1a〜1e の実装・ローカル品質ゲート完了、Windows / Ubuntu CI と完了記録未実施)
+- 更新日: 2026-10-27(完了記録・凍結)
+- ステータス: 完了(2026-10-27、凍結済み)
 - 対象: `migration_package/` を基点とする Phase 1
-- 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md) 8 章 Phase 1
-- 前提: [Phase 0 計画](implemented/フェーズ0_共通基盤・CI整備計画.md) 完了済み(`uv.lock`、CI、`main` 保護)
+- 正本: [ローカル検針管理アプリ開発計画書](../ローカル検針管理アプリ開発計画書.md) 8 章 Phase 1
+- 前提: [Phase 0 計画](フェーズ0_共通基盤・CI整備計画.md) 完了済み(`uv.lock`、CI、`main` 保護)
 - GitHub: `sho-kawasaki-dd/meter-reading-app-mini`
 
 ## 1. 目的
@@ -14,26 +14,26 @@
 
 ## 2. 現状(2026-10-25 調査)
 
-- [schema.sql](../../migration_package/src/meter_reading_mini/db/schema.sql) は v1 で、正本 4.2 章と一致している。[connection.py](../../migration_package/src/meter_reading_mini/db/connection.py) に `transaction()` / `read_transaction()` はあるが、SAVEPOINT 補助はない。
+- [schema.sql](../../../migration_package/src/meter_reading_mini/db/schema.sql) は v1 で、正本 4.2 章と一致している。[connection.py](../../../migration_package/src/meter_reading_mini/db/connection.py) に `transaction()` / `read_transaction()` はあるが、SAVEPOINT 補助はない。
 - 未移植の `core/` 10 ファイル(`contract_models`、`meter_master_service`、`meter_reading_sync`、`meter_reading_sync_repositories`、`reading_signature`、`reading_write_orchestration`、`schedule_settings`、`timezone_settings`、`usage_delta_calculation`、`work_package_download`)には次が残る。
   - 旧 import(`api.models`、`application.*`、`core.database`)
   - `sqlalchemy.orm.Session` 依存
   - タブインデント
-- [meter_reading_sync.py](../../migration_package/src/meter_reading_mini/core/meter_reading_sync.py) は結果 1 件ごとに `session.begin_nested()` を使う SQLAlchemy 前提の実装。
-- [meter_master_service.py](../../migration_package/src/meter_reading_mini/core/meter_master_service.py) は Repository を介さず ORM を直接使う。
+- [meter_reading_sync.py](../../../migration_package/src/meter_reading_mini/core/meter_reading_sync.py) は結果 1 件ごとに `session.begin_nested()` を使う SQLAlchemy 前提の実装。
+- [meter_master_service.py](../../../migration_package/src/meter_reading_mini/core/meter_master_service.py) は Repository を介さず ORM を直接使う。
 - 参考実装は `datetime.now()` / `date.today()` を直接呼ぶ。`build_scheduled_at()` と `normalize_to_utc()` は DB 層に置くべきでない純粋な日時補助である。
 - 業務タイムゾーンの基準が分かれている。
-  - [timezone_settings.py](../../migration_package/src/meter_reading_mini/core/timezone_settings.py): 設定値(既定 Asia/Tokyo)を使い、内部で `datetime.now` を呼ぶ。
-  - [timeutil.py](../../migration_package/src/meter_reading_mini/core/timeutil.py): `tz=None` のとき OS のローカル時刻を使う。
+  - [timezone_settings.py](../../../migration_package/src/meter_reading_mini/core/timezone_settings.py): 設定値(既定 Asia/Tokyo)を使い、内部で `datetime.now` を呼ぶ。
+  - [timeutil.py](../../../migration_package/src/meter_reading_mini/core/timeutil.py): `tz=None` のとき OS のローカル時刻を使う。
 - 旧テスト 10 ファイルは、存在しない `core.startup_diagnostics`、`core.bootstrap`、`core.repositories.*` も参照する。
 - 旧契約の `WorkPackageTaskGroups` には `ad_hoc_tasks` があるが、臨時検針枠(`ad_hoc`)は運用上不要なため廃止する。
 - 監査情報の語彙と署名の時刻表記が未確定である。
-  - [ResultSource](../../migration_package/src/meter_reading_mini/core/meter_reading_sync_repositories.py) は `CLIENT` / `SYSTEM` / `MANUAL` で、`mobile_html` がない。
+  - [ResultSource](../../../migration_package/src/meter_reading_mini/core/meter_reading_sync_repositories.py) は `CLIENT` / `SYSTEM` / `MANUAL` で、`mobile_html` がない。
   - `reading_transactions.result_source` は NULL 許容で CHECK 制約がない。
-  - [calculate_meter_reading_signature](../../migration_package/src/meter_reading_mini/core/reading_signature.py) は `device_id` が空だと例外になる。
+  - [calculate_meter_reading_signature](../../../migration_package/src/meter_reading_mini/core/reading_signature.py) は `device_id` が空だと例外になる。
   - 署名の `recorded_at` は `isoformat()` のままで、オフセット表記・マイクロ秒の有無で署名が変わる。
 - `WorkPackageResponse.backfill_pending`(旧 14 日打切りの名残)が契約に残っている。
-- [usage_delta_calculation.py](../../migration_package/src/meter_reading_mini/core/usage_delta_calculation.py) にロールオーバー未設定時の負の差分拒否がなく、参考実装の後続再計算は直後 1 件のみ(`.limit(1)`)、交換境界・交換後再計算は倍率(`multiplier`)とロールオーバー補正が漏れている。
+- [usage_delta_calculation.py](../../../migration_package/src/meter_reading_mini/core/usage_delta_calculation.py) にロールオーバー未設定時の負の差分拒否がなく、参考実装の後続再計算は直後 1 件のみ(`.limit(1)`)、交換境界・交換後再計算は倍率(`multiplier`)とロールオーバー補正が漏れている。
 
 ## 3. 決定事項(2026-10-25 確認済み、2026-10-27 追補)
 
@@ -330,13 +330,13 @@
   - `db/` から Service・UI への依存がない
   - `timeutil` 以外で `datetime.now`、`date.today`、SQL の `'localtime'` を使っていない
 - [x] 統合テストの成功を確認してから `db/reference_sqlalchemy/` を削除し、`sqlalchemy` と旧 import の参照が残っていないことを `grep` で確認する
-- [x] [移行ガイド](../../migration_package/README.md) の Step 2 / 3、README、正本 8 章の Phase 1 記述を実態に合わせる
+- [x] [移行ガイド](../../../migration_package/README.md) の Step 2 / 3、README、正本 8 章の Phase 1 記述を実態に合わせる
 
 ### 5.6 完了記録 PR
 
 - [x] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを確認し、結果を 9 章へ記録する
 - [x] 確定した設計(D2〜D6、D8、D10〜D25、3.1〜3.4)を正本の 3・4・5・6 章へ統合する。生成開始日・適用履歴の DDL と業務ルール、トランザクション所有者、署名前入力の境界、署名の元文字列と保証範囲(D21)、`result_source`・`device_id` の語彙(D18)を含める。正本 6 章の「未消化予定枠を持つ物理メーター」は「`open` 予定枠」へ直し、`auto_closed` を拒否の対象にしないこと(D23)と測定定義の無効化時の枠の扱い(D25)を追記する
-- [ ] 本計画書を完了(凍結)として `docs/plan/implemented/` へ `git mv` し、移動後の相対リンクを修正する
+- [x] 本計画書を完了(凍結)として `docs/plan/implemented/` へ `git mv` し、移動後の相対リンクを修正する
 
 ## 6. 品質ゲート
 
@@ -351,7 +351,7 @@ uv run pytest --cov
 uv run coverage report --fail-under=90
 ```
 
-- `uv run coverage report --fail-under=90` は CI([.github/workflows/ci.yml](../../.github/workflows/ci.yml))と同じく `pyproject.toml` の対象設定に従い、あわせて `core/`・`db/` でも行カバレッジ 90% 以上を満たすことを確認する。
+- `uv run coverage report --fail-under=90` は CI([.github/workflows/ci.yml](../../../.github/workflows/ci.yml))と同じく `pyproject.toml` の対象設定に従い、あわせて `core/`・`db/` でも行カバレッジ 90% 以上を満たすことを確認する。
 
 - PR-1a〜1d は、対象に戻したファイルを段階的に検査対象へ加え、各 PR 時点で全ゲートを成功させる。
 - PR-1e の時点で、Phase 1 対象の除外設定が 0 件であることを完了条件とする(`core/mobile_reading.py` の coverage `omit` は Phase 2 まで残す)。
@@ -360,15 +360,15 @@ uv run coverage report --fail-under=90
 
 ## 7. 完了条件
 
-- [ ] 既存の単体テスト一式(差分計算・オーケストレーション・同期・予定生成・スケジュール・マスタ)と、標準 `sqlite3` Repository の統合テストが全件成功する
-- [ ] ruff / pyright(`core/`・`db/` strict、`ui/` standard)/ pytest が、除外設定なしで Windows と Ubuntu の CI で成功する
-- [ ] `core/`・`db/` の行カバレッジが 90% 以上である
-- [ ] 契約の独立性、設定変更の原子性、マスタ更新契約、未署名入力からの PC 署名保存が検証されている
-- [ ] 生成開始日と適用履歴による不足補完が対象日まで完了し、欠落・長期未起動・設定変更・交換・再実行の受入テストが成功する
-- [ ] 実測と非実測の相互変更・交換境界を含む遡及再計算と、拒否時の全副作用のロールバックが検証されている
-- [ ] 監査情報・同期規則(D18〜D21)、業務タイムゾーン変更の禁止(D22)、マスタ保護と測定定義の無効化(D23、D25)、起動時準備の失敗時の扱い(D24)がテストで検証されている
-- [ ] `db/reference_sqlalchemy/` を削除し、旧 import と `sqlalchemy` の参照が 0 件である
-- [ ] 文書(README・移行ガイド・正本)が実態と一致している
+- [x] 既存の単体テスト一式(差分計算・オーケストレーション・同期・予定生成・スケジュール・マスタ)と、標準 `sqlite3` Repository の統合テストが全件成功する
+- [x] ruff / pyright(`core/`・`db/` strict、`ui/` standard)/ pytest が、除外設定なしで Windows と Ubuntu の CI で成功する
+- [x] `core/`・`db/` の行カバレッジが 90% 以上である
+- [x] 契約の独立性、設定変更の原子性、マスタ更新契約、未署名入力からの PC 署名保存が検証されている
+- [x] 生成開始日と適用履歴による不足補完が対象日まで完了し、欠落・長期未起動・設定変更・交換・再実行の受入テストが成功する
+- [x] 実測と非実測の相互変更・交換境界を含む遡及再計算と、拒否時の全副作用のロールバックが検証されている
+- [x] 監査情報・同期規則(D18〜D21)、業務タイムゾーン変更の禁止(D22)、マスタ保護と測定定義の無効化(D23、D25)、起動時準備の失敗時の扱い(D24)がテストで検証されている
+- [x] `db/reference_sqlalchemy/` を削除し、旧 import と `sqlalchemy` の参照が 0 件である
+- [x] 文書(README・移行ガイド・正本)が実態と一致している
 
 ## 8. 留意事項
 
@@ -387,15 +387,16 @@ uv run coverage report --fail-under=90
 ## 9. 完了記録(PR ごとに追記、Phase 1 完了時に集約)
 
 - 全体の現状計測(5.1 の初回計測): 初回は Ruff 0 件、Pyright 0 件、pytest 111 件収集(110 成功・1 skipped)、coverage 90%。PR-1a 完了時は Ruff / format / Pyright の全検査成功(Pyright 0 件)、pytest 159 件収集(158 成功・1 skipped)、設定対象 coverage 91%。PR-1b 完了時は Ruff check / format、全体 Pyright が成功し、pytest 179 件収集(178 成功・1 skipped)、設定対象 coverage 92%。Repository は 92%、`bootstrap_seeds.py` は 100%。`uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90` は 48% で未達。未移植の Service と `db/reference_sqlalchemy/` が含まれるため、Phase 1 全体の残課題として扱い、PR-1b 完了とは区別する。テスト中に既存 `test_contract_boundaries` の ResourceWarning が 1 件発生。
-- PR 分割(1a〜1e)と、テスト移植先の実績: PR-1a は `feature/phase1-contracts-pure-logic` で実装済み(実装差分は未コミット)。機械整形のみを `8b61855`(19 ファイル)へ分離してコミット。`test_timezone_settings.py` の Repository 依存 2 テストを PR-1b へ移送。`test_measurement_definition_schedule_service.py` の 13 テスト関数は適用履歴化に合わせ PR-1c で書き直す。
+- PR 分割(1a〜1e)と、テスト移植先の実績: PR-1a は `feature/phase1-contracts-pure-logic` で実装し、PR #9 で merge した。機械整形のみを `8b61855`(19 ファイル)へ分離してコミット。`test_timezone_settings.py` の Repository 依存 2 テストを PR-1b へ移送。`test_measurement_definition_schedule_service.py` の 13 テスト関数は適用履歴化に合わせ PR-1c で書き直す。
 - 削除・置換したテストと理由: `test_timezone_settings.py` の `core.startup_diagnostics` 依存 3 テストを対象外仕様に従い削除。純粋関数の既存 2 テストは新 API に合わせて更新し、UTC 正規化・業務タイムゾーン・現在時刻 provider 等のテストを追加。PR-1b へ移した 2 テストは新 Repository / bootstrap に合わせて再実装する。
 - スキーマ点検の結果(CHECK 制約の変更有無): `close_reason` の 4 値、`result_source` の 2 値、`reading_cycle` / `reading_session`、offset の整数、FK を DDL で保護。日付・UTC 時刻・Decimal の形式は Repository 境界で検証し、SQLite の CHECK は追加しない。`SCHEMA_SPECS` は `schema.sql` から生成され、スキーマ検査で変更前 v1 DB を拒否する。
 - 生成開始日・適用履歴・差替え対応のスキーマと、変更前 v1 開発用 DB の取扱い: 生成開始日、測定定義・周期別既定・配信オフセットの適用履歴、差替え後継 ID を v1 DDL に追加。テスト用 `:memory:` と `tmp_path` の WAL DB で検証し、既存実データ DB の自動削除・変換は行わない。
-- 予定枠補完の受入テスト結果と、長期未起動時の処理時間・対象規模:
+- 予定枠補完の受入テスト結果と、長期未起動時の処理時間・対象規模: `tests/test_work_package_download_service.py` と `tests/test_startup_preparation.py` で、14 日区切りの補完と再実行の冪等性、定義ごとの生成開始日、同日時間帯・中間日の欠落補完、無効な定義の補完除外、起動時の既定値投入・補完・自動クローズの単一操作を検証し、全件成功。長期未起動の対象規模は 21 日(14 日 + 7 日)までを計測した。実運用規模の DB での処理時間は未計測で、Phase 3 以降の課題とする。
 - PR-1c の実装・検証結果: スケジュール・周期別既定・配信オフセットを適用履歴化し、UPSERT と予定枠再構成を各 Service の単一トランザクションに統合。補完は測定定義ごとの生成開始日から対象業務日までを 14 日区切りで 1 回の業務操作内に完了し、最新生成日を完了根拠にしない。既存の論理枠・交換後継を照合し、completed / auto_closed / meter_replaced / definition_deactivated を復活させない。WorkPackage の補完・現在業務日時に基づく自動クローズ・取得、起動時の既定値投入・補完・自動クローズは同一トランザクション。`ActiveDeviceBindingService` の参照は実装・テストで 0 件(予定日時の割当を Repository で解決するため Service 依存を置かない)。再構成の廃止・生成件数をログへ記録し、旧最新生成日取得 API を削除。
 - PR-1c の受入・品質ゲート: file DB(`tmp_path`)で 21 日の補完(14 日 + 7 日)、定義ごとの生成開始日、中間日・同日時間帯の欠落、日次・週次・月次・隔月グループ、期間別スケジュール・割当・オフセット、交換後継、締め境界・DST、設定・複数区間・起動時処理・COMMIT の rollback を検証。計測した補完対象規模は 21 日であり、実運用規模 DB の性能計測は未実施。全 240 件中 239 passed / 1 skipped(Windows の `time.tzset()` 制限)、Ruff check / format・Pyright 0 件、設定対象 coverage 94%、`schedule_settings.py` 99%。既存 `test_contract_boundaries` の ResourceWarning 1 件は継続。
 - 旧補完テストの置換理由: 14 日超で段階的に次回呼出しを要求する `backfill_pending` 契約を廃止し、1 回の業務操作で全対象日を完了する設計へ変更。旧 SQLAlchemy import を含む fake テストを削除し、file DB を用いた適用履歴・トランザクション統合テストへ置換。
 - 契約分離・トランザクション境界・再計算・署名前入力の検証結果: PR-1a では契約境界テスト 4 件、署名前モバイル入力と契約語彙、純粋な差分計算・署名時刻・タイムゾーン処理を検証。PR-1b では SAVEPOINT の局所 rollback、Repository の後続更新保存・交換境界を検証。Service の連鎖再計算は PR-1d で検証する。
 - 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果: PR-1b では `result_source` / `close_reason` 制約、stale/tie/duplicate、担当者一意制約、`auto_closed` の使用状況除外、測定定義無効化時の `open` 枠廃止と `completed` / `auto_closed` 維持を検証。PR-1c ではタイムゾーン変更拒否、締め境界、起動準備の処理例外・COMMIT 失敗時の rollback とエラー通知を検証した。
-- 各 PR と CI の結果: PR-1a〜1e の実装差分はローカル品質ゲートで確認済み。GitHub PR / CI の実行・マージは未実施。
+- 各 PR と CI の結果: PR-1a は #9、PR-1b は #10、PR-1c は #11、PR-1d は #12、PR-1e は #13 で `main` へ merge した。PR-1e merge 後の `main`(`bb233b7`、CI run #29)で `test (windows-latest)`・`test (ubuntu-latest)` がともに成功している。
 - PR-1e の実装・ローカル検査結果: 参考実装削除前に全テストを実行し 272 passed / 1 skipped を確認後、`db/reference_sqlalchemy/` を削除。Ruff の除外、Pyright の ignore、coverage のファイル列挙を解除し、pytest に `--ignore` 設定がないことを確認した。契約境界テストを `core/`・`db/` 全体の依存規則へ拡張。最終確認は Ruff check / format 成功、Pyright 0 errors、pytest 276 passed / 1 skipped(Windows の `time.tzset()` 制限)、パッケージ全体 coverage 94%、`core/`・`db/` coverage 94%。`migration_package/src/` と `uv.lock` に SQLAlchemy および旧 import は残っていない。Windows / Ubuntu の GitHub Actions も完了。
+- Phase 1 完了確認(2026-10-27、`migration_package/`): `uv sync --locked`、Ruff check / format(64 ファイル)、Pyright(0 errors)、pytest 276 passed / 1 skipped、パッケージ全体 coverage 94%、`core/`・`db/` coverage 94%(`--fail-under=90` 達成)がすべて成功。`core/` の遡及再計算・交換の原子性・署名保存・D18〜D25 の検証は 7 章の各項目に対応するテストで確認した。除外設定は `core/mobile_reading.py` の coverage `omit` のみで、Phase 2 まで残す。`logging_config.py` のログ名に `alembic` が残るが、依存・import ではない。7 章の完了条件をすべて満たしたため、本計画書を凍結して `docs/plan/implemented/` へ移した。

@@ -10,7 +10,7 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 
 現在は `migration_package/` を基点に開発中です。
 Phase 0 は完了しています。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
-Phase 1 の標準 sqlite3 Repository とコア業務ロジックの統合、および全ローカル品質ゲートは完了しています。Windows / Ubuntu の必須 CI と Phase 1 の完了記録は未実施です。メイン画面・起動用 `__main__.py`・スマホ検針の完成機能は後続フェーズの対象です。
+Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロジックを統合し、全品質ゲートが Windows / Ubuntu の必須 CI で成功しました。完了記録と作業計画書の凍結移動も済んでいます。メイン画面・起動用 `__main__.py`・スマホ検針の完成機能は後続フェーズの対象です。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -238,9 +238,9 @@ uv run python -m meter_reading_mini
 ├── docs/
 │   └── plan/
 │       ├── implemented/
-│       │   └── フェーズ0_共通基盤・CI整備計画.md
-│       ├── フェーズ1_sqlite3統合・コア業務ロジック移植計画.md
-│       ├── ローカル検針管理アプリ開発計画書.md
+│       │   ├── フェーズ0_共通基盤・CI整備計画.md
+│       │   └── フェーズ1_sqlite3統合・コア業務ロジック移植計画.md
+│       └── ローカル検針管理アプリ開発計画書.md
 └── migration_package/
     ├── README.md
     ├── uv.lock
@@ -263,7 +263,7 @@ uv run python -m meter_reading_mini
 | フェーズ | 状況 | 主な対象 |
 | --- | --- | --- |
 | Phase 0 | 完了 | リポジトリ骨格・共通基盤・品質ゲートの整備 |
-| Phase 1 | 実装済み (CI・完了記録待ち) | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
+| Phase 1 | 完了 | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
 | Phase 2 | 予定 | 単一 HTML 検針シート・結果パーサ・ブラウザ往復テスト |
 | Phase 3 | 予定 | メイン画面・マスタ・PC 直接入力・交換 UI |
 | Phase 4 | 予定 | スマホ検針ダイアログ・プレビュー・一括確定 |
