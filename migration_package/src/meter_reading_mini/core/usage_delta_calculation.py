@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from api.models import CalculationMethod, ResultStatus
-from application.meter_reading_sync_repositories import (
+from meter_reading_mini.core.contract_models import CalculationMethod, ResultStatus
+from meter_reading_mini.core.errors import NegativeUsageDeltaError
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     HistoricalMeasuredReadingRecord,
     MeasurementDefinitionRecord,
     ReadingUpsertRequest,
@@ -49,11 +50,11 @@ class UsageDeltaCalculationService:
             and replacement_boundary.new_initial_reading is not None
         ):
             last_reading = replacement_boundary.new_initial_reading
-            delta = reading_request.raw_reading - last_reading
-            if delta < 0 and measurement_definition.rollover_value is not None:
-                delta = (
-                    measurement_definition.rollover_value - last_reading
-                ) + reading_request.raw_reading
+            delta = _calculate_delta(
+                reading_request.raw_reading,
+                last_reading,
+                measurement_definition.rollover_value,
+            )
             return UsageDeltaCalculationResult(
                 last_reading=last_reading,
                 usage_delta=delta * measurement_definition.multiplier,
@@ -63,16 +64,38 @@ class UsageDeltaCalculationService:
             return UsageDeltaCalculationResult(last_reading=None, usage_delta=Decimal("0"))
 
         last_reading = previous_measured_reading.raw_reading
-        delta = reading_request.raw_reading - last_reading
-        if delta < 0 and measurement_definition.rollover_value is not None:
-            delta = (
-                measurement_definition.rollover_value - last_reading
-            ) + reading_request.raw_reading
+        delta = _calculate_delta(
+            reading_request.raw_reading,
+            last_reading,
+            measurement_definition.rollover_value,
+        )
 
         return UsageDeltaCalculationResult(
             last_reading=last_reading,
             usage_delta=delta * measurement_definition.multiplier,
         )
+
+
+def _calculate_delta(
+    raw_reading: Decimal,
+    last_reading: Decimal,
+    rollover_value: Decimal | None,
+) -> Decimal:
+    delta = raw_reading - last_reading
+    if delta >= 0:
+        return delta
+    if rollover_value is None:
+        raise NegativeUsageDeltaError(
+            f"前回値 {last_reading} より小さい今回値 {raw_reading} は、"
+            "ロールオーバー値未設定のため使用量を計算できません。"
+        )
+
+    corrected_delta = (rollover_value - last_reading) + raw_reading
+    if corrected_delta < 0:
+        raise NegativeUsageDeltaError(
+            f"今回値 {raw_reading} と前回値 {last_reading} から使用量を計算できません。"
+        )
+    return corrected_delta
 
 
 __all__ = [

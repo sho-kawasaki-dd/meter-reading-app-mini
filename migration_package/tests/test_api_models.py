@@ -9,19 +9,13 @@ transport validation と resolved validation の差を保証する役割を持�
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
-
-from api.models import (  # noqa: E402
-    ApiRequestErrorCode,
-    ApiRequestErrorResponse,
+from meter_reading_mini.core.contract_models import (
     Category,
     IgnoredReadingSyncItem,
     MeasurementDefinitionData,
@@ -44,7 +38,11 @@ from api.models import (  # noqa: E402
     build_api_contract_schema_snapshot,
     resolve_meter_reading_submission,
 )
-from application.reading_signature import calculate_meter_reading_signature  # noqa: E402
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    PC_DIRECT_DEVICE_ID,
+    ReadingConfirmationContext,
+)
+from meter_reading_mini.core.reading_signature import calculate_meter_reading_signature
 
 TEST_DEVICE_ID = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -157,26 +155,31 @@ def test_meter_reading_submission_requires_raw_reading_for_measured() -> None:
                 "structured_payload": None,
                 "recorded_at": "2026-04-01T08:00:00+09:00",
                 "client_updated_at": "2026-04-01T08:05:00+09:00",
-                "device_id": "550e8400-e29b-41d4-a716-446655440000",
-                "updated_by": "android-01",
-                "signature": "opaque-signature",
             }
         )
 
 
-def test_meter_reading_submission_requires_device_id() -> None:
-    with pytest.raises(ValidationError):
-        MeterReadingSubmission.model_validate(
-            {
-                "planned_reading_id": "plan-001",
-                "result_status": "measured",
-                "raw_reading": "10.0",
-                "recorded_at": "2026-04-01T08:00:00+09:00",
-                "client_updated_at": "2026-04-01T08:05:00+09:00",
-                "updated_by": "operator-a",
-                "signature": "opaque-signature",
-            }
-        )
+def test_mobile_submission_needs_no_pc_signature_or_confirmed_staff() -> None:
+    submission = MeterReadingSubmission.model_validate(
+        {
+            "planned_reading_id": "plan-001",
+            "result_status": "measured",
+            "raw_reading": "10.0",
+            "recorded_at": "2026-04-01T08:00:00+09:00",
+            "client_updated_at": "2026-04-01T08:05:00+09:00",
+        }
+    )
+    confirmation = ReadingConfirmationContext(
+        sheet_id="a" * 32,
+        staff_id="staff-001",
+        staff_name="担当者A",
+    )
+
+    assert submission.raw_reading == Decimal("10.0")
+    assert not {"device_id", "updated_by", "signature"} & MeterReadingSubmission.model_fields.keys()
+    assert confirmation.sheet_id == "a" * 32
+    assert confirmation.staff_name == "担当者A"
+    assert PC_DIRECT_DEVICE_ID == "pc-direct"
 
 
 def test_calculate_meter_reading_signature_is_stable_for_raw_reading() -> None:
@@ -269,9 +272,6 @@ def test_meter_reading_submission_accepts_generic_structured_payload_in_transpor
             },
             "recorded_at": "2026-04-01T08:00:00+09:00",
             "client_updated_at": "2026-04-01T08:05:00+09:00",
-            "device_id": "550e8400-e29b-41d4-a716-446655440000",
-            "updated_by": "android-01",
-            "signature": "opaque-signature",
         }
     )
 
@@ -292,9 +292,6 @@ def test_meter_reading_submission_rejects_raw_reading_for_non_measured() -> None
                 "structured_payload": None,
                 "recorded_at": "2026-04-01T08:00:00+09:00",
                 "client_updated_at": "2026-04-01T08:05:00+09:00",
-                "device_id": "550e8400-e29b-41d4-a716-446655440000",
-                "updated_by": "android-01",
-                "signature": "opaque-signature",
             }
         )
 
@@ -310,9 +307,6 @@ def test_resolved_meter_reading_submission_validates_power_factor_payload() -> N
             },
             "recorded_at": "2026-04-01T08:00:00+09:00",
             "client_updated_at": "2026-04-01T08:05:00+09:00",
-            "device_id": "550e8400-e29b-41d4-a716-446655440000",
-            "updated_by": "android-01",
-            "signature": "opaque-signature",
         }
     )
 
@@ -342,9 +336,6 @@ def test_resolved_meter_reading_submission_validates_power_factor_payload() -> N
             },
             "recorded_at": "2026-04-01T08:00:00+09:00",
             "client_updated_at": "2026-04-01T08:05:00+09:00",
-            "device_id": "550e8400-e29b-41d4-a716-446655440000",
-            "updated_by": "android-01",
-            "signature": "opaque-signature",
         }
     )
 
@@ -366,9 +357,6 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
             "raw_reading": "10.0",
             "recorded_at": "2026-04-01T08:00:00+09:00",
             "client_updated_at": "2026-04-01T08:05:00+09:00",
-            "device_id": "550e8400-e29b-41d4-a716-446655440000",
-            "updated_by": "android-01",
-            "signature": "opaque-signature",
         }
     )
 
@@ -403,9 +391,6 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
             },
             "recorded_at": "2026-04-01T08:00:00+09:00",
             "client_updated_at": "2026-04-01T08:05:00+09:00",
-            "device_id": "550e8400-e29b-41d4-a716-446655440000",
-            "updated_by": "android-01",
-            "signature": "opaque-signature",
         }
     )
 
@@ -427,9 +412,6 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
                     "raw_reading": "10.50",
                     "recorded_at": "2026-04-01T08:00:00+09:00",
                     "client_updated_at": "2026-04-01T08:05:00+09:00",
-                    "device_id": "550e8400-e29b-41d4-a716-446655440000",
-                    "updated_by": "android-01",
-                    "signature": "opaque-signature",
                 }
             ),
             measurement_definition_id="md-decimal-001",
@@ -459,9 +441,6 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
                 },
                 "recorded_at": "2026-04-01T08:00:00+09:00",
                 "client_updated_at": "2026-04-01T08:05:00+09:00",
-                "device_id": "550e8400-e29b-41d4-a716-446655440000",
-                "updated_by": "android-01",
-                "signature": "opaque-signature",
             }
         )
 
@@ -476,25 +455,20 @@ def test_meter_reading_submission_requires_offset_aware_datetimes() -> None:
                 "structured_payload": None,
                 "recorded_at": "2026-04-01T08:00:00",
                 "client_updated_at": "2026-04-01T08:05:00+09:00",
-                "device_id": "550e8400-e29b-41d4-a716-446655440000",
-                "updated_by": "android-01",
-                "signature": "opaque-signature",
             }
         )
 
 
-def test_work_package_response_requires_all_task_groups() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        WorkPackageTaskGroups.model_validate(
-            {
-                "daily_tasks": [build_planned_task()],
-                "weekly_tasks": [],
-                "monthly_tasks": [],
-                "every_two_months_tasks": [],
-            }
-        )
-
-    assert exc_info.value.errors()[0]["loc"] == ("ad_hoc_tasks",)
+def test_work_package_response_uses_supported_task_groups() -> None:
+    task_groups = WorkPackageTaskGroups.model_validate(
+        {
+            "daily_tasks": [build_planned_task()],
+            "weekly_tasks": [],
+            "monthly_tasks": [],
+            "every_two_months_tasks": [],
+        }
+    )
+    assert task_groups.daily_tasks[0].reading_session is ReadingSession.SESSION_0800
 
     response = WorkPackageResponse.model_validate(
         {
@@ -505,7 +479,6 @@ def test_work_package_response_requires_all_task_groups() -> None:
                 "weekly_tasks": [],
                 "monthly_tasks": [],
                 "every_two_months_tasks": [],
-                "ad_hoc_tasks": [],
             },
         }
     )
@@ -526,9 +499,6 @@ def test_sync_request_accepts_backlog_batches() -> None:
                     },
                     "recorded_at": "2026-04-01T08:00:00+09:00",
                     "client_updated_at": "2026-04-01T08:05:00+09:00",
-                    "device_id": "550e8400-e29b-41d4-a716-446655440000",
-                    "updated_by": "android-01",
-                    "signature": "opaque-signature",
                 }
             ],
             "replacement_items": [
@@ -612,7 +582,6 @@ def test_schema_snapshot_exposes_work_package_shape_and_enums() -> None:
         "weekly_tasks",
         "monthly_tasks",
         "every_two_months_tasks",
-        "ad_hoc_tasks",
     }
 
     measurement_definition_schema = snapshot["models"]["MeasurementDefinitionData"]
@@ -635,21 +604,6 @@ def test_schema_snapshot_exposes_work_package_shape_and_enums() -> None:
         "rejected_replacement_items",
         "detail",
     }
-    request_error_schema = snapshot["models"]["ApiRequestErrorResponse"]
-    assert set(request_error_schema["properties"]) == {
-        "code",
-        "detail",
-        "request_device_id",
-        "retryable",
-        "mismatched_reading_item_indexes",
-    }
-    assert request_error_schema["$defs"]["ApiRequestErrorCode"]["enum"] == [
-        "device_not_active",
-        "missing_x_device_id_header",
-        "invalid_x_device_id_header",
-        "header_body_device_id_mismatch",
-        "payload_too_large",
-    ]
     assert measurement_definition_schema["$defs"]["ValueSchema"]["enum"] == [
         "decimal_string",
         "power_factor_percent_phase",
@@ -657,8 +611,7 @@ def test_schema_snapshot_exposes_work_package_shape_and_enums() -> None:
 
     reading_schema = snapshot["models"]["MeterReadingSubmission"]
     assert "structured_payload" in reading_schema["properties"]
-    assert "device_id" in reading_schema["properties"]
-    assert "device_id" in reading_schema["required"]
+    assert not {"device_id", "updated_by", "signature"} & reading_schema["properties"].keys()
     assert reading_schema["$defs"]["ResultStatus"]["enum"] == [
         "measured",
         "skipped",
@@ -676,9 +629,6 @@ def test_schema_snapshot_exposes_work_package_shape_and_enums() -> None:
         "unknown_planned_reading",
         "unknown_measurement_definition",
         "invalid_reading_submission",
-        "missing_device_id",
-        "signature_canonicalization_failed",
-        "invalid_signature",
         "unexpected_error",
     ]
 
@@ -690,20 +640,8 @@ def test_schema_snapshot_exposes_work_package_shape_and_enums() -> None:
     ]
 
 
-def test_api_request_error_response_accepts_fixed_shape() -> None:
+def test_contract_relationship_notes_document_transport_validation() -> None:
     snapshot = build_api_contract_schema_snapshot()
-    response = ApiRequestErrorResponse.model_validate(
-        {
-            "code": "header_body_device_id_mismatch",
-            "detail": "X-Device-Id ヘッダーと reading_items.device_id が一致しません。",
-            "request_device_id": TEST_DEVICE_ID,
-            "retryable": False,
-            "mismatched_reading_item_indexes": [0, 2],
-        }
-    )
-
-    assert response.code is ApiRequestErrorCode.HEADER_BODY_DEVICE_ID_MISMATCH
-    assert response.mismatched_reading_item_indexes == [0, 2]
 
     relationship_notes = snapshot["relationship_notes"]
     assert any(
@@ -715,10 +653,3 @@ def test_api_request_error_response_accepts_fixed_shape() -> None:
         and note.get("value_schema") == "power_factor_percent_phase"
         for note in relationship_notes
     )
-
-
-def test_router_import_smoke() -> None:
-    import api.router as router  # noqa: PLC0415
-
-    assert router.MeterReadingSyncRequest is MeterReadingSyncRequest
-    assert router.WorkPackageResponse is WorkPackageResponse

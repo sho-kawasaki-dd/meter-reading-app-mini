@@ -13,19 +13,21 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from api.models import ReadingCycle, ReadingSession  # noqa: E402
-from application.schedule_settings import (  # noqa: E402
-    DEFAULT_SCHEDULES,
+from meter_reading_mini.core.contract_models import ReadingCycle, ReadingSession
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
     EveryTwoMonthsSchedule,
-    MeasurementDefinitionScheduleService,
     MonthlySchedule,
     MonthlyScheduleSelectorType,
     MonthParity,
     ScheduleItem,
+    WeeklySchedule,
+)
+from meter_reading_mini.core.schedule_settings import (
+    DEFAULT_SCHEDULES,
+    MeasurementDefinitionScheduleService,
     ScheduleSettingsService,
     ScheduleValidationError,
-    WeeklySchedule,
     validate_schedule_type_for_reading_cycle,
 )
 

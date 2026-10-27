@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from application.meter_master_service import (
+from meter_reading_mini.core.meter_master_service import (
     METER_CATEGORY_VALUES,
     MeterCreateRequest,
     MeterMasterService,

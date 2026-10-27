@@ -16,15 +16,15 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from api.models import (
+from meter_reading_mini.core.contract_models import (
     MeterReadingSyncRequest,
     ResolvedMeterReadingSubmission,
     ResultStatus,
     ValueSchema,
     resolve_meter_reading_submission,
 )  # noqa: E402
-from application.meter_reading_sync import MeterReadingSyncService  # noqa: E402
-from application.meter_reading_sync_repositories import (  # noqa: E402
+from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionRecord,
     PlannedReadingRecord,
     ReadingUpsertRequest,
@@ -33,7 +33,7 @@ from application.meter_reading_sync_repositories import (  # noqa: E402
     UpsertDisposition,
     UpsertOutcome,
 )
-from application.reading_signature import (
+from meter_reading_mini.core.reading_signature import (
     SignatureCanonicalizationError,
     calculate_meter_reading_signature,
 )  # noqa: E402

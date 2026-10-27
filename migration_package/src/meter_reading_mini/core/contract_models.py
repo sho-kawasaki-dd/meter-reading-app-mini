@@ -311,9 +311,6 @@ class WorkPackageTaskGroups(BaseApiModel):
     every_two_months_tasks: list[PlannedReadingTask] = Field(
         description="Every-two-months planned reading tasks."
     )
-    ad_hoc_tasks: list[PlannedReadingTask] = Field(
-        description="Ad-hoc or exceptional planned reading tasks."
-    )
 
 
 class WorkPackageResponse(BaseApiModel):
@@ -326,10 +323,6 @@ class WorkPackageResponse(BaseApiModel):
         description="Logical measurement targets required by the Android client.",
     )
     work_package: WorkPackageTaskGroups = Field(description="UI-grouped planned reading tasks.")
-    backfill_pending: bool = Field(
-        default=False,
-        description="Whether the requested backfill was capped and another request is needed.",
-    )
 
 
 def _normalize_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -343,6 +336,8 @@ def _count_decimal_places(value: Decimal) -> int:
     """Decimal の末尾ゼロを含む小数桁数を返す。"""
 
     exponent = value.as_tuple().exponent
+    if not isinstance(exponent, int):
+        raise ValueError("Decimal values must be finite.")
     if exponent >= 0:
         return 0
     return -exponent
@@ -360,17 +355,19 @@ class MeterReadingSubmission(BaseApiModel):
     raw_reading: DecimalAsString | None = Field(
         default=None,
         description=(
-            "Decimal reading payload for measured submissions. Transport validation checks only the overall "
-            "shape; strict value_schema-dependent requirements are applied after planned_reading_id is resolved."
+            "Decimal reading payload for measured submissions. Transport validation checks "
+            "only the overall shape; strict value_schema-dependent requirements are "
+            "applied after planned_reading_id is resolved."
         ),
     )
     structured_payload: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Flexible object payload for non-decimal measurement schemas. Transport validation accepts a generic "
-            "object here; strict payload parsing occurs during resolved validation after planned_reading_id is "
-            "mapped to a measurement definition. See PowerFactorReading for the initial helper schema used by "
-            "power_factor_percent_phase."
+            "Flexible object payload for non-decimal measurement schemas. Transport "
+            "validation accepts a generic object here; strict payload parsing occurs "
+            "during resolved validation after planned_reading_id is mapped to a "
+            "measurement definition. See PowerFactorReading for the initial helper "
+            "schema used by power_factor_percent_phase."
         ),
     )
     recorded_at: AwareDatetime = Field(
@@ -379,18 +376,6 @@ class MeterReadingSubmission(BaseApiModel):
     client_updated_at: AwareDatetime = Field(
         description="Offset-aware ISO8601 timestamp used for client-origin conflict resolution.",
     )
-    device_id: str = Field(
-        description=(
-            "Stable per-install Android device identifier generated on first launch and persisted locally. "
-            "This field is required by the transport contract and is used as part of the signature seed. "
-            "Blank values are rejected by the server-side signature verifier."
-        ),
-    )
-    updated_by: str = Field(
-        min_length=1,
-        description="Operator identifier or display label that last updated the result.",
-    )
-    signature: str = Field(min_length=1, description="Opaque tamper-detection signature string.")
     note: str | None = Field(default=None, description="Optional operator note.")
 
     @model_validator(mode="after")
@@ -402,7 +387,8 @@ class MeterReadingSubmission(BaseApiModel):
             has_structured = self.structured_payload is not None
             if has_raw == has_structured:
                 raise ValueError(
-                    "measured submissions must provide exactly one of raw_reading or structured_payload."
+                    "measured submissions must provide exactly one of "
+                    "raw_reading or structured_payload."
                 )
             return self
 
@@ -418,14 +404,18 @@ class ResolvedMeterReadingSubmission(MeterReadingSubmission):
 
     measurement_definition_id: str = Field(
         min_length=1,
-        description="Resolved logical measurement target identifier for the planned reading slot.",
+        description=(
+            "Resolved logical measurement target identifier for the planned reading slot."
+        ),
     )
     value_schema: ValueSchema = Field(
         description="Resolved measurement payload schema used for strict server-side validation.",
     )
     decimal_places: int | None = Field(
         default=None,
-        description="Resolved maximum number of decimal places allowed for decimal_string submissions.",
+        description=(
+            "Resolved maximum number of decimal places allowed for decimal_string submissions."
+        ),
     )
     rollover_value: DecimalAsString | None = Field(
         default=None,
@@ -435,7 +425,10 @@ class ResolvedMeterReadingSubmission(MeterReadingSubmission):
         default=None,
         exclude=True,
         repr=False,
-        description="Parsed helper payload retained for server-side processing when structured_payload is used.",
+        description=(
+            "Parsed helper payload retained for server-side processing when "
+            "structured_payload is used."
+        ),
     )
 
     @model_validator(mode="after")
@@ -449,14 +442,16 @@ class ResolvedMeterReadingSubmission(MeterReadingSubmission):
         if self.value_schema is ValueSchema.DECIMAL_STRING:
             if self.raw_reading is None or self.structured_payload is not None:
                 raise ValueError(
-                    "resolved decimal_string submissions must provide raw_reading and must not provide structured_payload."
+                    "resolved decimal_string submissions must provide raw_reading "
+                    "and must not provide structured_payload."
                 )
             if (
                 self.decimal_places is not None
                 and _count_decimal_places(self.raw_reading) > self.decimal_places
             ):
                 raise ValueError(
-                    f"resolved decimal_string submissions must not exceed {self.decimal_places} decimal place(s)."
+                    "resolved decimal_string submissions must not exceed "
+                    f"{self.decimal_places} decimal place(s)."
                 )
             if self.rollover_value is not None and self.raw_reading >= self.rollover_value:
                 raise ValueError(
@@ -469,7 +464,8 @@ class ResolvedMeterReadingSubmission(MeterReadingSubmission):
             # 複合型は helper schema で一度正規化してから保持する。
             if self.raw_reading is not None or self.structured_payload is None:
                 raise ValueError(
-                    "resolved power_factor_percent_phase submissions must provide structured_payload and must not provide raw_reading."
+                    "resolved power_factor_percent_phase submissions must provide "
+                    "structured_payload and must not provide raw_reading."
                 )
             normalized_payload = _normalize_structured_payload(self.structured_payload)
             validated_payload = PowerFactorReading.model_validate(normalized_payload)
@@ -543,45 +539,12 @@ class MeterReadingSyncRequest(BaseApiModel):
     )
 
 
-class ApiRequestErrorCode(StrEnum):
-    """request 単位で API 全体を reject した理由の語彙。"""
-
-    DEVICE_NOT_ACTIVE = "device_not_active"
-    MISSING_X_DEVICE_ID_HEADER = "missing_x_device_id_header"
-    INVALID_X_DEVICE_ID_HEADER = "invalid_x_device_id_header"
-    HEADER_BODY_DEVICE_ID_MISMATCH = "header_body_device_id_mismatch"
-    PAYLOAD_TOO_LARGE = "payload_too_large"
-
-
-class ApiRequestErrorResponse(BaseApiModel):
-    """request 単位の 4xx エラーを Android へ返す固定 shape。"""
-
-    code: ApiRequestErrorCode = Field(description="Stable machine-readable request error code.")
-    detail: str = Field(
-        min_length=1, description="Human-readable Japanese detail for operators or support."
-    )
-    request_device_id: str | None = Field(
-        default=None,
-        description="Device identifier parsed from X-Device-Id when available.",
-    )
-    retryable: bool = Field(
-        description="Whether the client can retry without changing local state or server configuration."
-    )
-    mismatched_reading_item_indexes: list[int] = Field(
-        default_factory=list,
-        description="Zero-based reading_items indexes whose body device_id did not match X-Device-Id.",
-    )
-
-
 class SyncItemRejectCode(StrEnum):
     """item を reject した理由の語彙。"""
 
     UNKNOWN_PLANNED_READING = "unknown_planned_reading"
     UNKNOWN_MEASUREMENT_DEFINITION = "unknown_measurement_definition"
     INVALID_READING_SUBMISSION = "invalid_reading_submission"
-    MISSING_DEVICE_ID = "missing_device_id"
-    SIGNATURE_CANONICALIZATION_FAILED = "signature_canonicalization_failed"
-    INVALID_SIGNATURE = "invalid_signature"
     UNEXPECTED_ERROR = "unexpected_error"
 
 
@@ -589,6 +552,7 @@ class SyncItemIgnoreCode(StrEnum):
     """item は受理したが適用しなかった理由の語彙。"""
 
     STALE_CLIENT_UPDATE = "stale_client_update"
+    DUPLICATE_SUBMISSION = "duplicate_submission"
 
 
 class IgnoredReadingSyncItem(BaseApiModel):
@@ -663,20 +627,30 @@ class MeterReadingSyncResponse(BaseApiModel):
         description="Count of replacement items accepted by the server.",
     )
     ignored_reading_items: list[IgnoredReadingSyncItem] = Field(
-        default_factory=list,
-        description="Reading items acknowledged but not applied, typically because a newer client update already exists.",
+        default_factory=lambda: list[IgnoredReadingSyncItem](),
+        description=(
+            "Reading items acknowledged but not applied, typically because a newer "
+            "client update already exists."
+        ),
     )
     ignored_replacement_items: list[IgnoredReplacementSyncItem] = Field(
-        default_factory=list,
-        description="Replacement items acknowledged but not applied, typically because a newer client update already exists.",
+        default_factory=lambda: list[IgnoredReplacementSyncItem](),
+        description=(
+            "Replacement items acknowledged but not applied, typically because a "
+            "newer client update already exists."
+        ),
     )
     rejected_reading_items: list[RejectedReadingSyncItem] = Field(
-        default_factory=list,
-        description="Reading items rejected while other items in the same batch may still succeed.",
+        default_factory=lambda: list[RejectedReadingSyncItem](),
+        description=(
+            "Reading items rejected while other items in the same batch may still succeed."
+        ),
     )
     rejected_replacement_items: list[RejectedReplacementSyncItem] = Field(
-        default_factory=list,
-        description="Replacement items rejected while other items in the same batch may still succeed.",
+        default_factory=lambda: list[RejectedReplacementSyncItem](),
+        description=(
+            "Replacement items rejected while other items in the same batch may still succeed."
+        ),
     )
     detail: str | None = Field(
         default=None, description="Optional acknowledgement or warning message."
@@ -692,7 +666,6 @@ API_CONTRACT_MODELS: tuple[type[BaseApiModel], ...] = (
     WorkPackageResponse,
     MeterReadingSubmission,
     MeterReplacementSubmission,
-    ApiRequestErrorResponse,
     IgnoredReadingSyncItem,
     IgnoredReplacementSyncItem,
     RejectedReadingSyncItem,
@@ -706,7 +679,8 @@ API_CONTRACT_RELATIONSHIP_NOTES: tuple[dict[str, str], ...] = (
         "model": "MeterReadingSubmission",
         "kind": "transport_contract",
         "message": (
-            "MeterReadingSubmission remains a generic transport request body keyed by planned_reading_id. "
+            "MeterReadingSubmission remains a generic transport request body keyed by "
+            "planned_reading_id. "
             "Public Pydantic validation checks syntax only."
         ),
     },
@@ -716,8 +690,9 @@ API_CONTRACT_RELATIONSHIP_NOTES: tuple[dict[str, str], ...] = (
         "helper_schema": "PowerFactorReading",
         "value_schema": ValueSchema.POWER_FACTOR_PERCENT_PHASE.value,
         "message": (
-            "After planned_reading_id is resolved to a measurement definition, strict resolved validation parses "
-            "structured_payload with PowerFactorReading when value_schema is power_factor_percent_phase."
+            "After planned_reading_id is resolved to a measurement definition, strict "
+            "resolved validation parses structured_payload with PowerFactorReading "
+            "when value_schema is power_factor_percent_phase."
         ),
     },
     {
@@ -725,8 +700,9 @@ API_CONTRACT_RELATIONSHIP_NOTES: tuple[dict[str, str], ...] = (
         "field": "raw_reading",
         "value_schema": ValueSchema.DECIMAL_STRING.value,
         "message": (
-            "After planned_reading_id is resolved to a measurement definition, strict resolved validation requires "
-            "raw_reading and rejects structured_payload when value_schema is decimal_string."
+            "After planned_reading_id is resolved to a measurement definition, strict "
+            "resolved validation requires raw_reading and rejects structured_payload "
+            "when value_schema is decimal_string."
         ),
     },
 )
@@ -748,8 +724,6 @@ __all__ = [
     "BaseApiModel",
     "CalculationMethod",
     "Category",
-    "ApiRequestErrorCode",
-    "ApiRequestErrorResponse",
     "DecimalAsString",
     "MeasurementDefinitionData",
     "MeterMasterData",

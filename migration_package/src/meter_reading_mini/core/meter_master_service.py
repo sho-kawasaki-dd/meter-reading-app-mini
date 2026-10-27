@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from api.models import Category
+from meter_reading_mini.core.contract_models import Category
 from core.database import PhysicalMeterORM
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select

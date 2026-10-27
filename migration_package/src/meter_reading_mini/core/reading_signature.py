@@ -9,10 +9,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from api.models import ResultStatus
+from meter_reading_mini.core.contract_models import ResultStatus
+from meter_reading_mini.core.errors import DomainError
+from meter_reading_mini.core.timeutil import DB_DATETIME_FORMAT
+from meter_reading_mini.core.timezone_settings import normalize_to_utc
 
 
-class MeterReadingSignatureError(ValueError):
+class MeterReadingSignatureError(DomainError):
     """署名関連エラーの基底例外。"""
 
 
@@ -57,11 +60,9 @@ def canonicalize_signature_payload(
 
 
 def canonicalize_signature_recorded_at(recorded_at: datetime) -> str:
-    """署名シードで使う recorded_at を canonical な ISO8601 文字列へそろえる。"""
+    """署名シードで使う recorded_at を UTC・秒単位へ正規化する。"""
 
-    if recorded_at.tzinfo is None or recorded_at.utcoffset() is None:
-        raise ValueError("recorded_at must be timezone-aware for signature verification.")
-    return recorded_at.isoformat()
+    return normalize_to_utc(recorded_at).strftime(DB_DATETIME_FORMAT)
 
 
 def calculate_meter_reading_signature(

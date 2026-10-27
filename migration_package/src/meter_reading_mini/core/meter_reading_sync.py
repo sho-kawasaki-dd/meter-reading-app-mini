@@ -13,7 +13,7 @@ from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
-from api.models import (
+from meter_reading_mini.core.contract_models import (
     IgnoredReadingSyncItem,
     IgnoredReplacementSyncItem,
     MeterReadingSubmission,
@@ -28,7 +28,7 @@ from api.models import (
     ValueSchema,
     resolve_meter_reading_submission,
 )
-from application.meter_reading_sync_repositories import (
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionLookupRepository,
     MeasurementDefinitionRecord,
     PlannedReadingLookupRepository,
@@ -41,7 +41,7 @@ from application.meter_reading_sync_repositories import (
     UpsertDisposition,
     UpsertOutcome,
 )
-from application.reading_signature import (
+from meter_reading_mini.core.reading_signature import (
     InvalidMeterReadingSignatureError,
     MissingDeviceIdForSignatureError,
     SignatureCanonicalizationError,

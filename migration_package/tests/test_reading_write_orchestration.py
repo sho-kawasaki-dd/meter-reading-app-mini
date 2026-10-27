@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from api.models import CalculationMethod, ResultStatus, ValueSchema  # noqa: E402
-from application.meter_reading_sync_repositories import (  # noqa: E402
+from meter_reading_mini.core.contract_models import CalculationMethod, ResultStatus, ValueSchema
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     HistoricalMeasuredReadingRecord,
     MeasurementDefinitionRecord,
     PlannedReadingRecord,
@@ -19,8 +19,8 @@ from application.meter_reading_sync_repositories import (  # noqa: E402
     UpsertDisposition,
     UpsertOutcome,
 )
-from application.reading_write_orchestration import ReadingWriteOrchestrationService  # noqa: E402
-from application.usage_delta_calculation import UsageDeltaCalculationResult  # noqa: E402
+from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
+from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationResult
 
 
 @dataclass

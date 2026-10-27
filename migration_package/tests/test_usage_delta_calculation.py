@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
+import pytest
 
-from api.models import CalculationMethod, ResultStatus, ValueSchema  # noqa: E402
-from application.meter_reading_sync_repositories import (  # noqa: E402
+from meter_reading_mini.core.contract_models import CalculationMethod, ResultStatus, ValueSchema
+from meter_reading_mini.core.errors import NegativeUsageDeltaError
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     HistoricalMeasuredReadingRecord,
     MeasurementDefinitionRecord,
     ReadingUpsertRequest,
     ReplacementBoundaryRecord,
+    ResultSource,
 )
-from application.usage_delta_calculation import UsageDeltaCalculationService  # noqa: E402
+from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
 
 
 def build_request(
@@ -33,6 +33,8 @@ def build_request(
         updated_by="android-01",
         signature="sig-001",
         note=None,
+        device_id="sheet-001",
+        result_source=ResultSource.MOBILE_HTML,
     )
 
 
@@ -218,3 +220,35 @@ def test_calculator_applies_rollover_with_boundary_new_initial_reading() -> None
 
     assert result.last_reading == Decimal("990")
     assert result.usage_delta == Decimal("30")
+
+
+def test_calculator_rejects_negative_delta_without_rollover() -> None:
+    service = UsageDeltaCalculationService()
+    definition = MeasurementDefinitionRecord(
+        measurement_definition_id="md-001",
+        value_schema=ValueSchema.DECIMAL_STRING,
+    )
+    previous = HistoricalMeasuredReadingRecord(
+        planned_reading_id="plan-prev",
+        raw_reading=Decimal("10"),
+        recorded_at=datetime(2026, 4, 1, 7, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(NegativeUsageDeltaError):
+        service.calculate(definition, build_request(raw_reading="9"), previous)
+
+
+def test_calculator_rejects_negative_delta_from_replacement_initial_without_rollover() -> None:
+    service = UsageDeltaCalculationService()
+    definition = MeasurementDefinitionRecord(
+        measurement_definition_id="md-001",
+        value_schema=ValueSchema.DECIMAL_STRING,
+    )
+    boundary = ReplacementBoundaryRecord(
+        replacement_event_id="replace-001",
+        measurement_definition_id="md-001",
+        new_initial_reading=Decimal("10"),
+    )
+
+    with pytest.raises(NegativeUsageDeltaError):
+        service.calculate(definition, build_request(raw_reading="9"), None, boundary)

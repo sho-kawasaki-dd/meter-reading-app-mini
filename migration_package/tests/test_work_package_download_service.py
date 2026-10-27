@@ -15,7 +15,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from api.models import (
+from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
     MeasurementDefinitionData,
@@ -26,22 +26,22 @@ from api.models import (
     ReadingSession,
     ValueSchema,
 )  # noqa: E402
-from application.meter_reading_sync_repositories import (
-    PlannedReadingCloseReason,
-    PlannedReadingCreateRequest,
-    PlannedReadingGenerationDefinitionRecord,
-)  # noqa: E402
-from application.schedule_settings import (  # noqa: E402
-    DEFAULT_SCHEDULES,
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
     EveryTwoMonthsSchedule,
     MonthlySchedule,
     MonthlyScheduleSelectorType,
     MonthParity,
+    PlannedReadingCloseReason,
+    PlannedReadingCreateRequest,
+    PlannedReadingGenerationDefinitionRecord,
     ScheduleItem,
     WeeklySchedule,
+)  # noqa: E402
+from meter_reading_mini.core.schedule_settings import (
+    DEFAULT_SCHEDULES,
 )
-from application.work_package_download import (  # noqa: E402
+from meter_reading_mini.core.work_package_download import (  # noqa: E402
     MASTER_COUNT_WARN_THRESHOLD,
     TASK_COUNT_WARN_THRESHOLD,
     FutureBusinessDateError,
@@ -49,7 +49,8 @@ from application.work_package_download import (  # noqa: E402
     PlannedReadingLifecycleService,
     WorkPackageDownloadService,
 )
-from core.database import MeasurementDefinitionORM, build_scheduled_at  # noqa: E402
+from core.database import MeasurementDefinitionORM  # noqa: E402
+from meter_reading_mini.core.timezone_settings import build_scheduled_at
 
 
 @dataclass

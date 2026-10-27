@@ -13,38 +13,36 @@ MAX_BACKFILL_DAYS_PER_REQUEST = 14
 TASK_COUNT_WARN_THRESHOLD = 5000
 MASTER_COUNT_WARN_THRESHOLD = 2000
 
-from api.models import (
+from meter_reading_mini.core.contract_models import (
     PlannedReadingTask,
     ReadingCycle,
     ReadingSession,
     WorkPackageResponse,
     WorkPackageTaskGroups,
 )
-from application.meter_reading_sync_repositories import (
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    DailySchedule,
+    EveryTwoMonthsSchedule,
     MeasurementDefinitionQueryRepository,
     MeterMasterQueryRepository,
+    MonthlySchedule,
+    MonthlyScheduleSelectorType,
+    MonthParity,
     PlannedReadingCloseReason,
     PlannedReadingCreateRequest,
     PlannedReadingGenerationRepository,
     PlannedReadingLifecycleRepository,
     PlannedReadingTaskQueryRepository,
     ReleaseDateCalculator,
-)
-from application.schedule_settings import (
-    DailySchedule,
-    EveryTwoMonthsSchedule,
-    MonthlySchedule,
-    MonthlyScheduleSelectorType,
-    MonthParity,
     ScheduleSettings,
     WeeklySchedule,
 )
-from application.timezone_settings import (
+from meter_reading_mini.core.timezone_settings import (
     DEFAULT_APP_TIMEZONE,
+    build_scheduled_at,
     build_business_date_provider,
     build_current_datetime_provider,
 )
-from core.database import build_scheduled_at
 
 BusinessDateProvider = Callable[[], date]
 CurrentDateTimeProvider = Callable[[], datetime]
@@ -286,9 +284,7 @@ class WorkPackageDownloadService:
 
         if generation_target_business_date is None:
             generation_target_business_date = target_business_date
-        backfill_pending = self._planned_reading_generator.ensure_generated_through(
-            generation_target_business_date
-        )
+        self._planned_reading_generator.ensure_generated_through(generation_target_business_date)
         if self._planned_reading_lifecycle_service is not None:
             self._planned_reading_lifecycle_service.reconcile_before_download(target_business_date)
         if query_by_release_date:
@@ -306,7 +302,6 @@ class WorkPackageDownloadService:
             + len(grouped_tasks.weekly_tasks)
             + len(grouped_tasks.monthly_tasks)
             + len(grouped_tasks.every_two_months_tasks)
-            + len(grouped_tasks.ad_hoc_tasks)
         )
         meters = self._meter_master_repository.list_meter_master_data()
         measurement_definitions = (
@@ -335,7 +330,6 @@ class WorkPackageDownloadService:
             meters=meters,
             measurement_definitions=measurement_definitions,
             work_package=grouped_tasks,
-            backfill_pending=backfill_pending,
         )
 
 
@@ -466,7 +460,6 @@ def _group_tasks(tasks: list[PlannedReadingTask]) -> WorkPackageTaskGroups:
         every_two_months_tasks=[
             task for task in sorted_tasks if task.reading_cycle is ReadingCycle.EVERY_TWO_MONTHS
         ],
-        ad_hoc_tasks=[],
     )
 
 

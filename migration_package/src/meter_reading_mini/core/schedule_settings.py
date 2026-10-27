@@ -10,18 +10,26 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import date, time, timedelta
-from enum import StrEnum
-from typing import Protocol
-from uuid import UUID
+from typing import TypeGuard
 
-from api.models import ReadingCycle, ReadingSession
-from application.meter_reading_sync_repositories import (
+from meter_reading_mini.core.contract_models import ReadingCycle, ReadingSession
+from meter_reading_mini.core.errors import ScheduleValidationError
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    DailySchedule,
+    EveryTwoMonthsSchedule,
+    MeasurementDefinitionScheduleRepository,
+    MonthlySchedule,
+    MonthlyScheduleSelectorType,
+    MonthParity,
     PlannedReadingRecompositionRepository,
     ReleaseDateCalculator,
+    ScheduleItem,
+    ScheduleSettings,
+    ScheduleSettingsRepository,
+    WeeklySchedule,
 )
-from application.timezone_settings import build_business_date_provider
+from meter_reading_mini.core.timezone_settings import build_business_date_provider
 
 logger = logging.getLogger(__name__)
 
@@ -44,95 +52,6 @@ RELEASE_OFFSET_SETTINGS_KEYS: dict[ReadingSession, str] = {
     session: f"{_RELEASE_OFFSET_KEY_PREFIX}.{session.value}.{_RELEASE_OFFSET_KEY_VERSION}"
     for session in ReadingSession
 }
-
-
-# ---------------------------------------------------------------------------
-# monthly / every_two_months selector types
-# ---------------------------------------------------------------------------
-
-
-class MonthlyScheduleSelectorType(StrEnum):
-    DAY_OF_MONTH = "day_of_month"
-    NTH_WEEKDAY = "nth_weekday"
-    MONTH_EDGE = "month_edge"
-
-
-class MonthParity(StrEnum):
-    ODD = "odd"
-    EVEN = "even"
-
-
-@dataclass(frozen=True, slots=True)
-class ScheduleItem:
-    """schedule の最小構成要素。"""
-
-    reading_session: ReadingSession
-    day_offset: int = 0
-
-
-# ---------------------------------------------------------------------------
-# schedule value dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class DailySchedule:
-    """daily_1x / daily_2x / daily_3x 用: schedule item 配列。"""
-
-    reading_items: tuple[ScheduleItem, ...]
-
-    @property
-    def reading_sessions(self) -> tuple[ReadingSession, ...]:
-        return tuple(item.reading_session for item in self.reading_items)
-
-    def get_day_offset(self, reading_session: ReadingSession) -> int:
-        for item in self.reading_items:
-            if item.reading_session is reading_session:
-                return item.day_offset
-        return 0
-
-
-@dataclass(frozen=True, slots=True)
-class WeeklySchedule:
-    """weekly 用: 曜日 (0=Mon … 6=Sun) と reading_session。"""
-
-    weekday: int  # 0=Monday … 6=Sunday
-    reading_session: ReadingSession
-    day_offset: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class MonthlySchedule:
-    """monthly 用: selector_type と対応する値。"""
-
-    selector_type: MonthlyScheduleSelectorType
-    day_of_month: int | None = None  # selector_type == day_of_month
-    nth: int | None = None  # selector_type == nth_weekday (例: 2 → 第2)
-    nth_weekday: int | None = None  # 0=Mon … 6=Sun
-    edge: str | None = None  # "first" | "last"
-    reading_session: ReadingSession = ReadingSession.SESSION_0800
-    day_offset: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class EveryTwoMonthsSchedule:
-    """every_two_months 用: monthly schedule + month_parity。"""
-
-    selector_type: MonthlyScheduleSelectorType
-    month_parity: MonthParity
-    day_of_month: int | None = None
-    nth: int | None = None
-    nth_weekday: int | None = None
-    edge: str | None = None
-    reading_session: ReadingSession = ReadingSession.SESSION_0800
-    day_offset: int = 0
-
-
-# ---------------------------------------------------------------------------
-# union type
-# ---------------------------------------------------------------------------
-
-ScheduleSettings = DailySchedule | WeeklySchedule | MonthlySchedule | EveryTwoMonthsSchedule
 
 
 # ---------------------------------------------------------------------------
@@ -177,15 +96,14 @@ def _serialize_schedule(schedule: ScheduleSettings) -> str:
         _add_selector_fields(obj, schedule)
         return json.dumps(obj)
 
-    if isinstance(schedule, EveryTwoMonthsSchedule):
-        obj2: dict[str, object] = {
-            "selector_type": schedule.selector_type.value,
-            "month_parity": schedule.month_parity.value,
-            "reading_session": schedule.reading_session.value,
-            "day_offset": schedule.day_offset,
-        }
-        _add_selector_fields(obj2, schedule)
-        return json.dumps(obj2)
+    obj2: dict[str, object] = {
+        "selector_type": schedule.selector_type.value,
+        "month_parity": schedule.month_parity.value,
+        "reading_session": schedule.reading_session.value,
+        "day_offset": schedule.day_offset,
+    }
+    _add_selector_fields(obj2, schedule)
+    return json.dumps(obj2)
 
     raise TypeError(f"Unsupported schedule type: {type(schedule)}")  # pragma: no cover
 
@@ -207,20 +125,28 @@ def _add_selector_fields(
 def _deserialize_schedule(reading_cycle: ReadingCycle, raw: str) -> ScheduleSettings:
     """JSON 文字列 → ScheduleSettings。"""
 
-    data = json.loads(raw)
+    parsed = json.loads(raw)
+    if not _is_json_object(parsed):
+        raise ValueError("Schedule JSON must contain an object.")
+    data = parsed
 
     if reading_cycle in _DAILY_CYCLES:
+        reading_sessions = data.get("reading_sessions")
+        if not _is_json_array(reading_sessions):
+            raise ValueError("Daily schedule JSON must contain a reading_sessions array.")
         return DailySchedule(
-            reading_items=tuple(
-                _parse_daily_schedule_item(item) for item in data["reading_sessions"]
-            ),
+            reading_items=tuple(_parse_daily_schedule_item(item) for item in reading_sessions),
         )
 
     if reading_cycle is ReadingCycle.WEEKLY:
+        weekday_name = _required_string(data, "weekday")
+        weekday = _WEEKDAY_NAME_TO_INT.get(weekday_name)
+        if weekday is None:
+            raise ValueError(f"Unknown weekday: {weekday_name}")
         return WeeklySchedule(
-            weekday=_WEEKDAY_NAME_TO_INT[data["weekday"]],
-            reading_session=ReadingSession(data["reading_session"]),
-            day_offset=int(data.get("day_offset", 0)),
+            weekday=weekday,
+            reading_session=ReadingSession(_required_string(data, "reading_session")),
+            day_offset=_optional_integer(data, "day_offset", 0),
         )
 
     if reading_cycle is ReadingCycle.MONTHLY:
@@ -230,7 +156,7 @@ def _deserialize_schedule(reading_cycle: ReadingCycle, raw: str) -> ScheduleSett
         monthly = _parse_monthly_schedule(data)
         return EveryTwoMonthsSchedule(
             selector_type=monthly.selector_type,
-            month_parity=MonthParity(data["month_parity"]),
+            month_parity=MonthParity(_required_string(data, "month_parity")),
             day_of_month=monthly.day_of_month,
             nth=monthly.nth,
             nth_weekday=monthly.nth_weekday,
@@ -271,29 +197,29 @@ def validate_schedule_type_for_reading_cycle(
         raise ValueError("every_two_months requires EveryTwoMonthsSchedule.")
 
 
-def _parse_monthly_schedule(data: dict) -> MonthlySchedule:
-    selector_type = MonthlyScheduleSelectorType(data["selector_type"])
-    reading_session = ReadingSession(data.get("reading_session", "08:00"))
-    day_offset = int(data.get("day_offset", 0))
+def _parse_monthly_schedule(data: dict[str, object]) -> MonthlySchedule:
+    selector_type = MonthlyScheduleSelectorType(_required_string(data, "selector_type"))
+    reading_session = ReadingSession(_optional_string(data, "reading_session", "08:00"))
+    day_offset = _optional_integer(data, "day_offset", 0)
     if selector_type is MonthlyScheduleSelectorType.DAY_OF_MONTH:
         return MonthlySchedule(
             selector_type=selector_type,
-            day_of_month=data["day_of_month"],
+            day_of_month=_required_integer(data, "day_of_month"),
             reading_session=reading_session,
             day_offset=day_offset,
         )
     if selector_type is MonthlyScheduleSelectorType.NTH_WEEKDAY:
         return MonthlySchedule(
             selector_type=selector_type,
-            nth=data["nth"],
-            nth_weekday=_WEEKDAY_NAME_TO_INT[data["nth_weekday"]],
+            nth=_required_integer(data, "nth"),
+            nth_weekday=_required_weekday(data, "nth_weekday"),
             reading_session=reading_session,
             day_offset=day_offset,
         )
     if selector_type is MonthlyScheduleSelectorType.MONTH_EDGE:
         return MonthlySchedule(
             selector_type=selector_type,
-            edge=data["edge"],
+            edge=_required_string(data, "edge"),
             reading_session=reading_session,
             day_offset=day_offset,
         )
@@ -303,12 +229,56 @@ def _parse_monthly_schedule(data: dict) -> MonthlySchedule:
 def _parse_daily_schedule_item(item: object) -> ScheduleItem:
     if isinstance(item, str):
         return ScheduleItem(reading_session=ReadingSession(item), day_offset=0)
-    if not isinstance(item, dict):
+    if not _is_json_object(item):
         raise TypeError("Daily schedule items must be strings or objects.")
     return ScheduleItem(
-        reading_session=ReadingSession(item["reading_session"]),
-        day_offset=int(item.get("day_offset", 0)),
+        reading_session=ReadingSession(_required_string(item, "reading_session")),
+        day_offset=_optional_integer(item, "day_offset", 0),
     )
+
+
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    return isinstance(value, dict)
+
+
+def _is_json_array(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _required_string(data: dict[str, object], key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"Schedule field {key!r} must be a string.")
+    return value
+
+
+def _optional_string(data: dict[str, object], key: str, default: str) -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str):
+        raise ValueError(f"Schedule field {key!r} must be a string.")
+    return value
+
+
+def _required_integer(data: dict[str, object], key: str) -> int:
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Schedule field {key!r} must be an integer.")
+    return value
+
+
+def _optional_integer(data: dict[str, object], key: str, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Schedule field {key!r} must be an integer.")
+    return value
+
+
+def _required_weekday(data: dict[str, object], key: str) -> int:
+    weekday_name = _required_string(data, key)
+    weekday = _WEEKDAY_NAME_TO_INT.get(weekday_name)
+    if weekday is None:
+        raise ValueError(f"Unknown weekday: {weekday_name}")
+    return weekday
 
 
 def _serialize_release_offset_days(offset_days: int) -> str:
@@ -327,17 +297,6 @@ _DAILY_CYCLE_RE = re.compile(r"^daily_(\d+)x$")
 _DAILY_CYCLES = frozenset({cycle for cycle in ReadingCycle if _DAILY_CYCLE_RE.match(cycle.value)})
 
 
-class ScheduleValidationError(ValueError):
-    """スケジュール保存時の業務ルール違反を表す例外。
-
-    UI 層で複数のエラーメッセージを扱えるように `errors` リストを保持する。
-    """
-
-    def __init__(self, errors: list[str]) -> None:
-        super().__init__("Invalid schedule data.")
-        self.errors = errors
-
-
 def expected_daily_count(reading_cycle: ReadingCycle) -> int:
     """指定された `reading_cycle` の日次期待件数を返す。
 
@@ -353,7 +312,10 @@ def expected_daily_count(reading_cycle: ReadingCycle) -> int:
 
 
 def validate_expected_daily_count(reading_cycle: ReadingCycle, schedule: ScheduleSettings) -> None:
-    """日次スケジュールの件数不足・超過・重複を検証し、違反があれば `ScheduleValidationError` を投げる。"""
+    """日次スケジュールの件数不足・超過・重複を検証する。
+
+    違反があれば `ScheduleValidationError` を投げる。
+    """
 
     # 日次系に関係ない場合は何もしない
     if reading_cycle not in _DAILY_CYCLES:
@@ -369,11 +331,13 @@ def validate_expected_daily_count(reading_cycle: ReadingCycle, schedule: Schedul
 
     if current < expected:
         errors.append(
-            f"{reading_cycle.value} は {expected} 件の検針時刻を選択する必要があります（現在 {current} 件）。"
+            f"{reading_cycle.value} は {expected} 件の検針時刻を選択する必要があります"
+            f"（現在 {current} 件）。"
         )
     if current > expected:
         errors.append(
-            f"{reading_cycle.value} は {expected} 件の検針時刻のみ許可されています（現在 {current} 件）。"
+            f"{reading_cycle.value} は {expected} 件の検針時刻のみ許可されています"
+            f"（現在 {current} 件）。"
         )
 
     # 重複検査
@@ -457,27 +421,6 @@ DEFAULT_RELEASE_OFFSETS: dict[ReadingSession, int] = {
     ReadingSession.SESSION_1700: 0,
     ReadingSession.SESSION_2200: 0,
 }
-
-
-# ---------------------------------------------------------------------------
-# repository protocol
-# ---------------------------------------------------------------------------
-
-
-class ScheduleSettingsRepository(Protocol):
-    """app_settings からスケジュール設定を読み書きする repository。"""
-
-    def get_setting(self, key: str) -> str | None: ...
-    def upsert_setting(self, key: str, value: str) -> None: ...
-
-
-class MeasurementDefinitionScheduleRepository(Protocol):
-    """measurement_definition_schedules を読み書きする repository。"""
-
-    def get_measurement_definition_schedule(self, measurement_definition_id: str) -> str | None: ...
-    def upsert_measurement_definition_schedule(
-        self, measurement_definition_id: str, schedule_json: str
-    ) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +519,8 @@ class MeasurementDefinitionScheduleService:
                 )
             )
             logger.info(
-                "Recomposed future planned readings for %s (%s) from %s: superseded=%d generated=%d",
+                "Recomposed future planned readings for %s (%s) from %s: "
+                "superseded=%d generated=%d",
                 measurement_definition_id,
                 reading_cycle.value,
                 from_business_date.isoformat(),
@@ -651,7 +595,6 @@ class ReleaseOffsetSettingsService(ReleaseDateCalculator):
 
 CUTOFF_SETTINGS_KEY = "auto_close.cutoff_time.v1"
 DEFAULT_CUTOFF_TIME = time(hour=7, minute=0)
-ACTIVE_DEVICE_ID_SETTINGS_KEY = "device_binding.active_device_id.v1"
 
 
 class CutoffSettingsService:
@@ -675,66 +618,6 @@ class CutoffSettingsService:
         logger.info("Saved cutoff time: %s", cutoff.strftime("%H:%M"))
 
 
-def normalize_device_id(value: str) -> str:
-    """device_id を UUID として検証し、canonical 文字列へ正規化する。"""
-
-    stripped = value.strip()
-    if not stripped:
-        raise ValueError("device_id must not be blank.")
-    try:
-        return str(UUID(stripped))
-    except ValueError as exc:  # pragma: no cover - exercised via callers
-        raise ValueError("device_id must be a valid UUID.") from exc
-
-
-class DeviceBindingRepository(Protocol):
-    """主端末制に必要な active device と候補一覧を扱う repository。"""
-
-    def get_setting(self, key: str) -> str | None: ...
-    def upsert_setting(self, key: str, value: str) -> None: ...
-    def delete_setting(self, key: str) -> None: ...
-    def list_recent_device_ids(self, *, limit: int) -> list[str]: ...
-
-
-class ActiveDeviceBindingService:
-    """主端末の取得・更新・解除と候補一覧を扱う service。"""
-
-    def __init__(self, repository: DeviceBindingRepository) -> None:
-        self._repository = repository
-
-    def get_active_device_id(self) -> str | None:
-        """現在の主端末 device_id を返す。未設定なら None。"""
-
-        raw = self._repository.get_setting(ACTIVE_DEVICE_ID_SETTINGS_KEY)
-        if raw is None:
-            return None
-        return normalize_device_id(raw)
-
-    def bind_active_device(self, device_id: str) -> str:
-        """主端末 device_id を保存し、canonical 値を返す。"""
-
-        normalized = normalize_device_id(device_id)
-        self._repository.upsert_setting(ACTIVE_DEVICE_ID_SETTINGS_KEY, normalized)
-        logger.info("Saved active device binding: %s", normalized)
-        return normalized
-
-    def clear_active_device_id(self) -> None:
-        """主端末 device_id を未設定状態へ戻す。"""
-
-        self._repository.delete_setting(ACTIVE_DEVICE_ID_SETTINGS_KEY)
-        logger.info("Cleared active device binding")
-
-    def list_recent_device_candidates(self, *, limit: int = 5) -> list[str]:
-        """最近 reading transaction に出現した device_id 候補を返す。"""
-
-        if limit <= 0:
-            return []
-        return [
-            normalize_device_id(device_id)
-            for device_id in self._repository.list_recent_device_ids(limit=limit)
-        ]
-
-
 # ---------------------------------------------------------------------------
 # provider type for work_package_download
 # ---------------------------------------------------------------------------
@@ -748,27 +631,16 @@ __all__ = [
     "DEFAULT_CUTOFF_TIME",
     "DEFAULT_RELEASE_OFFSETS",
     "DEFAULT_SCHEDULES",
-    "DailySchedule",
-    "EveryTwoMonthsSchedule",
-    "ReleaseDateCalculator",
     "ReleaseOffsetSettingsService",
-    "ScheduleItem",
-    "MonthlySchedule",
-    "MonthlyScheduleSelectorType",
-    "MonthParity",
-    "MeasurementDefinitionScheduleRepository",
     "MeasurementDefinitionScheduleService",
     "RELEASE_OFFSET_SETTINGS_KEYS",
     "SCHEDULE_SETTINGS_KEYS",
     "deserialize_schedule",
-    "ScheduleSettings",
     "ScheduleSettingsProvider",
-    "ScheduleSettingsRepository",
     "ScheduleSettingsService",
     "serialize_schedule",
     "validate_schedule_type_for_reading_cycle",
     "ScheduleValidationError",
     "expected_daily_count",
     "validate_expected_daily_count",
-    "WeeklySchedule",
 ]

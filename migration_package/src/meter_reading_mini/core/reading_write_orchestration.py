@@ -7,8 +7,8 @@ from dataclasses import replace
 
 logger = logging.getLogger(__name__)
 
-from api.models import ResultStatus
-from application.meter_reading_sync_repositories import (
+from meter_reading_mini.core.contract_models import ResultStatus
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     HistoricalMeasuredReadingLookupRepository,
     MeasurementDefinitionLookupRepository,
     PlannedReadingLookupRepository,
@@ -18,7 +18,7 @@ from application.meter_reading_sync_repositories import (
     ReplacementBoundaryLookupRepository,
     UpsertOutcome,
 )
-from application.usage_delta_calculation import UsageDeltaCalculationService
+from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
 
 
 class ReadingWriteOrchestrationError(ValueError):

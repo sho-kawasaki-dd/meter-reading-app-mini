@@ -19,13 +19,13 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
-from api.models import (  # noqa: E402
+from meter_reading_mini.core.contract_models import (
     MeterReadingSyncRequest,
     ResultStatus,  # noqa: E402
     ValueSchema,
 )
-from application.meter_reading_sync import MeterReadingSyncService  # noqa: E402
-from application.meter_reading_sync_repositories import (  # noqa: E402
+from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
+from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionRecord,
     PlannedReadingRecord,
     ReadingUpsertRequest,
@@ -33,7 +33,7 @@ from application.meter_reading_sync_repositories import (  # noqa: E402
     UpsertDisposition,
     UpsertOutcome,
 )
-from application.reading_signature import calculate_meter_reading_signature  # noqa: E402
+from meter_reading_mini.core.reading_signature import calculate_meter_reading_signature
 from conftest import FakeSession  # noqa: E402
 
 TEST_DEVICE_ID = "550e8400-e29b-41d4-a716-446655440000"

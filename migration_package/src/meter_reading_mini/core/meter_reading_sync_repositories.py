@@ -11,22 +11,237 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
-from api.models import (
+from meter_reading_mini.core.contract_models import (
     CalculationMethod,
+    Category,
     MeasurementDefinitionData,
     MeterMasterData,
     PlannedReadingTask,
+    Purpose,
     ReadingCycle,
     ReadingSession,
     ResultStatus,
     ValueSchema,
 )
 
-if TYPE_CHECKING:
-    from application.schedule_settings import ScheduleSettings
-    from core.database import MeasurementDefinitionORM
+
+class MonthlyScheduleSelectorType(StrEnum):
+    DAY_OF_MONTH = "day_of_month"
+    NTH_WEEKDAY = "nth_weekday"
+    MONTH_EDGE = "month_edge"
+
+
+class MonthParity(StrEnum):
+    ODD = "odd"
+    EVEN = "even"
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleItem:
+    reading_session: ReadingSession
+    day_offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DailySchedule:
+    reading_items: tuple[ScheduleItem, ...]
+
+    @property
+    def reading_sessions(self) -> tuple[ReadingSession, ...]:
+        return tuple(item.reading_session for item in self.reading_items)
+
+    def get_day_offset(self, reading_session: ReadingSession) -> int:
+        for item in self.reading_items:
+            if item.reading_session is reading_session:
+                return item.day_offset
+        return 0
+
+
+@dataclass(frozen=True, slots=True)
+class WeeklySchedule:
+    weekday: int
+    reading_session: ReadingSession
+    day_offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class MonthlySchedule:
+    selector_type: MonthlyScheduleSelectorType
+    day_of_month: int | None = None
+    nth: int | None = None
+    nth_weekday: int | None = None
+    edge: str | None = None
+    reading_session: ReadingSession = ReadingSession.SESSION_0800
+    day_offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class EveryTwoMonthsSchedule:
+    selector_type: MonthlyScheduleSelectorType
+    month_parity: MonthParity
+    day_of_month: int | None = None
+    nth: int | None = None
+    nth_weekday: int | None = None
+    edge: str | None = None
+    reading_session: ReadingSession = ReadingSession.SESSION_0800
+    day_offset: int = 0
+
+
+ScheduleSettings = DailySchedule | WeeklySchedule | MonthlySchedule | EveryTwoMonthsSchedule
+
+
+class PlannedReadingTaskState(StrEnum):
+    OPEN = "open"
+    COMPLETED = "completed"
+    AUTO_CLOSED = "auto_closed"
+    SUPERSEDED = "superseded"
+
+
+class PlannedReadingCloseReason(StrEnum):
+    CUTOFF_ELAPSED = "cutoff_elapsed"
+    METER_REPLACED = "meter_replaced"
+    SCHEDULE_RECOMPOSED = "schedule_recomposed"
+    DEFINITION_DEACTIVATED = "definition_deactivated"
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurementDefinitionScheduleRecord:
+    measurement_definition_id: str
+    effective_from_date: date
+    schedule_json: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingCycleScheduleDefaultRecord:
+    reading_cycle: ReadingCycle
+    effective_from_date: date
+    schedule_json: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingSessionReleaseOffsetRecord:
+    reading_session: ReadingSession
+    effective_from_date: date
+    offset_days: int
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MeterAssignmentRecord:
+    measurement_definition_id: str
+    meter_id: str
+    effective_from: datetime
+    effective_to: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MeterMasterRecord:
+    meter_id: str
+    location_id: str
+    location_name: str
+    meter_name: str
+    category: Category
+    meter_serial: str | None
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MeterMasterCreateRequest:
+    meter_id: str
+    location_id: str
+    location_name: str
+    meter_name: str
+    category: Category
+    meter_serial: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MeterMasterUpdateRequest:
+    location_name: str
+    meter_name: str
+    category: Category
+    meter_serial: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MeterMasterUsageRecord:
+    has_active_assignment: bool
+    has_open_planned_readings: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurementDefinitionCreateRequest:
+    measurement_definition_id: str
+    location_id: str
+    display_name: str
+    category: Category
+    unit: str
+    value_schema: ValueSchema
+    multiplier: Decimal
+    decimal_places: int | None
+    warning_threshold: Decimal | None
+    rollover_value: Decimal | None
+    calculation_method: CalculationMethod
+    reading_cycle: ReadingCycle
+    purpose: Purpose
+    generation_start_date: date
+    initial_schedule_json: str | None
+    initial_meter_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurementDefinitionUpdateRequest:
+    display_name: str
+    category: Category
+    unit: str
+    multiplier: Decimal
+    decimal_places: int | None
+    warning_threshold: Decimal | None
+    rollover_value: Decimal | None
+    purpose: str
+
+
+@dataclass(frozen=True, slots=True)
+class StaffRecord:
+    staff_id: str
+    display_name: str
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StaffCreateRequest:
+    staff_id: str
+    display_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class StaffUpdateRequest:
+    display_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingConfirmationContext:
+    sheet_id: str
+    staff_id: str
+    staff_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedReadingLogicalSlotRecord:
+    measurement_definition_id: str
+    business_date: date
+    reading_session: ReadingSession
+    planned_reading_id: str
+    task_state: PlannedReadingTaskState
+    close_reason: PlannedReadingCloseReason | None = None
+    superseded_by_planned_reading_id: str | None = None
+
+
+PC_DIRECT_DEVICE_ID = "pc-direct"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +257,11 @@ class PlannedReadingRecord:
     measurement_definition_id: str
     meter_id: str
     scheduled_at: datetime | None = None
+    business_date: date | None = None
+    reading_session: ReadingSession | None = None
+    task_state: PlannedReadingTaskState | None = None
+    close_reason: PlannedReadingCloseReason | None = None
+    superseded_by_planned_reading_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +284,13 @@ class PlannedReadingGenerationDefinitionRecord:
     location_id: str
     meter_id: str
     reading_cycle: ReadingCycle
+    generation_start_date: date
     schedule: ScheduleSettings | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MeasurementDefinitionWithoutActiveAssignmentRecord:
+    measurement_definition_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,13 +320,14 @@ class PlannedReadingRecompositionRecord:
     reading_session: ReadingSession
     scheduled_at: datetime
     task_state: PlannedReadingTaskState
+    close_reason: PlannedReadingCloseReason | None = None
+    superseded_by_planned_reading_id: str | None = None
 
 
 class ResultSource(StrEnum):
     """reading transaction の監査用ソース語彙。"""
 
-    CLIENT = "client"
-    SYSTEM = "system"
+    MOBILE_HTML = "mobile_html"
     MANUAL = "manual"
 
 
@@ -118,8 +345,8 @@ class ReadingUpsertRequest:
     updated_by: str
     signature: str
     note: str | None
-    device_id: str = ""
-    result_source: ResultSource = ResultSource.CLIENT
+    device_id: str
+    result_source: ResultSource
     last_reading: Decimal | None = None
     usage_delta: Decimal | None = None
 
@@ -131,6 +358,15 @@ class HistoricalMeasuredReadingRecord:
     planned_reading_id: str
     raw_reading: Decimal
     recorded_at: datetime
+    meter_id: str | None = None
+    scheduled_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CalculatedUsageUpdate:
+    planned_reading_id: str
+    last_reading: Decimal | None
+    usage_delta: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +392,8 @@ class ReplacementBoundaryRecord:
     replacement_event_id: str
     measurement_definition_id: str
     new_initial_reading: Decimal | None
+    new_meter_id: str | None = None
+    replaced_at: datetime | None = None
 
 
 class UpsertDisposition(StrEnum):
@@ -165,6 +403,7 @@ class UpsertDisposition(StrEnum):
     UPDATED = "updated"
     REPLACED_ON_TIE = "replaced_on_tie"
     IGNORED_STALE = "ignored_stale"
+    IGNORED_DUPLICATE = "ignored_duplicate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,22 +415,10 @@ class UpsertOutcome:
 
     @property
     def accepted(self) -> bool:
-        return self.disposition is not UpsertDisposition.IGNORED_STALE
-
-
-class PlannedReadingTaskState(StrEnum):
-    """planned reading の内部ライフサイクル状態。"""
-
-    OPEN = "open"
-    COMPLETED = "completed"
-    AUTO_CLOSED = "auto_closed"
-    SUPERSEDED = "superseded"
-
-
-class PlannedReadingCloseReason(StrEnum):
-    """planned reading を close した理由の内部語彙。"""
-
-    CUTOFF_ELAPSED = "cutoff_elapsed"
+        return self.disposition not in {
+            UpsertDisposition.IGNORED_STALE,
+            UpsertDisposition.IGNORED_DUPLICATE,
+        }
 
 
 class PlannedReadingLookupRepository(Protocol):
@@ -228,7 +455,7 @@ class PlannedReadingGenerationRepository(Protocol):
 
     def list_measurement_definitions_without_active_assignment(
         self,
-    ) -> list[MeasurementDefinitionORM]:
+    ) -> list[MeasurementDefinitionWithoutActiveAssignmentRecord]:
         """Return active measurement definitions that have no active meter assignment."""
         ...
 
@@ -255,6 +482,143 @@ class MeasurementDefinitionScheduleRepository(Protocol):
     ) -> None:
         """Persist schedule JSON for the provided measurement definition."""
         ...
+
+    def list_measurement_definition_schedule_history(
+        self, measurement_definition_id: str
+    ) -> list[MeasurementDefinitionScheduleRecord]:
+        """Return schedule history ordered by effective date."""
+        ...
+
+    def get_measurement_definition_schedule_for_date(
+        self, measurement_definition_id: str, business_date: date
+    ) -> MeasurementDefinitionScheduleRecord | None:
+        """Return the schedule version effective on the requested business date."""
+        ...
+
+
+class ReadingCycleScheduleDefaultsRepository(Protocol):
+    def get_reading_cycle_schedule_default(
+        self, reading_cycle: ReadingCycle, business_date: date
+    ) -> ReadingCycleScheduleDefaultRecord | None: ...
+
+    def list_reading_cycle_schedule_defaults(
+        self, reading_cycle: ReadingCycle
+    ) -> list[ReadingCycleScheduleDefaultRecord]: ...
+
+    def save_reading_cycle_schedule_default(
+        self,
+        reading_cycle: ReadingCycle,
+        effective_from_date: date,
+        schedule_json: str,
+        *,
+        created_at: datetime,
+    ) -> None: ...
+
+
+class ReadingSessionReleaseOffsetsRepository(Protocol):
+    def get_reading_session_release_offset(
+        self, reading_session: ReadingSession, business_date: date
+    ) -> ReadingSessionReleaseOffsetRecord | None: ...
+
+    def list_reading_session_release_offsets(
+        self, reading_session: ReadingSession
+    ) -> list[ReadingSessionReleaseOffsetRecord]: ...
+
+    def save_reading_session_release_offset(
+        self,
+        reading_session: ReadingSession,
+        effective_from_date: date,
+        offset_days: int,
+        *,
+        created_at: datetime,
+    ) -> None: ...
+
+
+class ScheduleSettingsRepository(Protocol):
+    """アプリ全体の設定を読み書きする Repository 契約。"""
+
+    def get_setting(self, key: str) -> str | None: ...
+
+    def upsert_setting(self, key: str, value: str) -> None: ...
+
+
+class TimezoneSettingsRepository(Protocol):
+    """業務タイムゾーン設定と予定枠の有無を照会する契約。"""
+
+    def get_setting(self, key: str) -> str | None: ...
+
+    def upsert_setting(self, key: str, value: str) -> None: ...
+
+    def has_planned_readings(self) -> bool: ...
+
+
+class MeterMasterWriteRepository(Protocol):
+    def get_meter_master(self, meter_id: str) -> MeterMasterRecord | None: ...
+
+    def create_meter_master(self, request: MeterMasterCreateRequest) -> MeterMasterRecord: ...
+
+    def update_meter_master(
+        self, meter_id: str, request: MeterMasterUpdateRequest
+    ) -> MeterMasterRecord: ...
+
+    def set_meter_master_active(self, meter_id: str, is_active: bool) -> None: ...
+
+    def get_meter_master_usage(self, meter_id: str) -> MeterMasterUsageRecord: ...
+
+
+class MeasurementDefinitionWriteRepository(Protocol):
+    def create_measurement_definition(
+        self, request: MeasurementDefinitionCreateRequest
+    ) -> None: ...
+
+    def update_measurement_definition(
+        self,
+        measurement_definition_id: str,
+        request: MeasurementDefinitionUpdateRequest,
+    ) -> None: ...
+
+    def set_measurement_definition_active(
+        self,
+        measurement_definition_id: str,
+        is_active: bool,
+        *,
+        generation_start_date: date | None = None,
+    ) -> None: ...
+
+
+class MeterAssignmentRepository(Protocol):
+    def get_meter_assignment(
+        self, measurement_definition_id: str, at: datetime
+    ) -> MeterAssignmentRecord | None: ...
+
+    def list_meter_assignments(
+        self, measurement_definition_id: str
+    ) -> list[MeterAssignmentRecord]: ...
+
+    def set_initial_meter_assignment(
+        self, measurement_definition_id: str, meter_id: str, effective_from: datetime
+    ) -> None: ...
+
+
+class StaffRepository(Protocol):
+    def list_staff(self, *, include_inactive: bool = False) -> list[StaffRecord]: ...
+
+    def get_staff(self, staff_id: str) -> StaffRecord | None: ...
+
+    def create_staff(self, request: StaffCreateRequest) -> StaffRecord: ...
+
+    def update_staff(self, staff_id: str, request: StaffUpdateRequest) -> StaffRecord: ...
+
+    def set_staff_active(self, staff_id: str, is_active: bool) -> None: ...
+
+
+class PlannedReadingLogicalSlotRepository(Protocol):
+    def list_planned_reading_logical_slots(
+        self,
+        measurement_definition_id: str,
+        from_business_date: date,
+        through_business_date: date,
+    ) -> list[PlannedReadingLogicalSlotRecord]: ...
 
 
 class MeterMasterQueryRepository(Protocol):
@@ -358,12 +722,25 @@ class HistoricalMeasuredReadingLookupRepository(Protocol):
     def get_latest_measured_reading(
         self,
         measurement_definition_id: str,
+        meter_id: str,
         *,
         before_scheduled_at: datetime,
         before_planned_reading_id: str | None = None,
         excluding_planned_reading_id: str | None = None,
     ) -> HistoricalMeasuredReadingRecord | None:
         """Return the latest prior measured reading with a decimal raw_reading."""
+        ...
+
+    def list_following_measured_readings(
+        self,
+        measurement_definition_id: str,
+        meter_id: str,
+        *,
+        after_scheduled_at: datetime,
+        after_planned_reading_id: str | None = None,
+        excluding_planned_reading_id: str | None = None,
+    ) -> list[HistoricalMeasuredReadingRecord]:
+        """Return later measured readings in deterministic schedule order."""
         ...
 
 
@@ -374,14 +751,8 @@ class ReadingPersistenceRepository(Protocol):
         """Persist a calculated reading submission with conflict resolution handled internally."""
         ...
 
-    def recalculate_following_measured_reading(
-        self,
-        measurement_definition_id: str,
-        *,
-        after_scheduled_at: datetime,
-        after_planned_reading_id: str | None = None,
-    ) -> int:
-        """Recalculate the immediate next measured reading after the provided planned slot."""
+    def save_calculated_usage(self, update: CalculatedUsageUpdate) -> None:
+        """Persist calculated usage fields without changing audit metadata."""
         ...
 
 
@@ -407,36 +778,66 @@ class ReplacementBoundaryLookupRepository(Protocol):
     def get_replacement_boundary_for_new_meter_first_reading(
         self,
         measurement_definition_id: str,
-        new_meter_id: str,
+        meter_id: str,
+        *,
+        before_scheduled_at: datetime,
+        before_planned_reading_id: str | None = None,
+        excluding_planned_reading_id: str | None = None,
     ) -> ReplacementBoundaryRecord | None:
-        """Return the boundary record if the first accepted new-meter measured reading has not yet been recorded."""
+        """Return the latest unconsumed boundary, including one without an initial reading."""
         ...
 
 
 __all__ = [
+    "CalculatedUsageUpdate",
+    "DailySchedule",
+    "EveryTwoMonthsSchedule",
+    "MeasurementDefinitionCreateRequest",
     "MeasurementDefinitionData",
     "MeasurementDefinitionLookupRepository",
     "MeasurementDefinitionQueryRepository",
     "MeasurementDefinitionRecord",
+    "MeasurementDefinitionScheduleRecord",
     "HistoricalMeasuredReadingLookupRepository",
     "HistoricalMeasuredReadingRecord",
+    "MeasurementDefinitionScheduleRepository",
+    "MeasurementDefinitionUpdateRequest",
+    "MeasurementDefinitionWithoutActiveAssignmentRecord",
+    "MeasurementDefinitionWriteRepository",
+    "MeterAssignmentRecord",
+    "MeterAssignmentRepository",
+    "MeterMasterCreateRequest",
     "MeterMasterData",
     "MeterMasterQueryRepository",
-    "MeasurementDefinitionScheduleRepository",
+    "MeterMasterRecord",
+    "MeterMasterUpdateRequest",
+    "MeterMasterUsageRecord",
+    "MeterMasterWriteRepository",
+    "MonthlySchedule",
+    "MonthlyScheduleSelectorType",
+    "MonthParity",
+    "PC_DIRECT_DEVICE_ID",
     "PlannedReadingCloseReason",
-    "PlannedReadingLookupRepository",
     "PlannedReadingCreateRequest",
     "PlannedReadingGenerationDefinitionRecord",
-    "PlannedReadingRecompositionRecord",
     "PlannedReadingGenerationRepository",
+    "PlannedReadingLogicalSlotRecord",
+    "PlannedReadingLogicalSlotRepository",
+    "PlannedReadingLookupRepository",
+    "PlannedReadingRecompositionRecord",
     "PlannedReadingRecord",
     "PlannedReadingLifecycleRepository",
     "PlannedReadingRecompositionRepository",
     "PlannedReadingTask",
     "PlannedReadingTaskState",
     "PlannedReadingTaskQueryRepository",
+    "ReadingConfirmationContext",
+    "ReadingCycleScheduleDefaultRecord",
+    "ReadingCycleScheduleDefaultsRepository",
     "ReleaseDateCalculator",
     "ReadingPersistenceRepository",
+    "ReadingSessionReleaseOffsetRecord",
+    "ReadingSessionReleaseOffsetsRepository",
     "ReadingUpsertRepository",
     "ReadingUpsertRequest",
     "ReplacementBoundaryLookupRepository",
@@ -444,6 +845,15 @@ __all__ = [
     "ReplacementReflectionRepository",
     "ReplacementEventUpsertRepository",
     "ReplacementUpsertRequest",
+    "ScheduleItem",
+    "ScheduleSettings",
+    "ScheduleSettingsRepository",
+    "StaffCreateRequest",
+    "StaffRecord",
+    "StaffRepository",
+    "StaffUpdateRequest",
+    "TimezoneSettingsRepository",
+    "WeeklySchedule",
     "UpsertDisposition",
     "UpsertOutcome",
 ]
