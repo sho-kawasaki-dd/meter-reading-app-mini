@@ -1,27 +1,28 @@
 # Phase 2 単一 HTML 検針シート・MR1 結果パーサ計画
 
 - 作成日: 2026-10-27
-- ステータス: 計画中
+- 更新日: 2026-10-28(完了記録・凍結)
+- ステータス: 完了(2026-10-28、凍結済み)
 - 対象: リポジトリ直下を基点とする Phase 2(`src/`・`tests/`・`pyproject.toml`)
-- 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md) 5.1 章・5.2 章・8 章 Phase 2
-- 前提: [Phase 1 計画](implemented/フェーズ1_sqlite3統合・コア業務ロジック移植計画.md) 完了済み
+- 正本: [ローカル検針管理アプリ開発計画書](../ローカル検針管理アプリ開発計画書.md) 5.1 章・5.2 章・8 章 Phase 2
+- 前提: [Phase 1 計画](フェーズ1_sqlite3統合・コア業務ロジック移植計画.md) 完了済み
 - GitHub: `sho-kawasaki-dd/meter-reading-app-mini`
 
 ## 1. 目的
 
 PC からスマホ用の単一 HTML 検針シートを出力する機能を作る。スマホ側の入力・自動保存・途中バックアップ・結果出力も作る。結果は `MR1:` テキストまたは結果 JSON で戻し、Python パーサを通して `MeterReadingSyncService` で保存する。この往復を Playwright(Chromium、`file:` URL)で検証する。
 
-あわせて [mobile_reading.py](../../src/meter_reading_mini/core/mobile_reading.py) の coverage 除外を解除し、パッケージ全体で 90% 以上を満たす。
+あわせて [mobile_reading.py](../../../src/meter_reading_mini/core/mobile_reading.py) の coverage 除外を解除し、パッケージ全体で 90% 以上を満たす。
 
 ## 2. 現状(2026-10-27 調査)
 
-- [mobile_reading.py](../../src/meter_reading_mini/core/mobile_reading.py) にあるもの:
+- [mobile_reading.py](../../../src/meter_reading_mini/core/mobile_reading.py) にあるもの:
   - MR1 のエンコード / 抽出
   - 下書き形式の拒否
   - `validate_sheet_id` / `validate_note` / `safe_json_for_script`
-- まだないもの: HTML 生成、結果ペイロードの検証、`MeterReadingSyncRequest` への変換。テストは [test_mobile_reading_envelope.py](../../tests/test_mobile_reading_envelope.py) だけ。
+- まだないもの: HTML 生成、結果ペイロードの検証、`MeterReadingSyncRequest` への変換。当時のテストは `test_mobile_reading_envelope.py` だけで、後に [test_mobile_reading.py](../../../tests/test_mobile_reading.py) へ統合した。
 - `format_sheet_timestamps()` が `to_local()` を tz 指定なしで呼んでいる(Phase 1 D5 の「tz を必ず明示」に反する)。
-- [work_package_download.py](../../src/meter_reading_mini/core/work_package_download.py) の `WorkPackageDownloadService`:
+- [work_package_download.py](../../../src/meter_reading_mini/core/work_package_download.py) の `WorkPackageDownloadService`:
   - `open` の枠しか返さない。`PlannedReadingTask` にも `task_state` フィールドがない。
   - 当日パスは `release_date` 基準で、翌日 00:00 枠(配信オフセット -1)も含む。
 - `list_meter_master_data()` と `list_measurement_definition_data()` は `WHERE is_active = 1` のマスタしか返さない。また DB スキーマ上 `location_name` は `physical_meters` にしか存在しないため、無効化済みマスタ(`is_active = 0`)の `auto_closed` 枠をシートに含める際は、対象枠が参照するマスタを無効化済みでも取得する必要がある。
@@ -32,8 +33,8 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
 - 移植元の参照実装: リポジトリ直下の `mobile_stocktake.py`(在庫アプリの棚卸シート、約 2,800 行の f-string テンプレート)。**Git 管理外(未追跡)** である。
   - IndexedDB のリビジョン管理・競合検出・途中バックアップ・コピー処理を含む。
   - CSS / JavaScript が `{{ }}` でエスケープされているため、移植時にエスケープを外す。
-- CI は Windows / Ubuntu ともに Playwright Chromium を導入済み([ci.yml](../../.github/workflows/ci.yml))。
-- [pyproject.toml](../../pyproject.toml) の coverage `omit` に `core/mobile_reading.py` が残っている。
+- CI は Windows / Ubuntu ともに Playwright Chromium を導入済み([ci.yml](../../../.github/workflows/ci.yml))。
+- [pyproject.toml](../../../pyproject.toml) の coverage `omit` に `core/mobile_reading.py` が残っている。
 
 ## 3. 決定事項(2026-10-27 確認済み)
 
@@ -146,7 +147,7 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
   - `auto_closed` の枠が `completed` になる
   - `superseded` の枠が拒否される
 - [x] `test_mobile_reading_envelope.py` を `tests/test_mobile_reading.py` に統合する。既存の MR1 テストは結果 `kind` 付きのペイロードに合わせて直す
-- [x] [test_contract_boundaries.py](../../tests/test_contract_boundaries.py) に `core/mobile_reading_assets/` の資産読込と静的検査を追加し、契約モジュールの独立性、`PySide6` 非依存、`datetime.now` 不使用に加えて、資産内に外部 URL(`http://`、`https://`)や `localStorage` が含まれないことを確認する
+- [x] [test_contract_boundaries.py](../../../tests/test_contract_boundaries.py) に `core/mobile_reading_assets/` の資産読込と静的検査を追加し、契約モジュールの独立性、`PySide6` 非依存、`datetime.now` 不使用に加えて、資産内に外部 URL(`http://`、`https://`)や `localStorage` が含まれないことを確認する
 
 ### 5.2 PR-2b `feature/phase2-sheet-ui-input`: 画面と入力(HTML/JS)
 
@@ -231,21 +232,21 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
   - D12 の途中に `completed` 枠があるケースでも、ブラウザの参考使用量と PC 側の確定使用量が一致することを確認する
   - D9 の共通テストケース(28 桁境界とそれを超える値、大きな倍率、末尾ゼロ、小数桁数の異なる減算、ロールオーバー補正)で、JavaScript の参考使用量・Python の計算結果・DB 保存値が plain decimal 文字列として一致することを確認する
   - あわせて、メールの引用・折り返しの許容、同じブロックの重複を 1 件にすること、異なるブロックの拒否、下書きの拒否を確認する
-- [x] [pyproject.toml](../../pyproject.toml) の coverage `omit` から `core/mobile_reading.py` を外す。6 章の全体・`core/` 単独・`db/` 単独の 3 つの閾値チェックがすべて成功することを確認する。個別 skip の追加や閾値の引き下げは行わない
-- [x] [ci.yml](../../.github/workflows/ci.yml) に `core/` 単独・`db/` 単独の coverage 閾値チェックを追加し、Windows / Ubuntu ともに全体・各層それぞれ 90% 以上を必須にする。片方の層が 90% 未満の場合は、全体が 90% 以上でも CI を失敗させる
+- [x] [pyproject.toml](../../../pyproject.toml) の coverage `omit` から `core/mobile_reading.py` を外す。6 章の全体・`core/` 単独・`db/` 単独の 3 つの閾値チェックがすべて成功することを確認する。個別 skip の追加や閾値の引き下げは行わない
+- [x] [ci.yml](../../../.github/workflows/ci.yml) に `core/` 単独・`db/` 単独の coverage 閾値チェックを追加し、Windows / Ubuntu ともに全体・各層それぞれ 90% 以上を必須にする。片方の層が 90% 未満の場合は、全体が 90% 以上でも CI を失敗させる
 - [x] 外部通信がないこと、`localStorage` を使っていないこと、JavaScript エラーがないことを、全ブラウザテスト共通の後処理で確認する
 
 ### 5.5 完了記録 PR
 
-- [ ] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを 9 章へ記録する
-- [ ] D1〜D12 と 4 章のデータ形式を正本 5.2 章へ統合し、D9 の共通計算規則を正本 5.1 章にも反映する。正本 8 章の Phase 2 記述・品質ゲートと README の Phase 状況も更新する
-- [ ] 実機確認(端末、Chrome の版、起動経路、ファイルを移動したときの復元可否)は Phase 4 以降の作業として正本に明記する。Phase 2 の完了扱いにはしない。在庫アプリの実機確認を検針アプリの実績と記載しない
-- [ ] **参照実装 `mobile_stocktake.py` を削除する**(D4)
+- [x] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを 9 章へ記録する
+- [x] D1〜D12 と 4 章のデータ形式を正本 5.2 章へ統合し、D9 の共通計算規則を正本 5.1 章にも反映する。正本 8 章の Phase 2 記述・品質ゲートと README の Phase 状況も更新する
+- [x] 実機確認(端末、Chrome の版、起動経路、ファイルを移動したときの復元可否)は Phase 4 以降の作業として正本に明記する。Phase 2 の完了扱いにはしない。在庫アプリの実機確認を検針アプリの実績と記載しない
+- [x] **参照実装 `mobile_stocktake.py` を削除する**(D4)
   - Phase 2 の実装(2a〜2d)がすべて main にマージされ、品質ゲートが成功したことを確認してから削除する
   - 未追跡ファイルなので `git rm` ではなくファイルを直接削除する。`git status` に残っていないことを確認する
   - 削除後は、リポジトリ内の文書・コードに `mobile_stocktake` への参照が残っていないことを `grep` で確認する(本計画書の記述を除く)
   - 実装中に誤ってコミットしないよう、PR ごとに `git status` / `git diff --cached --stat` でステージ内容を確認する
-- [ ] 本計画書を完了(凍結)として `docs/plan/implemented/` へ `git mv` し、移動後の相対リンクを修正する
+- [x] 本計画書を完了(凍結)として `docs/plan/implemented/` へ `git mv` し、移動後の相対リンクを修正する
 
 ## 6. 品質ゲート
 
@@ -270,13 +271,13 @@ uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
 
 ## 7. 完了条件
 
-- [ ] 正本 8 章の Phase 2 完了条件にある全項目がブラウザテストで成功する
-- [ ] JavaScript の出力 → Python パーサ → DB 保存の往復が成功する
-- [ ] 途中に `completed` 枠がある場合の前回値選択、28 桁を超える丸めなし計算、最新編集世代に対応した保存表示の回帰テストが成功する
-- [ ] coverage 除外が 0 件で、パッケージ全体・`core/`・`db/` がいずれも 90% 以上
-- [ ] Windows / Ubuntu の CI が成功する
-- [ ] `mobile_stocktake.py` が削除され、リポジトリ内に参照が残っていない(本計画書の履歴記述を除く)
-- [ ] 文書(README・正本)が実態と一致している
+- [x] 正本 8 章の Phase 2 完了条件にある全項目がブラウザテストで成功する
+- [x] JavaScript の出力 → Python パーサ → DB 保存の往復が成功する
+- [x] 途中に `completed` 枠がある場合の前回値選択、28 桁を超える丸めなし計算、最新編集世代に対応した保存表示の回帰テストが成功する
+- [x] coverage 除外が 0 件で、パッケージ全体・`core/`・`db/` がいずれも 90% 以上
+- [x] Windows / Ubuntu の CI が成功する
+- [x] `mobile_stocktake.py` が削除され、リポジトリ内に参照が残っていない(本計画書の履歴記述を除く)
+- [x] 文書(README・正本)が実態と一致している
 
 ## 8. 留意事項
 
@@ -298,3 +299,14 @@ uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
 - PR-2b(2026-10-27、`feature/phase2-sheet-ui-input`): Ruff check / format、Pyright(0 errors)、pytest 405 passed / 1 skipped(Windows では `QT_QPA_PLATFORM=offscreen` を設定せず実行。設定すると `tests/test_app.py` が Qt でクラッシュするため、Linux のみで設定する)、全体 94%・`core/` 97%・`db/` 90%(いずれも `--fail-under=90` 達成)を確認した。
   - 追加: `sheet.html`・`sheet.css`・`sheet.js`(ピルタブ、場所別セクション、カード入力、D9 の BigInt 小数による参考使用量と警告、D12 の前回値引き継ぎと連動する確認解除)、`tests/conftest.py` の Playwright 基盤(`SheetBrowser`: 外部通信の遮断と記録、`pageerror`・`console.error`・`localStorage` 参照の検出)、`tests/test_mobile_reading_browser.py`、`tests/mobile_sheet_helpers.py`。
   - 初期タブのうち「全枠が消化済みなら `[すべて]`」は、下書きの復元がない 2b では再現できないため、2c(IndexedDB 復元)のブラウザテストで確認する。
+- PR-2c(2026-10-28、`feature/phase2-indexeddb-draft`、[#20](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/20)): IndexedDB のリビジョン競合・保存世代管理、自動再開、途中経過 JSON の退避・復元を実装した。Windows / Ubuntu の必須チェック成功後に main へ merge した。
+- PR-2d(2026-10-28、`feature/phase2-result-roundtrip`、[#21](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/21)): MR1 / 結果 JSON 出力から Python パーサ・同期・ファイル DB までの往復テストを追加し、`core/`・`db/` の coverage 閾値とブラウザ共通後処理を CI に追加した。Windows / Ubuntu の必須チェック成功後に main へ merge した。
+- Phase 2 の必須チェック結果(すべて `success`、時刻は JST):
+
+  | PR | merge 日時 | `test (windows-latest)` | `test (ubuntu-latest)` |
+  | --- | --- | --- | --- |
+  | [#18](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/18) PR-2a | 2026-10-27 22:05 | success | success |
+  | [#19](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/19) PR-2b | 2026-10-27 22:39 | success | success |
+  | [#20](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/20) PR-2c | 2026-10-28 00:10 | success | success |
+  | [#21](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/21) PR-2d | 2026-10-28 00:39 | success | success |
+- PR-2a〜2d のすべてが main に merge 済みであることを確認し、`mobile_stocktake.py` は参考実装の削除条件を満たしたため削除した。Phase 2 はブラウザ検証までの完了とし、Android 実機検証(端末・Chrome 版・起動経路・HTML 移動時の復元可否)は Phase 4 以降に残す。
