@@ -53,22 +53,24 @@
 | D12 | 契約の独立性 | スケジュールのデータ型・Repository Protocol・入出力レコードを Service から分離する。`TYPE_CHECKING` 内を含め、契約から Service・UI・DB 実装を参照しない |
 | D13 | トランザクションの所有者 | 公開業務操作の Service が境界を持つ。同期・直接入力・起動処理から呼ぶ共通処理と Repository はトランザクションを開始しない。設定保存と予定枠再構成も一体で確定する |
 | D14 | 予定枠の補完 | 測定定義ごとの生成開始業務日から対象業務日まで、適用履歴に基づく期待枠と既存枠を照合し、不足分だけ追加する。最新生成日を完了の根拠にしない。14 日は内部の分割単位とし、起動・出力の成功前に対象日まで完了させる |
-| D15 | マスタ更新の範囲 | 物理メーター・測定定義・初期割当の登録更新と論理削除・再有効化を Phase 1 の Service / Repository に含める。画面は Phase 3 とし、割当の交換は交換専用の業務操作を使う |
-| D16 | 遡及再計算 | 実測値の追加・訂正に加え、実測と非実測の相互変更を対象にする。影響する交換境界も更新し、新メーターの初回基準は交換初期値を使う。再計算の業務条件違反は元の書込を含めて戻す |
+| D15 | マスタ更新の範囲 | 物理メーター・測定定義・初期割当の登録更新と論理削除・再有効化を Phase 1 の Service / Repository に含める。測定定義の `reading_cycle`・`value_schema`・`calculation_method`・`location_id` は作成後の変更を不可とし、更新要求で変更された場合は `DomainError` 派生例外で拒否する(周期等を変更する場合は旧定義を無効化して新規定義を作成する)。画面は Phase 3 とし、割当の交換は交換専用の業務操作を使う |
+| D16 | 遡及再計算 | 実測値の追加・訂正に加え、実測と非実測の相互変更を対象にする。影響する交換境界も更新し、新メーターの初回基準は交換初期値を使う(初期値未指定の交換境界も識別して旧メーターの実測値を新メーターの前回値にせず、新初回実測の訂正・再計算時に自分自身で境界消費済みと誤判定しない)。交換境界の `old_meter_usage_delta` でも倍率・ロールオーバー補正とロールオーバー未設定時の負の差分拒否(`DomainError` 派生)を適用する。再計算の業務条件違反は元の書込を含めて戻す |
 | D17 | 署名前の入力契約 | スマホからの未署名入力と PC が補完する保存要求を分離する。確定担当者・シート ID・入力検証を経て、DB 保存と同じ時刻精度で署名を生成する。仮の署名で旧契約を通さない |
 | D18 | PC 直接入力の監査情報 | `ResultSource` は `mobile_html` と `manual` の 2 値にし、`CLIENT`・`SYSTEM` は削除する。PC 直接入力・訂正は `result_source = 'manual'`、`device_id = 'pc-direct'`(固定値)、`updated_by = 入力担当者名` とし、PC 保存でも署名を生成する。`reading_transactions.result_source` は `NOT NULL CHECK (result_source IN ('mobile_html','manual'))` にする。後続の再計算で `result_source`・署名・`updated_by` を書き換えない |
 | D19 | D3 の適用範囲 | 「古い入力を無視する」比較はスマホ取込だけに適用する。PC 直接入力・訂正は明示的な操作として常に採用し、保存する `client_updated_at` は「注入した時計の現在時刻」と「既存値 + 1 秒」の遅い方とする。スマホの時計が進んでいても、後から古い MR1 を再取込して PC の訂正を上書きしない |
-| D20 | 同一内容の再取込 | 既存結果と `client_updated_at` が同じで、結果状態・測定値・構造化入力・備考もすべて一致する入力は何も更新せず、「重複」として集計する(`arrival_sequence`・署名・再計算も変えない)。内容が異なる場合だけ D3 の同時刻規則で `arrival_sequence` を進める |
+| D20 | 同一内容の再取込 | 既存結果と `client_updated_at` および `recorded_at`(ともに D6 の秒単位 UTC 正規化後)が同じで、結果状態・測定値・正規化後の構造化入力・備考もすべて一致する入力は何も更新せず、`UpsertDisposition.IGNORED_DUPLICATE` / `SyncItemIgnoreCode.DUPLICATE_SUBMISSION` として「重複」に集計する(`arrival_sequence`・署名・再計算も変えない)。内容(`recorded_at` を含む)が異なる場合だけ D3 の同時刻規則で `arrival_sequence` を進める |
 | D21 | 署名の時刻表記 | 署名に使う `recorded_at` は D6 と同じ `YYYY-MM-DD HH:MM:SS`(UTC、秒単位)とし、`isoformat()` 表記を廃止する。署名の元文字列は `planned_reading_id\|result_status\|payload\|recorded_at\|device_id` とし、保存値から再現できることをテストで検証する。署名は予定枠・結果状態・測定値・記録日時・`device_id` の改ざん検出に限り、`updated_by`・`note`・`usage_delta` は対象外、送信者認証でもない |
 | D22 | 業務タイムゾーンの変更 | 運用開始後の変更は禁止する。`planned_readings` が 1 件でもあるとき、`app.timezone.v1` の変更は `DomainError` 派生例外で拒否する(初回投入と、同じ値の再保存は許可する)。タイムゾーンは適用履歴の対象外とする |
 | D23 | 使用中メーターの判定と後日入力 | 物理メーターの無効化を拒否する条件は「有効な測定定義に割当中」または「`open` 予定枠を持つ」とし、`auto_closed` は含めない(入力漏れの枠が残る旧メーターを永久に無効化できなくなるため)。メーター交換は旧メーターを自動で無効化せず、旧メーターの無効化は交換後にマスタ操作で別に行う。無効化済みメーターの既存枠(`auto_closed` を含む)への後日入力・訂正は許可し、`completed` 化と再計算を通常どおり行う。`InactiveMasterError` の対象は、新規の割当・交換先指定・新規枠の生成に限る |
-| D24 | 起動時準備の失敗 | 準備トランザクションを ROLLBACK してログへ記録し、汎用エラーで通知して `STARTUP_FAILURE` を返す。MainWindow は表示せず、DB に準備の途中結果を残さない |
+| D24 | 起動時準備の失敗 | 準備トランザクションを ROLLBACK してログへ記録し、`QApplication` が有効な状態で汎用エラー(注入可能な通知関数、既定は `show_unexpected_error`)で通知して `STARTUP_FAILURE` を返す。MainWindow は表示せず、DB に準備の途中結果を残さない |
 | D25 | 測定定義の無効化 | 測定定義の無効化は、現在業務日以降の `open` 枠を同一トランザクションで `superseded` にする(廃止理由 `definition_deactivated` を `close_reason` に記録)。`completed`・`auto_closed` 枠と結果は変更しない。補完は有効な測定定義だけを対象にする。再有効化では枠を復活させず、生成開始業務日を `max(既存値, 現在業務日)` へ更新して、無効期間を遡って補完しない |
 
 ### 3.1 契約と更新操作の境界(D12、D15、D17)
 
 - 既存の `contract_models.py` と `meter_reading_sync_repositories.py` を契約の配置先として再利用する。`schedule_settings.py` にあるスケジュールの enum・dataclass・型エイリアスと、設定関連の Protocol を契約側へ移し、Service と DB はそれを参照する。契約を重複定義しない。
-- マスタの参照用 Protocol とは別に登録・更新・論理削除・再有効化・使用状況照会の契約を用意する。測定定義登録時は生成開始日・初期スケジュール履歴・初期割当を一緒に保存する。過去の割当を単純更新して交換処理を迂回しない。
+- マスタの参照用 Protocol とは別に登録・更新・論理削除・再有効化・使用状況照会の契約を用意する。測定定義登録時は生成開始日・初期スケジュール履歴・初期割当を一緒に保存する。測定定義の更新では `reading_cycle`・`value_schema`・`calculation_method`・`location_id` を作成後変更不可とし、過去の割当も単純更新して交換処理を迂回しない。
+- `HistoricalMeasuredReadingLookupRepository` と `ReplacementBoundaryLookupRepository` は `meter_id` と順序境界(`before_scheduled_at`、`before_planned_reading_id`、`excluding_planned_reading_id`)を受け取り、`new_initial_reading is None`(初期値未指定)の交換境界も識別して返せる契約にする。後続再計算は Repository 内で計算せず、「後続実測枠一覧の取得」と「計算済み結果の保存」の契約に分離する。
+- `PlannedReadingCloseReason` は `cutoff_elapsed`・`meter_replaced`・`schedule_recomposed`・`definition_deactivated` の 4 値とする。同一内容の再取込(D20)を区別するため、`UpsertDisposition.IGNORED_DUPLICATE` と `SyncItemIgnoreCode.DUPLICATE_SUBMISSION` を追加する。
 - D11 の検証は、メーターの登録更新、測定定義への割当、交換先メーター指定、結果の担当者指定等の公開操作へ対応付ける。無効化済みマスタの既存履歴は参照可能とし、再有効化は明示的な操作にする。無効化済みメーターの既存枠への後日入力・訂正は許可する(D23)。測定定義の無効化は現在業務日以降の `open` 枠を `superseded` にする操作を含む(D25)。
 - スマホ入力に PC 生成の `signature` や確定担当者名を要求しない。シート ID と PC で選択した有効な担当者を確定コンテキストとして渡し、保存要求の `device_id`・`updated_by`・`result_source`・署名を組み立てる。入力側の値を PC の監査情報として無条件に採用しない。PC 直接入力は `device_id = 'pc-direct'`・`result_source = 'manual'` を Service が付与する(D18)。
 - 署名対象の日時は D21 の形式(UTC・秒単位の `YYYY-MM-DD HH:MM:SS`)へ正規化する。保存値から署名を再現できることを検証する。HTML / MR1 の生成・解析そのものは Phase 2 のままとする。
@@ -78,9 +80,10 @@
 
 - 一括確定、PC 直接入力、設定変更、マスタ更新(測定定義の無効化を含む)、メーター交換、起動時準備の各公開業務操作が `transaction(conn)` を所有する。起動時準備は「既定設定投入 → 補完 → 自動クローズ」を統括する Service とし、`app.py` はそれを呼ぶ。失敗時の扱いは D24 に従う。
 - 共通の書込・補完・再構成処理は呼出元のトランザクション内で動く。ネストした `transaction()` や、`conn.in_transaction` に応じて偶然境界が変わる実装にしない。Repository で計算 Service を呼ばず、Service が計算し Repository が取得・保存する。
-- 設定保存は適用履歴の更新と影響する予定枠の再構成を同一トランザクションにする。一括確定では結果 1 件に伴う署名・境界・後続再計算までを同じ SAVEPOINT に含める。
+- 設定保存は適用履歴の更新と影響する予定枠の再構成を同一トランザクションにする。測定定義別スケジュール(`MeasurementDefinitionScheduleService`)だけでなく、周期別既定スケジュール(`ScheduleSettingsService`: 該当周期で `schedule_json IS NULL` の有効測定定義すべて)と配信オフセット(`ReleaseOffsetSettingsService`: 該当 `reading_session` の適用開始日以降の `open` 枠の `release_date`)も同一トランザクションで再構成する。一括確定では結果 1 件に伴う署名・境界・後続再計算までを同じ SAVEPOINT に含める。
 - `measured` から `skipped` 等への変更でも後続を再計算する。例として `100 → 120 → 150` の中央を非実測に変えると、倍率 1 の後続使用量は `30` から `50` へ変わる。
-- 交換前の遡及変更では `previous_measured_reading`・その参照先・`old_meter_usage_delta` も再評価する。交換をまたいで旧メーターの読値を新メーターの前回値にしない。新初回の訂正・非実測化では、次に初回となる実測へ交換初期値を適用する。
+- 交換前の遡及変更では `previous_measured_reading`・その参照先・`old_meter_usage_delta` も再評価する。交換境界の `old_meter_usage_delta` 計算でも `UsageDeltaCalculationService` の規則(倍率・ロールオーバー補正、および `rollover_value is None` での負の差分拒否)を適用する。交換をまたいで旧メーターの読値を新メーターの前回値にしない(初期値未指定の交換でも新初回の前回値は `None`・使用量は `0` とする)。新初回の訂正・非実測化では、自分自身で境界消費済みと誤判定せず、次に初回となる実測へ交換初期値を適用する。
+- メーター交換時は `replaced_at` を業務タイムゾーン(`app.timezone.v1`)へ変換して差替え対象枠を判定し、旧枠を `close_reason = 'meter_replaced'`・`superseded_by_planned_reading_id = 新枠ID` で `superseded` にし、新メーター枠には `scheduled_at` と `release_date` を明示設定する。
 - 再計算で負の差分等が発生した場合、直接入力は業務操作全体を、一括確定は当該入力と全副作用を SAVEPOINT 単位で戻す。予期しない例外・COMMIT 失敗は全体を戻す。
 - PC 直接入力・訂正は D3 の「古い入力の無視」を適用せず、`client_updated_at` を D19 の規則で決める。スマホ取込では、同一内容の再取込を重複として何も更新せず(D20)、内容が異なる同時刻の入力だけ `arrival_sequence` を進める。
 
@@ -93,15 +96,15 @@
 - スケジュールには適用開始業務日を持つ履歴を追加する。適用期間は次の版の開始日を終端とする半開区間で管理し、当該日に有効な周期・時刻・日付指定・`day_offset`・配信オフセットを解決する。
   - 不足の判定は論理キー(測定定義・業務日・検針時間)で行い、適用履歴は新しく作る枠の `scheduled_at` と `release_date` の算出にだけ使う。
   - 業務タイムゾーンは D22 により運用開始後は変更されないため、適用履歴の対象外とする。締め時刻は現在値だけを使う。
-- 設定変更は適用開始日を明示し、変更前の期間へ最新設定を遡及適用しない。測定定義別の上書きと周期別既定値の優先関係を維持し、既定値を使う定義も過去に適用された設定を再現可能にする。周期別既定値と配信オフセットは履歴テーブルへ移し、`meter_app_settings` に最新値を重複して持たない(`meter_app_settings` に残すのは締め時刻と業務タイムゾーン)。
+- 設定変更は適用開始日(`effective_from_date`、既定は現在業務日)を明示し、変更前の期間へ最新設定を遡及適用しない。現在業務日より前の日付指定は `DomainError` 派生例外で拒否する(初期シード `'0001-01-01'` と測定定義登録時の `generation_start_date` 初期履歴投入を除く)。同一 `effective_from_date` での再保存は該当履歴行を上書き(UPSERT)する。測定定義別の上書きと周期別既定値の優先関係を維持し、既定値を使う定義も過去に適用された設定を再現可能にする。周期別既定値と配信オフセットは履歴テーブルへ移し、`meter_app_settings` に最新値を重複して持たない(`meter_app_settings` に残すのは締め時刻と業務タイムゾーン)。
 - 物理メーターは生成する `scheduled_at` に有効な割当期間 `[effective_from, effective_to)` で解決する。履歴の不足・重複等で対象を特定できない場合、現在の設定・割当で推測せず、対象定義と期間を示す `DomainError` 派生例外で通知する。
 
 #### 不足判定と既存データの保護
 
 - Service が期待枠を算出し、Repository から取得した既存枠・交換差替え情報と照合して、本当に存在しない枠だけを追加する。元の予定枠 ID の有無だけで不足を判定しない。
 - 論理的な枠(測定定義・業務日・検針時間)と、交換・再構成で差し替えられた実体の対応を契約で表す。既存の決定的な ID 生成を再利用しつつ、交換後の代替枠を重複生成しない。
-- 通常の補完では既存枠・結果を更新しない。`completed`・`auto_closed` の状態を維持し、`superseded` を復活させない。設定変更に伴う意図的な枠変更は再構成処理の責務とする。
-- 差替え済みの枠は後継枠または適用履歴上の廃止理由と照合する。必要な後継が失われる等の不整合は、旧枠の復活や無条件の追加で隠さず業務エラーにする。測定定義の無効化による `superseded`(`close_reason = 'definition_deactivated'`、D25)は廃止理由として扱い、後継枠がなくても不整合としない。
+- 通常の補完では既存枠・結果を更新しない。`completed`・`auto_closed` の状態を維持し、`superseded` を復活させない。設定変更に伴う意図的な枠変更は再構成処理の責務とする。再構成処理でも、対象は `open` 枠および `schedule_recomposed` で廃止された枠に限るものとし、メーター交換済みの旧枠(`close_reason = 'meter_replaced'`)や測定定義無効化枠(`definition_deactivated`)、`auto_closed` 枠を `open` に書き戻さない。
+- 差替え済みの枠は後継枠または適用履歴上の廃止理由と照合する。必要な後継が失われる等の不整合は、旧枠の復活や無条件の追加で隠さず業務エラーにする。測定定義の無効化による `superseded`(`close_reason = 'definition_deactivated'`、D25)およびスケジュール再構成による廃止(`close_reason = 'schedule_recomposed'`)は廃止理由として扱い、後継枠がなくても不整合としない。
 
 #### 処理分割・完了・締め
 
@@ -117,10 +120,10 @@
 - DDL の方針(列名・型の最終形は PR-1b で確定する)は次のとおり。
   - `measurement_definitions` に `generation_start_date TEXT NOT NULL` を追加する。
   - `measurement_definition_schedules` は主キーを `(measurement_definition_id, effective_from_date)` に変え、`schedule_json`(NULL の版は「周期別既定に従う」)・`created_at` を持つ履歴にする。
-  - 周期別既定の履歴 `reading_cycle_schedule_defaults(reading_cycle, effective_from_date, schedule_json, created_at)` と、検針時間ごとの配信オフセットの履歴を新設する。主キーは適用開始日を含める。
+  - 周期別既定の履歴 `reading_cycle_schedule_defaults(reading_cycle, effective_from_date, schedule_json, created_at)` と、検針時間ごとの配信オフセットの履歴 `reading_session_release_offsets(reading_session, effective_from_date, offset_days, created_at)` を新設する。主キーは適用開始日を含める。
   - `bootstrap_seeds` は周期別既定・配信オフセットの初版を `effective_from_date = '0001-01-01'` で冪等に投入する。`meter_app_settings` へ投入するのは締め時刻とタイムゾーンだけにする。
   - `reading_transactions.result_source` は `NOT NULL CHECK (result_source IN ('mobile_html','manual'))` にする(D18)。
-  - 交換・再構成で差し替えられた実体との対応(3.3)を保持する構造を追加する。
+  - `planned_readings` の `close_reason` に `CHECK (close_reason IS NULL OR close_reason IN ('cutoff_elapsed','meter_replaced','schedule_recomposed','definition_deactivated'))` を設け、交換等で差し替えられた後継枠を示す `superseded_by_planned_reading_id TEXT REFERENCES planned_readings(planned_reading_id)` を追加して実体との対応(3.3)を保持する。
 - 変更前の v1 DB は同じ `user_version` でもスキーマ検査で拒否される。未配布の開発用 DB を自動削除・黙示変換せず、新しい一時保存先で作成する手順を記録する。保全が必要な DB は別途保管し、実データ領域を使わない。
 - 本章は未実装の設計であり、正本への統合は 5.6 の実装完了確認後に行う。
 
@@ -162,10 +165,14 @@
 - [ ] `meter_reading_sync_repositories.py` から `core.database`(`MeasurementDefinitionORM`)への型依存を外し、純粋な契約型へ置き換える
 - [ ] 3.1 に従いスケジュール型・設定関連 Protocol を契約側へ移し、`TYPE_CHECKING` 内も含めて Service への依存を除去する。契約の依存方向テストをこの PR で追加する
 - [ ] 物理メーター・測定定義・割当・Staff の更新要求と結果レコード、使用状況照会、生成開始日・適用履歴・論理枠と差替え実体の照合に必要な Protocol を定義する
+  - 測定定義の更新要求では `reading_cycle`・`value_schema`・`calculation_method`・`location_id` を作成後変更不可とする(D15)
+  - `HistoricalMeasuredReadingLookupRepository`(前回実測取得・後続実測一覧取得)および `ReplacementBoundaryLookupRepository` に `meter_id` と順序境界引数(`before_scheduled_at`、`before_planned_reading_id`、`excluding_planned_reading_id`)を追加し、`new_initial_reading is None` の交換境界も返せる契約にする。後続再計算は Repository 内の計算メソッドを廃止し、後続実測枠の取得と計算済み結果の保存に分離する(D16、3.1)
 - [ ] スマホの未署名入力と PC 確定コンテキスト・保存要求を分け、署名や担当者のダミー値なしで検証できる契約テストを追加する(D17)
 - [ ] 契約と設定の語彙・不要機能を整理する
   - `ResultSource` を `MOBILE_HTML = "mobile_html"` と `MANUAL = "manual"` の 2 値にし、`CLIENT`・`SYSTEM` を削除する(D18)
   - PC 直接入力の `device_id` 固定値 `pc-direct` を契約側の定数として定義する(D18)
+  - `PlannedReadingCloseReason` に `METER_REPLACED = "meter_replaced"`、`SCHEDULE_RECOMPOSED = "schedule_recomposed"`、`DEFINITION_DEACTIVATED = "definition_deactivated"` を追加する(3.1、D25)
+  - `UpsertDisposition` に `IGNORED_DUPLICATE = "ignored_duplicate"`、`SyncItemIgnoreCode` に `DUPLICATE_SUBMISSION = "duplicate_submission"` を追加する(D20)
   - `WorkPackageTaskGroups` から廃止対象の `ad_hoc_tasks` を削除する(D10)
   - `WorkPackageResponse` から `backfill_pending` を削除する(3.3)
   - `schedule_settings.py` から対象外の `ActiveDeviceBindingService` 関連を削除する
@@ -187,17 +194,17 @@
   - `name` は呼出側が固定で指定する識別子とし、SQL へ埋め込む前に `[A-Za-z_][A-Za-z0-9_]*` に一致しなければ `ValueError` にする(SAVEPOINT 名はプレースホルダで渡せないため)
   - 例外時は `ROLLBACK TO` と `RELEASE` を行い、例外を再送出する
   - 正常時は `RELEASE` する
-- [ ] 3.3・3.4 に従い、生成開始業務日・適用履歴(測定定義別・周期別既定・配信オフセット)と必要な差替え対応を v1 へ追加し、`reading_transactions.result_source` を `NOT NULL CHECK (result_source IN ('mobile_html','manual'))` にする(D8、D14、D18)。`db/schema.sql`、`db/migrations.py` の版別検査定義・スキーマテストを同時に直す。追加の点検項目は次のとおり。
+- [ ] 3.3・3.4 に従い、生成開始業務日・適用履歴(測定定義別・周期別既定・配信オフセット)と必要な差替え対応(`planned_readings.superseded_by_planned_reading_id` および `close_reason` の 4 値 CHECK 制約)を v1 へ追加し、`reading_transactions.result_source` を `NOT NULL CHECK (result_source IN ('mobile_html','manual'))` にする(D8、D14、D18)。`db/schema.sql`、`db/migrations.py` の版別検査定義・スキーマテストを同時に直す。追加の点検項目は次のとおり。
   - [ ] 時刻列・Decimal 列の形式を保つ CHECK の要否
 - [ ] `db/repositories.py` に次の Repository を実装する(`core/meter_reading_sync_repositories.py` の Protocol に合わせる)
   - 予定枠: Lookup / Generation / Lifecycle / Recomposition / TaskQuery。期間内の既存枠・差替え対応の取得と不足枠保存、測定定義の無効化に伴う `open` 枠の廃止(`superseded` と `close_reason`、D25)を含む
   - 測定定義: Lookup / Schedule / Query に加え、登録更新・論理削除・再有効化、生成開始日とスケジュール適用履歴の保存取得
   - 物理メーター・割当: MeterMasterQuery に加え、登録更新・論理削除・再有効化・使用状況照会(割当中の有効な測定定義の有無と `open` 枠の有無。`auto_closed` は含めない、D23)、初期割当と有効期間に基づく履歴照会
-  - その他: HistoricalMeasuredReadingLookup / ReadingPersistence(D3 を含む。保存結果として新規・更新・古い入力の無視・同一内容の重複(D20)を区別して返す) / ReplacementEventUpsert / ReplacementReflection / ReplacementBoundaryLookup / Settings(`meter_app_settings` と適用履歴。`planned_readings` の有無の照会を含む、D22) / Staff(新設)
+  - その他: HistoricalMeasuredReadingLookup(`meter_id` と順序境界による前回実測取得・後続実測一覧取得) / ReadingPersistence(D3 を含む。保存結果として新規・更新・古い入力の無視・同一内容の重複(`UpsertDisposition.IGNORED_DUPLICATE`、D20)を区別して返し、後続再計算用の更新保存を提供する) / ReplacementEventUpsert / ReplacementReflection / ReplacementBoundaryLookup(`meter_id` と順序境界を受け取り、`new_initial_reading is None` の境界も識別して返す) / Settings(`meter_app_settings` と適用履歴。`planned_readings` の有無の照会を含む、D22) / Staff(新設)
 - [ ] 実装規約を満たす
   - SQL の値はすべてプレースホルダで渡す
   - Decimal は有限の plain decimal 文字列で読み書きする
-  - 時刻は D6 の形式にする。`client_updated_at` の新旧比較も D6 の秒単位 UTC に正規化した値同士で行う
+  - 時刻は D6 の形式にする。`client_updated_at` の新旧比較および D20 の重複判定(`client_updated_at`・`recorded_at`)も D6 の秒単位 UTC に正規化した値同士で行う
   - 現在時刻と業務日付は注入した時計から受け取り、`date.today()` と `datetime.now()` を持ち込まない
   - 低レベル DB 例外(`IntegrityError` 等)は Repository で `DomainError` 派生へ変換する
 - [ ] `db/bootstrap_seeds.py` に既定値を冪等に投入する処理を作る(D7)。投入先と値は次のとおり。
@@ -206,8 +213,9 @@
 - [ ] `tests/conftest.py` に、架空のサンプルマスタ入りフィクスチャと時刻固定フィクスチャを追加する
 - [ ] PR-1a から送られた `test_timezone_settings.py` の残り(設定 Repository・既定値投入に依存する分)を新構成で移植する
 - [ ] Repository の統合テストを書く(ロジックは `:memory:`、WAL・永続化は `tmp_path`)
-  - CHECK / UNIQUE / FOREIGN KEY 違反が `DomainError` 派生へ変換される(`result_source` の不正値・NULL を含む)
-  - 古い入力の無視と、同時刻での `arrival_sequence` による採用順(D3)。同一内容の入力は重複として返り、`arrival_sequence` が進まない(D20)
+  - CHECK / UNIQUE / FOREIGN KEY 違反が `DomainError` 派生へ変換される(`result_source`・`close_reason` の不正値を含む)
+  - 古い入力の無視と、同時刻での `arrival_sequence` による採用順(D3)。同一内容(`recorded_at` を含む)の入力は `IGNORED_DUPLICATE` として返り、`arrival_sequence` が進まない(D20)
+  - 前回実測取得・交換境界取得が `meter_id` と順序境界で正しく絞り込まれ、初期値未指定の交換後に旧メーターの読値を引かないこと、新初回実測自身の再計算で境界が失われないこと(D16)
   - 後続実測値が `scheduled_at, planned_reading_id` 順に取得でき、Service による連鎖再計算の結果を保存できる。交換境界の取得更新も検証する
   - 生成開始日・適用開始日・割当期間に基づく取得、途中欠落と交換後の代替枠の照合
   - 期間検索が、ローカル暦の境界を UTC に変換した半開区間 `[start, end)` で行われ、SQL 内で TZ 補正しない
@@ -217,7 +225,11 @@
 
 ### 5.3 PR-1c `feature/phase1-schedule-generation`: 予定枠の適用履歴・補完・起動時準備
 
-- [ ] `MeasurementDefinitionScheduleService` を適用履歴化し、設定保存は適用履歴更新・予定枠再構成まで原子的に実行する(D13、D14)。`ActiveDeviceBindingService` 依存分を削除し、件数と理由を 9 章へ記録する
+- [ ] `MeasurementDefinitionScheduleService`・`ScheduleSettingsService`(周期別既定)・`ReleaseOffsetSettingsService`(配信オフセット)を適用履歴化し、設定保存は適用履歴更新・影響する予定枠の再構成まで原子的に実行する(D13、D14、3.2、3.3)
+  - 周期別既定の変更は `schedule_json IS NULL` の該当周期の有効測定定義すべて、配信オフセットの変更は該当 `reading_session` の適用開始日以降の `open` 枠の `release_date` を再構成する
+  - 設定保存時の `effective_from_date` は既定を現在業務日とし、現在業務日より前の過去日指定は `DomainError` 派生例外で拒否する。同一 `effective_from_date` の再保存は UPSERT で上書きする
+  - 再構成処理は `open` 枠および `schedule_recomposed` 枠のみを対象とし、メーター交換済みの旧枠(`close_reason = 'meter_replaced'`)や `auto_closed` 枠を `open` に戻さない
+  - `ActiveDeviceBindingService` 依存分を削除し、件数と理由を 9 章へ記録する
 - [ ] 業務タイムゾーンの保存で、`planned_readings` が 1 件でもあるときの変更を `DomainError` 派生例外で拒否する。初回投入と同じ値の再保存は許可する(D22)
 - [ ] `WorkPackageDownloadService` に次を実装する
   - 3.3 に従う予定枠の補完生成(backfill)。最新生成日方式を廃止し、内部で 14 日ずつ照合して対象日まで完了する。有効な測定定義だけを対象にする(D25)
@@ -226,7 +238,7 @@
   - `backfill_pending` の旧仕様を新しい完了契約へ置換する
 - [ ] 公開業務操作と共通処理を分け、3.2 のトランザクション所有者を実装する(D13)。補完・再構成の共通処理は呼出元のトランザクション内で動く
 - [ ] 「`bootstrap_seeds` による既定設定投入 → 予定枠補完・自動クローズ」を統括する起動時準備 Service を作り、`app.py` から DB オープン・マイグレーション後、MainWindow 表示前に呼ぶ。準備全体を単一トランザクションとする
-  - 準備が失敗したときは D24 に従い、ROLLBACK・ログ記録・汎用エラー通知・`STARTUP_FAILURE`・MainWindow 非表示とする。`test_app.py` を更新し、失敗時に DB へ途中結果が残らないことを検証する
+  - 準備が失敗したときは D24 に従い、ROLLBACK・ログ記録・`QApplication` が有効な状態での汎用エラー通知(注入可能なエラー通知関数、既定は `show_unexpected_error`)・`STARTUP_FAILURE`・MainWindow 非表示とする。`test_app.py` を更新し、モーダル待ちを発生させずにエラー通知と DB へ途中結果が残らないことを検証する
 - [ ] 次のテストを移植し、ファイル DB(`tmp_path`)で実行する: `test_measurement_definition_schedule_service`、`test_work_package_download_service`
 - [ ] `schedule_settings.py` を coverage の対象へ戻す(PR-1a から持ち越し)
 - [ ] ロールバック検証を追加する
@@ -262,12 +274,13 @@
   - PC 直接入力・訂正は `device_id = 'pc-direct'`・`result_source = 'manual'` で署名を生成し、D3 の「古い入力の無視」を適用せず、`client_updated_at` を D19 の規則で決める
   - `auto_closed` 枠への後日入力を `completed` にして再計算する処理(無効化済みメーターの既存枠を含む、D23)
 - [ ] メーター交換を原子的に実行する
-  - 旧メーターの `open` / `auto_closed` 枠を `superseded` にする
-  - 新メーター枠を生成する
+  - `replaced_at` を業務タイムゾーン(`app.timezone.v1`)へ変換して対象枠を判定し、旧メーターの `open` / `auto_closed` 枠を `close_reason = 'meter_replaced'`・`superseded_by_planned_reading_id = 新枠ID` で `superseded` にする
+  - 新メーター枠を生成する(`scheduled_at` と `release_date` を明示設定する)
   - 割当を切り替える(旧メーターは自動で無効化しない、D23)
-  - 交換境界(`old_meter_usage_delta` への倍率・ロールオーバー適用を含む)と交換記録を保存し、遅延交換時の完了済み新メーター実測値も倍率・ロールオーバー込みで再計算する
+  - 交換境界(`old_meter_usage_delta` への倍率・ロールオーバー適用およびロールオーバー未設定時の負の差分拒否を含む)と交換記録を保存し、遅延交換時の完了済み新メーター実測値も倍率・ロールオーバー込みで再計算する
 - [ ] `MeterMasterService` を Repository 経由に作り直す。物理削除は行わず、有効な測定定義に割当中または `open` 予定枠を持つ物理メーターの無効化は `MasterInUseError` で拒否し(`auto_closed` は拒否の対象にしない)、無効化済みマスタの新規利用(割当・交換先指定・新規枠生成)は `InactiveMasterError` で拒否する(D11、D23)
 - [ ] 測定定義・初期割当の登録更新と論理削除・再有効化を Service 経由で提供する(D15)。登録時の生成開始日・初期履歴・割当保存を原子的に行い、無効化済みマスタの新規利用を各操作で拒否する
+  - 測定定義の更新で `reading_cycle`・`value_schema`・`calculation_method`・`location_id` の変更が指定された場合は `DomainError` 派生例外で拒否する(D15)
   - 測定定義の無効化は、現在業務日以降の `open` 枠を同一トランザクションで `superseded`(`close_reason = 'definition_deactivated'`)にする。`completed`・`auto_closed` 枠と結果は変更しない(D25)
   - 再有効化は枠を復活させず、生成開始業務日を `max(既存値, 現在業務日)` へ更新する(D25)
 - [ ] `StaffService` を新設する(D9、D11: 無効化済み担当者の指定は `InactiveMasterError` で拒否)
@@ -295,11 +308,12 @@
   - スマホの時計が進んだ状態で PC 訂正し、その後に古い MR1 を再取込しても PC の訂正が残る(D19)
   - 同一内容の再取込は何も更新せず重複として集計され、内容が異なる同時刻の入力だけ `arrival_sequence` が進む(D20)
   - 署名が `YYYY-MM-DD HH:MM:SS`(UTC・秒単位)で生成され、保存値から再現できる(D21)
-- [ ] マスタ保護の検証を追加する(D11、D23、D25)
+- [ ] マスタ保護の検証を追加する(D11、D15、D23、D25)
   - 交換前に `auto_closed` 枠が残っていても、旧メーターを無効化できる
   - 無効化した旧メーターの `auto_closed` 枠に後日入力すると `completed` になり、交換境界と後続が再計算される
   - 割当中または `open` 枠のあるメーターの無効化は `MasterInUseError` で拒否される
   - 無効化したメーターを交換先・割当に指定すると `InactiveMasterError` で拒否される
+  - 測定定義の更新で `reading_cycle`・`value_schema`・`calculation_method`・`location_id` の変更が `DomainError` 派生例外で拒否される(D15)
   - 測定定義の無効化で現在業務日以降の `open` 枠だけが `superseded`(`definition_deactivated`)になり、`completed`・`auto_closed` 枠と結果は変わらない。再有効化後に枠が復活せず、無効期間の補完もされない
 - [ ] マスタ登録更新・再有効化、未署名入力から PC 署名保存までの Service 統合テストを追加する
 - [ ] 残りの `core/` 対象ファイルを検査対象へ戻し、pyright strict で 0 件になる
@@ -313,7 +327,7 @@
   - `core/` と `db/` が PySide6 を import しない
   - 契約(`contract_models`、`errors`、Repository Protocol・入出力レコード)から Service・UI・DB 実装への依存がない
   - `db/` から Service・UI への依存がない
-  - `timeutil` と `timezone_settings` 以外で `datetime.now`、`date.today`、SQL の `'localtime'` を使っていない
+  - `timeutil` 以外で `datetime.now`、`date.today`、SQL の `'localtime'` を使っていない
 - [ ] 統合テストの成功を確認してから `db/reference_sqlalchemy/` を削除し、`sqlalchemy` と旧 import の参照が残っていないことを `grep` で確認する
 - [ ] [移行ガイド](../../migration_package/README.md) の Step 2 / 3、README、正本 8 章の Phase 1 記述を実態に合わせる
 
@@ -333,8 +347,10 @@ uv run ruff check
 uv run ruff format --check
 uv run pyright
 uv run pytest --cov
-uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90
+uv run coverage report --fail-under=90
 ```
+
+- `uv run coverage report --fail-under=90` は CI([.github/workflows/ci.yml](../../.github/workflows/ci.yml))と同じく `pyproject.toml` の対象設定に従い、あわせて `core/`・`db/` でも行カバレッジ 90% 以上を満たすことを確認する。
 
 - PR-1a〜1d は、対象に戻したファイルを段階的に検査対象へ加え、各 PR 時点で全ゲートを成功させる。
 - PR-1e の時点で、Phase 1 対象の除外設定が 0 件であることを完了条件とする(`core/mobile_reading.py` の coverage `omit` は Phase 2 まで残す)。
