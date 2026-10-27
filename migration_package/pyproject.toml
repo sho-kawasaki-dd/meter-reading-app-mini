@@ -37,14 +37,11 @@ extend-exclude = [
     "src/meter_reading_mini/core/meter_master_service.py",
     "src/meter_reading_mini/core/meter_reading_sync.py",
     "src/meter_reading_mini/core/reading_write_orchestration.py",
-    "src/meter_reading_mini/core/work_package_download.py",
     "src/meter_reading_mini/db/reference_sqlalchemy/**",
-    "tests/test_measurement_definition_schedule_service.py",
     "tests/test_meter_master_service.py",
     "tests/test_meter_reading_sync_service.py",
     "tests/test_meter_reading_sync_service_batch_txn.py",
     "tests/test_reading_write_orchestration.py",
-    "tests/test_work_package_download_service.py",
 ]
 
 [tool.ruff.lint]
@@ -66,14 +63,11 @@ ignore = [
     "src/meter_reading_mini/core/meter_master_service.py",
     "src/meter_reading_mini/core/meter_reading_sync.py",
     "src/meter_reading_mini/core/reading_write_orchestration.py",
-    "src/meter_reading_mini/core/work_package_download.py",
     "src/meter_reading_mini/db/reference_sqlalchemy/**",
-    "tests/test_measurement_definition_schedule_service.py",
     "tests/test_meter_master_service.py",
     "tests/test_meter_reading_sync_service.py",
     "tests/test_meter_reading_sync_service_batch_txn.py",
     "tests/test_reading_write_orchestration.py",
-    "tests/test_work_package_download_service.py",
 ]
 
 [tool.pytest.ini_options]
@@ -85,12 +79,10 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     # Phase 1 で解除: 旧プロジェクト由来の import と sqlalchemy 依存。
-    "--ignore=tests/test_measurement_definition_schedule_service.py",
     "--ignore=tests/test_meter_master_service.py",
     "--ignore=tests/test_meter_reading_sync_service.py",
     "--ignore=tests/test_meter_reading_sync_service_batch_txn.py",
     "--ignore=tests/test_reading_write_orchestration.py",
-    "--ignore=tests/test_work_package_download_service.py",
 ]
 markers = ["perf: 時間のかかる性能計測テスト"]
 
@@ -108,6 +100,8 @@ include = [
     "*/meter_reading_mini/core/contract_models.py",
     "*/meter_reading_mini/core/meter_reading_sync_repositories.py",
     "*/meter_reading_mini/core/reading_signature.py",
+    "*/meter_reading_mini/core/schedule_settings.py",
+    "*/meter_reading_mini/core/startup_preparation.py",
     "*/meter_reading_mini/core/timeutil.py",
     "*/meter_reading_mini/core/timezone_settings.py",
     "*/meter_reading_mini/core/usage_delta_calculation.py",

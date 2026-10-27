@@ -1,19 +1,37 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from meter_reading_mini.core.errors import InvalidTimezoneError
+from meter_reading_mini.core.contract_models import (
+    CalculationMethod,
+    Category,
+    Purpose,
+    ReadingCycle,
+    ReadingSession,
+    ValueSchema,
+)
+from meter_reading_mini.core.errors import InvalidTimezoneError, TimezoneChangeError
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    MeasurementDefinitionCreateRequest,
+    MeterMasterCreateRequest,
+    PlannedReadingCreateRequest,
+)
 from meter_reading_mini.core.timeutil import DB_DATETIME_FORMAT
 from meter_reading_mini.core.timezone_settings import (
     DEFAULT_APP_TIMEZONE,
+    TimezoneSettingsService,
     build_business_date_provider,
     build_current_datetime_provider,
     build_scheduled_at,
     normalize_to_utc,
 )
+from meter_reading_mini.db.connection import transaction
+from meter_reading_mini.db.repositories import SQLiteRepository
 
 
 def test_normalize_to_utc_converts_an_aware_datetime() -> None:
@@ -77,3 +95,80 @@ def test_business_date_provider_uses_the_converted_utc_date(
 
 def test_signature_datetime_format_is_utc_second_precision() -> None:
     assert DB_DATETIME_FORMAT == "%Y-%m-%d %H:%M:%S"
+
+
+def _insert_planned_reading(conn: sqlite3.Connection, repository: SQLiteRepository) -> None:
+    with transaction(conn):
+        repository.create_meter_master(
+            MeterMasterCreateRequest(
+                meter_id="timezone-meter",
+                location_id="timezone-location",
+                location_name="架空の試験棟",
+                meter_name="試験用メーター",
+                category=Category.ELECTRICITY,
+            )
+        )
+        repository.create_measurement_definition(
+            MeasurementDefinitionCreateRequest(
+                measurement_definition_id="timezone-definition",
+                location_id="timezone-location",
+                display_name="試験用測定定義",
+                category=Category.ELECTRICITY,
+                unit="kWh",
+                value_schema=ValueSchema.DECIMAL_STRING,
+                multiplier=Decimal("1"),
+                decimal_places=2,
+                warning_threshold=None,
+                rollover_value=None,
+                calculation_method=CalculationMethod.DELTA,
+                reading_cycle=ReadingCycle.DAILY_1X,
+                purpose=Purpose.OPERATIONAL,
+                generation_start_date=date(2026, 2, 5),
+                initial_schedule_json='{"reading_sessions":[{"reading_session":"08:00"}]}',
+                initial_meter_id="timezone-meter",
+            )
+        )
+        repository.create_planned_reading_if_missing(
+            PlannedReadingCreateRequest(
+                planned_reading_id="timezone-planned",
+                measurement_definition_id="timezone-definition",
+                meter_id="timezone-meter",
+                location_id="timezone-location",
+                business_date=date(2026, 2, 5),
+                release_date=date(2026, 2, 5),
+                reading_session=ReadingSession.SESSION_0800,
+                scheduled_at=build_scheduled_at(date(2026, 2, 5), "08:00"),
+            )
+        )
+
+
+def test_timezone_change_is_allowed_before_use_and_same_value_is_allowed_after_use(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    service = TimezoneSettingsService(
+        repository,
+        transaction_factory=lambda: transaction(conn),
+    )
+
+    assert service.save_timezone("UTC") == ZoneInfo("UTC")
+    _insert_planned_reading(conn, repository)
+    assert service.save_timezone("UTC") == ZoneInfo("UTC")
+
+    with pytest.raises(TimezoneChangeError):
+        service.save_timezone("Asia/Tokyo")
+    assert service.get_timezone() == ZoneInfo("UTC")
+
+
+def test_initial_default_timezone_can_be_saved_when_planned_rows_exist(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    conn.execute("DELETE FROM meter_app_settings WHERE setting_key = 'app.timezone.v1'")
+    _insert_planned_reading(conn, repository)
+    service = TimezoneSettingsService(
+        repository,
+        transaction_factory=lambda: transaction(conn),
+    )
+
+    assert service.save_timezone("Asia/Tokyo") == ZoneInfo("Asia/Tokyo")

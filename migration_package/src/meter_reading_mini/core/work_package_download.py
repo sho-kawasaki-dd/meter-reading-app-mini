@@ -5,13 +5,8 @@ from __future__ import annotations
 import calendar
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import date, datetime, time, timedelta, tzinfo
-
-logger = logging.getLogger(__name__)
-
-MAX_BACKFILL_DAYS_PER_REQUEST = 14
-TASK_COUNT_WARN_THRESHOLD = 5000
-MASTER_COUNT_WARN_THRESHOLD = 2000
 
 from meter_reading_mini.core.contract_models import (
     PlannedReadingTask,
@@ -20,9 +15,9 @@ from meter_reading_mini.core.contract_models import (
     WorkPackageResponse,
     WorkPackageTaskGroups,
 )
+from meter_reading_mini.core.errors import DomainError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
-    EveryTwoMonthsSchedule,
     MeasurementDefinitionQueryRepository,
     MeterMasterQueryRepository,
     MonthlySchedule,
@@ -39,17 +34,23 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
 )
 from meter_reading_mini.core.timezone_settings import (
     DEFAULT_APP_TIMEZONE,
-    build_scheduled_at,
     build_business_date_provider,
     build_current_datetime_provider,
+    build_scheduled_at,
 )
+
+logger = logging.getLogger(__name__)
+
+MAX_BACKFILL_DAYS_PER_REQUEST = 14
+TASK_COUNT_WARN_THRESHOLD = 5000
+MASTER_COUNT_WARN_THRESHOLD = 2000
 
 BusinessDateProvider = Callable[[], date]
 CurrentDateTimeProvider = Callable[[], datetime]
 CutoffTimeProvider = Callable[[], time]
 
 
-class WorkPackageDownloadServiceError(ValueError):
+class WorkPackageDownloadServiceError(DomainError):
     """work package download path で扱う業務エラーの基底例外。"""
 
 
@@ -58,7 +59,8 @@ class FutureBusinessDateError(WorkPackageDownloadServiceError):
 
     def __init__(self, target_business_date: date, current_business_date: date) -> None:
         super().__init__(
-            f"Future business_date is not supported: {target_business_date.isoformat()} > {current_business_date.isoformat()}"
+            "Future business_date is not supported: "
+            f"{target_business_date.isoformat()} > {current_business_date.isoformat()}"
         )
         self.target_business_date = target_business_date
         self.current_business_date = current_business_date
@@ -77,7 +79,7 @@ class PlannedReadingGeneratorService:
         self,
         repository: PlannedReadingGenerationRepository,
         *,
-        release_date_calculator: ReleaseDateCalculator | None = None,
+        release_date_calculator: ReleaseDateCalculator,
         scheduled_timezone_provider: Callable[[], tzinfo] | None = None,
     ) -> None:
         self._repository = repository
@@ -86,101 +88,94 @@ class PlannedReadingGeneratorService:
             lambda: DEFAULT_APP_TIMEZONE
         )
 
-    def ensure_generated_through(self, target_business_date: date) -> bool:
-        """不足している business_date 範囲だけを冪等に生成し、継続必要時は True を返す。"""
+    def ensure_generated_through(self, target_business_date: date) -> None:
+        """生成開始日から対象業務日までを14日単位で照合し、不足枠をすべて生成する。"""
 
         definitions = self._repository.list_planned_reading_generation_definitions()
-        skipped_definitions = (
-            self._repository.list_measurement_definitions_without_active_assignment()
-        )
-        for skipped_definition in skipped_definitions:
-            logger.warning(
-                "Skipped generation for measurement_definition_id=%s: No active meter assignment",
-                skipped_definition.measurement_definition_id,
-            )
         if not definitions:
-            return False
+            return
 
-        latest_business_date = self._repository.get_latest_planned_business_date()
-        resolved_target_business_date = target_business_date
-        backfill_pending = False
-        if latest_business_date is not None:
-            max_target_business_date = latest_business_date + timedelta(
-                days=MAX_BACKFILL_DAYS_PER_REQUEST
-            )
-            if target_business_date > max_target_business_date:
-                resolved_target_business_date = max_target_business_date
-                backfill_pending = True
-
-        logger.info(
-            "Backfill target resolved: requested=%s resolved=%s latest=%s backfill_pending=%s",
-            target_business_date.isoformat(),
-            resolved_target_business_date.isoformat(),
-            latest_business_date.isoformat() if latest_business_date is not None else "none",
-            backfill_pending,
-        )
-
-        start_business_date = (
-            resolved_target_business_date
-            if latest_business_date is None
-            else latest_business_date + timedelta(days=1)
-        )
-        if start_business_date > resolved_target_business_date:
-            return backfill_pending
-
-        planned_reading_requests: list[PlannedReadingCreateRequest] = []
-        current_business_date = start_business_date
+        first_business_date = min(definition.generation_start_date for definition in definitions)
+        if first_business_date > target_business_date:
+            return
         scheduled_tzinfo = self._scheduled_timezone_provider()
-        while current_business_date <= resolved_target_business_date:
+        chunk_start = first_business_date
+        total_generated = 0
+
+        while chunk_start <= target_business_date:
+            chunk_end = min(
+                chunk_start + timedelta(days=MAX_BACKFILL_DAYS_PER_REQUEST - 1),
+                target_business_date,
+            )
+            planned_reading_requests: list[PlannedReadingCreateRequest] = []
             for definition in definitions:
-                schedule = definition.schedule
-                if schedule is None:
-                    raise ValueError(
-                        f"Missing schedule for measurement_definition_id={definition.measurement_definition_id}"
+                definition_start = max(chunk_start, definition.generation_start_date)
+                if definition_start > chunk_end:
+                    continue
+                existing_slots = self._repository.list_planned_reading_logical_slots(
+                    definition.measurement_definition_id,
+                    definition_start,
+                    chunk_end,
+                )
+                existing_keys = {
+                    (slot.business_date, slot.reading_session) for slot in existing_slots
+                }
+                current_business_date = definition_start
+                while current_business_date <= chunk_end:
+                    schedule = self._repository.get_planned_reading_generation_schedule(
+                        definition.measurement_definition_id,
+                        definition.reading_cycle,
+                        current_business_date,
                     )
-                for reading_session, day_offset in _resolve_schedule_items(
-                    definition.reading_cycle, current_business_date, schedule
-                ):
-                    effective_business_date = current_business_date + timedelta(days=day_offset)
-                    release_date = effective_business_date
-                    if self._release_date_calculator is not None:
+                    for reading_session, day_offset in _resolve_schedule_items(
+                        definition.reading_cycle, current_business_date, schedule
+                    ):
+                        logical_key = (current_business_date, reading_session)
+                        if logical_key in existing_keys:
+                            continue
+                        scheduled_at = build_scheduled_at(
+                            current_business_date,
+                            reading_session.value,
+                            day_offset=day_offset,
+                            tzinfo=scheduled_tzinfo,
+                        )
+                        meter_id = self._repository.get_meter_id_for_planned_reading(
+                            definition.measurement_definition_id, scheduled_at
+                        )
+                        effective_business_date = current_business_date + timedelta(days=day_offset)
                         release_date = self._release_date_calculator.compute_release_date(
                             effective_business_date, reading_session
                         )
-                    planned_reading_requests.append(
-                        PlannedReadingCreateRequest(
-                            planned_reading_id=_build_planned_reading_id(
-                                definition.measurement_definition_id,
-                                current_business_date,
-                                reading_session,
-                            ),
-                            measurement_definition_id=definition.measurement_definition_id,
-                            meter_id=definition.meter_id,
-                            location_id=definition.location_id,
-                            business_date=current_business_date,
-                            release_date=release_date,
-                            reading_session=reading_session,
-                            scheduled_at=build_scheduled_at(
-                                current_business_date,
-                                reading_session.value,
+                        planned_reading_requests.append(
+                            PlannedReadingCreateRequest(
+                                planned_reading_id=_build_planned_reading_id(
+                                    definition.measurement_definition_id,
+                                    current_business_date,
+                                    reading_session,
+                                ),
+                                measurement_definition_id=definition.measurement_definition_id,
+                                meter_id=meter_id,
+                                location_id=definition.location_id,
+                                business_date=current_business_date,
+                                release_date=release_date,
+                                reading_session=reading_session,
+                                scheduled_at=scheduled_at,
                                 day_offset=day_offset,
-                                tzinfo=scheduled_tzinfo,
-                            ),
-                            day_offset=day_offset,
+                            )
                         )
-                    )
-            current_business_date += timedelta(days=1)
+                    current_business_date += timedelta(days=1)
+            if planned_reading_requests:
+                total_generated += self._repository.create_planned_readings_if_missing(
+                    planned_reading_requests
+                )
+            chunk_start = chunk_end + timedelta(days=1)
 
-        generated_count = self._repository.create_planned_readings_if_missing(
-            planned_reading_requests
-        )
         logger.info(
-            "Backfill generated %d planned reading(s) for %s through %s",
-            generated_count,
-            start_business_date.isoformat(),
-            resolved_target_business_date.isoformat(),
+            "予定枠補完を完了しました: from=%s through=%s generated=%d",
+            first_business_date.isoformat(),
+            target_business_date.isoformat(),
+            total_generated,
         )
-        return backfill_pending
 
 
 class PlannedReadingLifecycleService:
@@ -199,12 +194,11 @@ class PlannedReadingLifecycleService:
         )
         self._cutoff_time_provider = cutoff_time_provider or _default_cutoff_time_provider
 
-    def reconcile_before_download(self, target_business_date: date) -> int:
-        """requested business_date を返す前に、過去日の open task を auto-close する。"""
+    def reconcile_before_download(self) -> int:
+        """現在業務日時と締め時刻に基づき、期限を過ぎた open 枠を自動クローズする。"""
 
         current_datetime = self._current_datetime_provider()
         through_business_date = _resolve_auto_close_through_business_date(
-            target_business_date=target_business_date,
             current_datetime=current_datetime,
             cutoff_time=self._cutoff_time_provider(),
         )
@@ -235,6 +229,7 @@ class WorkPackageDownloadService:
         planned_reading_lifecycle_service: PlannedReadingLifecycleService | None = None,
         generation_look_ahead_days: int = 0,
         business_date_provider: BusinessDateProvider | None = None,
+        transaction_factory: Callable[[], AbstractContextManager[object]],
     ) -> None:
         self._planned_reading_generator = planned_reading_generator
         self._planned_reading_task_repository = planned_reading_task_repository
@@ -243,6 +238,7 @@ class WorkPackageDownloadService:
         self._planned_reading_lifecycle_service = planned_reading_lifecycle_service
         self._generation_look_ahead_days = generation_look_ahead_days
         self._business_date_provider = business_date_provider or build_business_date_provider()
+        self._transaction_factory = transaction_factory
 
     def download_today(self) -> WorkPackageResponse:
         """当日の work package を返す前に、必要な backfill 生成を済ませる。"""
@@ -284,62 +280,65 @@ class WorkPackageDownloadService:
 
         if generation_target_business_date is None:
             generation_target_business_date = target_business_date
-        self._planned_reading_generator.ensure_generated_through(generation_target_business_date)
-        if self._planned_reading_lifecycle_service is not None:
-            self._planned_reading_lifecycle_service.reconcile_before_download(target_business_date)
-        if query_by_release_date:
-            tasks = self._planned_reading_task_repository.list_open_planned_reading_tasks_for_release_date(
-                target_business_date
+        with self._transaction_factory():
+            self._planned_reading_generator.ensure_generated_through(
+                generation_target_business_date
             )
-        else:
-            tasks = self._planned_reading_task_repository.list_open_planned_reading_tasks_for_business_date(
-                target_business_date
-            )
-        grouped_tasks = _group_tasks(tasks)
+            if self._planned_reading_lifecycle_service is not None:
+                self._planned_reading_lifecycle_service.reconcile_before_download()
+            task_query = self._planned_reading_task_repository
+            if query_by_release_date:
+                tasks = task_query.list_open_planned_reading_tasks_for_release_date(
+                    target_business_date
+                )
+            else:
+                tasks = task_query.list_open_planned_reading_tasks_for_business_date(
+                    target_business_date
+                )
+            grouped_tasks = _group_tasks(tasks)
 
-        task_count = (
-            len(grouped_tasks.daily_tasks)
-            + len(grouped_tasks.weekly_tasks)
-            + len(grouped_tasks.monthly_tasks)
-            + len(grouped_tasks.every_two_months_tasks)
-        )
-        meters = self._meter_master_repository.list_meter_master_data()
-        measurement_definitions = (
-            self._measurement_definition_repository.list_measurement_definition_data()
-        )
-        master_count = len(meters) + len(measurement_definitions)
-        if task_count > TASK_COUNT_WARN_THRESHOLD:
-            logger.warning(
-                "WorkPackage has high task count: %d (threshold: %d)",
+            task_count = (
+                len(grouped_tasks.daily_tasks)
+                + len(grouped_tasks.weekly_tasks)
+                + len(grouped_tasks.monthly_tasks)
+                + len(grouped_tasks.every_two_months_tasks)
+            )
+            meters = self._meter_master_repository.list_meter_master_data()
+            measurement_definitions = (
+                self._measurement_definition_repository.list_measurement_definition_data()
+            )
+            master_count = len(meters) + len(measurement_definitions)
+            if task_count > TASK_COUNT_WARN_THRESHOLD:
+                logger.warning(
+                    "WorkPackage has high task count: %d (threshold: %d)",
+                    task_count,
+                    TASK_COUNT_WARN_THRESHOLD,
+                )
+            if master_count > MASTER_COUNT_WARN_THRESHOLD:
+                logger.warning(
+                    "WorkPackage has high master count: %d (threshold: %d)",
+                    master_count,
+                    MASTER_COUNT_WARN_THRESHOLD,
+                )
+            logger.info(
+                "Delivering work package for %s: %d task(s)",
+                target_business_date.isoformat(),
                 task_count,
-                TASK_COUNT_WARN_THRESHOLD,
             )
-        if master_count > MASTER_COUNT_WARN_THRESHOLD:
-            logger.warning(
-                "WorkPackage has high master count: %d (threshold: %d)",
-                master_count,
-                MASTER_COUNT_WARN_THRESHOLD,
-            )
-        logger.info(
-            "Delivering work package for %s: %d task(s)",
-            target_business_date.isoformat(),
-            task_count,
-        )
 
-        return WorkPackageResponse(
-            meters=meters,
-            measurement_definitions=measurement_definitions,
-            work_package=grouped_tasks,
-        )
+            return WorkPackageResponse(
+                meters=meters,
+                measurement_definitions=measurement_definitions,
+                work_package=grouped_tasks,
+            )
 
 
 def _resolve_auto_close_through_business_date(
     *,
-    target_business_date: date,
     current_datetime: datetime,
     cutoff_time: time,
 ) -> date:
-    """requested business_date を開いたままにしつつ、auto-close の上限日を返す。"""
+    """締め時刻と現在業務日時から auto-close の上限業務日を返す。"""
 
     current_business_date = current_datetime.date()
     cutoff_boundary = datetime.combine(
@@ -350,7 +349,7 @@ def _resolve_auto_close_through_business_date(
     closable_through_business_date = current_business_date - timedelta(days=1)
     if current_datetime < cutoff_boundary:
         closable_through_business_date = current_business_date - timedelta(days=2)
-    return min(closable_through_business_date, target_business_date - timedelta(days=1))
+    return closable_through_business_date
 
 
 def _resolve_schedule_items(
@@ -373,23 +372,19 @@ def _resolve_schedule_items(
             return ()
         return ((schedule.reading_session, schedule.day_offset),)
 
-    if isinstance(schedule, EveryTwoMonthsSchedule):
-        if not _matches_month_parity(business_date, schedule.month_parity):
-            return ()
-        # every_two_months は月次 selector と同じ日付ルールを使う
-        monthly_proxy = MonthlySchedule(
-            selector_type=schedule.selector_type,
-            day_of_month=schedule.day_of_month,
-            nth=schedule.nth,
-            nth_weekday=schedule.nth_weekday,
-            edge=schedule.edge,
-            reading_session=schedule.reading_session,
-        )
-        if not _matches_monthly_selector(business_date, monthly_proxy):
-            return ()
-        return ((schedule.reading_session, schedule.day_offset),)
-
-    return ()  # pragma: no cover
+    if not _matches_month_parity(business_date, schedule.month_parity):
+        return ()
+    monthly_proxy = MonthlySchedule(
+        selector_type=schedule.selector_type,
+        day_of_month=schedule.day_of_month,
+        nth=schedule.nth,
+        nth_weekday=schedule.nth_weekday,
+        edge=schedule.edge,
+        reading_session=schedule.reading_session,
+    )
+    if not _matches_monthly_selector(business_date, monthly_proxy):
+        return ()
+    return ((schedule.reading_session, schedule.day_offset),)
 
 
 def _matches_monthly_selector(business_date: date, schedule: MonthlySchedule) -> bool:
