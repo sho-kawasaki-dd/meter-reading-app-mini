@@ -22,33 +22,34 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
 - まだないもの: HTML 生成、結果ペイロードの検証、`MeterReadingSyncRequest` への変換。テストは [test_mobile_reading_envelope.py](../../tests/test_mobile_reading_envelope.py) だけ。
 - `format_sheet_timestamps()` が `to_local()` を tz 指定なしで呼んでいる(Phase 1 D5 の「tz を必ず明示」に反する)。
 - [work_package_download.py](../../src/meter_reading_mini/core/work_package_download.py) の `WorkPackageDownloadService`:
-  - `open` の枠しか返さない。
+  - `open` の枠しか返さない。`PlannedReadingTask` にも `task_state` フィールドがない。
   - 当日パスは `release_date` 基準で、翌日 00:00 枠(配信オフセット -1)も含む。
+- `list_meter_master_data()` と `list_measurement_definition_data()` は `WHERE is_active = 1` のマスタしか返さない。また DB スキーマ上 `location_name` は `physical_meters` にしか存在しないため、無効化済みマスタ(`is_active = 0`)の `auto_closed` 枠をシートに含める際は、対象枠が参照するマスタを無効化済みでも取得する必要がある。
 - `list_measurement_definition_data()` の `last_reading` は「現在時点の最新実測(現行メーター)」で、予定枠ごとの前回値ではない。過去日のシートや交換直後の新メーターでは不正確になる。
 - 前回値の正しい判定は `ReadingWriteOrchestrationService._get_calculation_context` にある(交換境界があれば前回実測を使わない)。
+- `ReadingWriteOrchestrationService.upsert_reading` / `SQLiteRepository.upsert_reading` には、シート出力後に交換・スケジュール再構成・定義無効化で `task_state = 'superseded'` となった予定枠への結果書込を拒否する検査がまだない。
 - 移植元の参照実装: リポジトリ直下の `mobile_stocktake.py`(在庫アプリの棚卸シート、約 2,800 行の f-string テンプレート)。**Git 管理外(未追跡)** である。
   - IndexedDB のリビジョン管理・競合検出・途中バックアップ・コピー処理を含む。
   - CSS / JavaScript が `{{ }}` でエスケープされているため、移植時にエスケープを外す。
 - CI は Windows / Ubuntu ともに Playwright Chromium を導入済み([ci.yml](../../.github/workflows/ci.yml))。
 - [pyproject.toml](../../pyproject.toml) の coverage `omit` に `core/mobile_reading.py` が残っている。
 
-## 3. 決定事項(2026-10-27 確認済み: D1〜D7 / 提案: D8〜D11)
+## 3. 決定事項(2026-10-27 確認済み)
 
 | # | 論点 | 決定 |
 | --- | --- | --- |
-| D1 | シートに含める枠 | 対象 `business_date` の `open` と `auto_closed` の枠。`completed` と `superseded` は含めない。`release_date` は条件に使わない(後日入力に対応するため `auto_closed` を含める) |
-| D2 | 枠ごとの初期前回値 | PC 側で枠ごとに `scheduled_at, planned_reading_id` より前の同じ測定定義・メーターの実測値を求め、シートに埋め込む。交換境界があれば `new_initial_reading` を使い、未指定なら「初回使用量 0」を示す印を付ける。`_get_calculation_context` と同じ判定を共通化して使う |
+| D1 | シートに含める枠とマスタ | 対象 `business_date` の `open` と `auto_closed` の枠。`completed` と `superseded` は含めない。`release_date` は条件に使わない(後日入力に対応するため `auto_closed` を含める)。対象 `slots` が参照する測定定義・物理メーター(`meter_name`・`meter_serial` を含む)・場所名(`location_name`)は、マスタが論理削除済み(`is_active = 0`)であっても欠落なくシートデータに含める |
+| D2 | 枠ごとの初期前回値 | PC 側で枠ごとに `scheduled_at, planned_reading_id` より前の同じ測定定義・メーターの実測値を求め、シートに埋め込む。交換境界があれば `new_initial_reading` を使い、未指定なら「初回使用量 0」を示す印を付ける。`_get_calculation_context` と同じ判定を契約外の core モジュールに共通化して使う(契約モジュールの独立性を維持する) |
 | D3 | 資産の配置 | `core/mobile_reading_assets/`(`sheet.html`、`sheet.css`、`sheet.js`)。`importlib.resources` で読み込み、1 ファイルにまとめる。データは `<script type="application/json">` に `safe_json_for_script` で埋め込む。PyInstaller へのデータ指定は Phase 5 で行う |
 | D4 | 参照実装と削除方針 | `mobile_stocktake.py` から IndexedDB リビジョン管理・競合検出・途中バックアップ・コピー処理の設計を移植する。**ファイルは未追跡のためコミットしない。Phase 2 の実装完了時(完了記録 PR)にファイルを削除する**(5.5 参照) |
-| D5 | ピルタブの初期選択 | 未消化の枠が残る最も早い検針枠。全部消化済みなら [すべて] |
-| D6 | 発行済みシートの記録 | DB には記録しない(スキーマ変更なし)。PC 側の検証は `sheet_id` の形式と、各予定枠の存在・状態の照合で行う |
+| D5 | ピルタブの構成と初期選択 | 日次枠(`daily_1x` / `daily_2x` / `daily_3x`)は `reading_session` ごとの時間タブ(`[08:00]` 等)に振り分け、非日次枠(`weekly` / `monthly` / `every_two_months`)は `[週次・月次・隔月]` タブにまとめる(`[すべて]` は全枠)。初期選択は未消化の枠が残る最も早い日次検針枠とし、日次枠がすべて消化済みで非日次の未消化枠があれば `[週次・月次・隔月]`、全部消化済みなら `[すべて]` とする |
+| D6 | 発行済みシートの記録と状態照合 | シート自体は DB に記録しない(スキーマ変更なし)。PC 側の検証は `sheet_id` の形式と、各予定枠の存在・状態の照合で行う。シート出力後に交換・スケジュール再構成・定義無効化等で `task_state = 'superseded'` となった予定枠への結果保存は `DomainError` 派生例外で拒否する(`open` / `auto_closed` / `completed` は許容) |
 | D7 | PR の分け方 | 4 PR(2a〜2d)と完了記録 PR |
-| D8 | 時刻 | `format_sheet_timestamps` は業務タイムゾーンを引数で受け取る。シートの出力日時は UTC 文字列で埋め込み、表示はローカル時刻にする |
-| D9 | JavaScript の小数計算 | 数値は文字列で持つ。BigInt を使った固定小数点演算(加減算・乗算・比較)を `sheet.js` に実装し、`Number` / `parseFloat` を業務計算に使わない |
-| D10 | ファイル名 | 全枠: `meter_reading_YYYYMMDD_HHMMSS.html`<br>単一検針枠: `meter_reading_YYYYMMDD_0800_HHMMSS.html`<br>周期だけで絞り込み: `_weekly_` 等<br>複数条件: `_filtered_`<br>日付部は対象業務日、時刻部は出力時のローカル時刻 |
+| D8 | 時刻 | `format_sheet_timestamps` は業務タイムゾーン(`tzinfo`)を必須引数で受け取る。シートの出力日時は UTC 文字列(`generated_at`)と業務タイムゾーン基準のローカル表示文字列(`generated_at_local`)の両方を埋め込み、ブラウザの OS タイムゾーンに依存せず表示できるようにする |
+| D9 | JavaScript の小数計算 | 数値は文字列で持つ。BigInt を使った固定小数点演算(加減算・乗算・比較)を `sheet.js` に実装し、`Number` / `parseFloat` を業務計算に使わない。乗算結果のスケール(小数桁数)は差分と `multiplier` の小数桁数の和とし、Python の `Decimal` 乗算(`format(delta * multiplier, "f")`)と一致させる |
+| D10 | ファイル名と周期区分 | `cycle_groups` の語彙は `"daily"`(`daily_1x` / `daily_2x` / `daily_3x` を束ねる)・`"weekly"`・`"monthly"`・`"every_two_months"` の 4 区分とする。<br>全枠: `meter_reading_YYYYMMDD_HHMMSS.html`<br>単一検針枠: `meter_reading_YYYYMMDD_0800_HHMMSS.html`<br>単一周期区分のみで絞り込み: `meter_reading_YYYYMMDD_weekly_HHMMSS.html` 等<br>複数条件: `meter_reading_YYYYMMDD_filtered_HHMMSS.html`<br>日付部は対象業務日、時刻部は出力時のローカル時刻 |
 | D11 | プレビュー計算 | 確定前の差分プレビュー(正本 5.2.3)用の Service は Phase 4 で作る。Phase 2 はパース → 保存要求の構築 → `sync` の往復までとする |
-
-D8〜D11 は提案であり、確認後に確定する。
+| D12 | 同日先行枠からの動的引き継ぎ | 同じ `measurement_definition_id` かつ同じ `meter_id` の同日先行枠(`scheduled_at, planned_reading_id` 順)が `measured` で確認済みの正常値なら、後続枠の前回値と参考使用量を更新する(交換をまたぐ別 `meter_id` へは引き継がない)。引き継ぎ中は、シート出力時の `previous_source` が `replacement_no_initial` や `none`(初回使用量 0)であっても先行枠の実測値を前回値とする通常の差分計算に切り替える。先行枠の変更・確認解除時は、後続枠の前回値・参考使用量を再計算し、後続枠の確認状態(`confirmed`)も連動して解除する |
 
 ## 4. データ形式(v1)
 
@@ -57,8 +58,11 @@ D8〜D11 は提案であり、確認後に確定する。
 ```json
 {"kind":"mrm-meter-reading-sheet","v":1,"sheet_id":"<32hex>",
  "business_date":"2026-10-27","generated_at":"2026-10-27 11:00:00",
- "filter":{"reading_sessions":["08:00"]|null,"cycle_groups":["daily"]|null},
+ "generated_at_local":"2026-10-27 20:00:00",
+ "filter":{"reading_sessions":["08:00"]|null,
+   "cycle_groups":["daily"|"weekly"|"monthly"|"every_two_months"]|null},
  "locations":[{"location_id","location_name"}],
+ "meters":[{"meter_id","location_id","location_name","meter_name","category","meter_serial"|null}],
  "definitions":[{"measurement_definition_id","location_id","display_name","category","unit",
    "value_schema","multiplier","decimal_places","warning_threshold","rollover_value",
    "calculation_method"}],
@@ -72,7 +76,7 @@ D8〜D11 は提案であり、確認後に確定する。
 
 - 形式: `{"kind":"mrm-meter-reading-draft","v":1, sheet_id, business_date, generated_at, filter, slots:[...]}`
 - 各枠に持たせる項目:
-  - `planned_reading_id`、`measurement_definition_id`、`initial_last_reading`(照合用)
+  - `planned_reading_id`、`measurement_definition_id`、`meter_id`、`initial_last_reading`、`previous_source`(照合用)
   - `result_status`、`raw`、`pf_percent`、`pf_phase`、`note`
   - `confirmed`、`bad_input`、`recorded_at`、`client_updated_at`
 - IndexedDB:
@@ -88,6 +92,7 @@ D8〜D11 は提案であり、確認後に確定する。
 ```
 
 - `entries` には確認済みで正常な枠だけを入れる(1 件以上)。
+- トップレベルの `kind`・`v`・`sheet_id`・`entries` は必須とし、`business_date`・`generated_at`・`filter` はシートヘッダ値(省略可)を受け入れるが、未知キーは拒否する。
 - `result_status` に `replaced` は使わない。
 - 時刻はオフセット付き ISO 8601 とし、PC 側で UTC 秒単位に正規化する。
 - `kind` が結果 / 下書きのどちらでもない JSON は、PC 側で拒否する。
@@ -98,13 +103,14 @@ D8〜D11 は提案であり、確認後に確定する。
 
 ### 5.1 PR-2a `feature/phase2-sheet-generation-parser`: シート生成と結果パーサ(Python)
 
-- [ ] `PlannedReadingTaskQueryRepository` に、業務日と状態(`open` / `auto_closed`)を指定して枠を取得するメソッドを追加し、sqlite3 で実装する。ORDER BY は既存の一覧取得と同じにする
-- [ ] D2 の前回値判定を共通の関数(または Service)に切り出し、オーケストレーションとシート生成の両方で使う。次のケースを単体テストで確認する:
+- [ ] `PlannedReadingTaskQueryRepository` に、業務日と状態(`open` / `auto_closed`)を指定してシート用の予定枠(`task_state: PlannedReadingTaskState` を含むレコード)を取得するメソッドを追加し、sqlite3 で実装する。ORDER BY は既存の一覧取得と同じにする。あわせて、対象枠が参照する測定定義・物理メーター・場所名(`location_name`)を、マスタが論理削除済み(`is_active = 0`)の場合も含めて取得できるようにする(D1)
+- [ ] D2 の前回値判定を契約モジュール(`contract_models.py`、`errors.py`、`meter_reading_sync_repositories.py`)以外の core モジュールに共通の関数(または Service)として切り出し、オーケストレーションとシート生成の両方で使う。次のケースを単体テストで確認する:
   - 実測あり
   - 交換初期値あり
   - 交換初期値なし
   - 実測なし
   - 同日の先行枠が `completed`
+- [ ] D6 に従い、`task_state == 'superseded'` の予定枠に対する結果保存(`ReadingWriteOrchestrationService.upsert_reading`)を `DomainError` 派生例外で拒否し、スマホ同期(`MeterReadingSyncService.sync`)では当該 SAVEPOINT だけ戻して `rejected_reading_items` に記録することを単体・結合テストで確認する
 - [ ] `MobileReadingSheetService.create_sheet(target_business_date, *, reading_sessions, cycle_groups)` を作る
   - 補完 → 自動クローズ → 枠取得 → 前回値の算出を 1 つのトランザクションにまとめ、Service がトランザクションを持つ
   - 未来日の指定と対象 0 件は `DomainError` 派生例外で拒否する
@@ -113,7 +119,7 @@ D8〜D11 は提案であり、確認後に確定する。
 - [ ] `render_sheet_html(sheet_data)` を作り、D3 の資産をまとめて 1 つの HTML にする。外部 URL・`localStorage`・`</script>` の混入がないことをテストする
 - [ ] `format_sheet_timestamps` を tz 必須の引数に変える(D8)
 - [ ] `parse_mobile_reading_result(raw_text) -> MobileReadingResult` を作る。検証内容:
-  - `kind` と `v`
+  - `kind` と `v`(トップレベルの未知キーは拒否し、`business_date`・`generated_at`・`filter` は任意で保持する)
   - `sheet_id`
   - `entries` が空でないこと、`planned_reading_id` が重複しないこと
   - `MeterReadingSubmission` として正しいこと
@@ -125,31 +131,35 @@ D8〜D11 は提案であり、確認後に確定する。
   - `result_source = 'mobile_html'`
   - 署名がある
   - `auto_closed` の枠が `completed` になる
+  - `superseded` の枠が拒否される
 - [ ] [test_mobile_reading_envelope.py](../../tests/test_mobile_reading_envelope.py) を `tests/test_mobile_reading.py` に統合する。既存の MR1 テストは結果 `kind` 付きのペイロードに合わせて直す
-- [ ] 依存境界テストに `mobile_reading.py` と資産の読込を含め、PySide6 に依存しないこと、`datetime.now` を使わないことを確認する
+- [ ] [test_contract_boundaries.py](../../tests/test_contract_boundaries.py) に `core/mobile_reading_assets/` の資産読込と静的検査を追加し、契約モジュールの独立性、`PySide6` 非依存、`datetime.now` 不使用に加えて、資産内に外部 URL(`http://`、`https://`)や `localStorage` が含まれないことを確認する
 
 ### 5.2 PR-2b `feature/phase2-sheet-ui-input`: 画面と入力(HTML/JS)
 
 - [ ] `sheet.html`、`sheet.css`、`sheet.js` を作る。`<noscript>` と冒頭の表示で「Chrome で開いてください」と案内する
-- [ ] 検針時間・周期のピルタブを作る。消化件数バッジを付け、上部に固定し、初期選択は D5 に従う
+- [ ] 検針時間・周期のピルタブを作る。日次枠は `reading_session` ごとの時間タブ、非日次枠(`weekly` / `monthly` / `every_two_months`)は `[週次・月次・隔月]` タブに振り分け、消化件数バッジを付けて上部に固定する。初期選択は D5 に従う
 - [ ] `location_id` ごとのセクションを作る(Sticky 見出し・開閉・完了バッジ)。並び順はカテゴリ固定順(`electricity` → `gas` → `water` → その他)、その次に `display_name` 昇順。`location_id` 未設定は末尾の「場所未設定」にまとめる。場所ドロップダウンと「未入力のみ」トグルを付ける
-- [ ] カードの入力欄を作る
+- [ ] カードの表示と入力欄を作る
+  - 測定定義名(`display_name`)・単位・物理メーター情報(`meter_name`・`meter_serial`)・前回値の表示
   - 状態 4 種(`measured` / `skipped` / `unreachable` / `meter_fault`)
-  - 数値(`decimal_places` と `rollover_value` の上限で検証)
-  - 力率(`%` は 0〜100、位相 `lag` / `lead` / `unity` を選択。100% のときは `unity` に固定)
+  - 数値(非負の plain decimal 文字列、`decimal_places` 以下の小数桁数、および `rollover_value` 設定時は `0 <= raw_reading < rollover_value` で検証。`rollover_value` 同値は不可)
+  - 力率(`%` は 0〜100 の非負 plain decimal、位相 `lag` / `lead` / `unity` を選択。`100%` のときは `unity` に固定し、`100%` 未満のときは `unity` を選択不可とする。`100%` から `100%` 未満へ変更した際も `unity` のままでは確認済みにできない)
   - 備考(500 文字以内)
   - 確認ボタン、「次へ」で同じ場所の次の未入力へ移動
 - [ ] D9 の BigInt 小数で参考使用量を計算する
   - `raw_only` のとき
-  - 倍率を掛けるとき
+  - 倍率を掛けるとき(スケールは差分と `multiplier` の小数桁数の和)
   - ロールオーバー補正
   - ロールオーバー未設定で負の差分になるときの警告
   - 閾値超過の警告
-  - 交換初期値がない初回は 0
+  - 交換初期値がない初回(`replacement_no_initial`)および前回実測なし(`none`)は 0
   - 警告は現場の実数記録を妨げない
-- [ ] 同日先行枠の値を引き継ぐ
-  - 同じ測定定義の先行枠が `measured` で確認済みの正常値なら、後続枠の前回値と参考使用量を更新する
-  - 未入力や非実測なら、さらに前の枠またはシート出力時の前回値に戻す
+- [ ] 同日先行枠の値を引き継ぐ(D12)
+  - 同じ `measurement_definition_id` かつ同じ `meter_id` の同日先行枠(`scheduled_at, planned_reading_id` 順)が `measured` で確認済みの正常値なら、後続枠の前回値と参考使用量を更新する(交換前後の別 `meter_id` 間では引き継がない)
+  - 引き継ぎ中は、シート出力時の `previous_source` が `replacement_no_initial` や `none`(初回使用量 0)であっても、先行枠の実測値を前回値とする通常の差分計算に切り替える
+  - 先行枠が未入力・非実測・未確認なら、さらに前の確認済み実測枠またはシート出力時の初期前回値(`initial_last_reading` / `previous_source`)に戻す
+  - 先行枠の測定値・状態・備考が変更されて確認が解除された場合、それを引き継いでいた後続枠の前回値・参考使用量を再計算するとともに、後続枠の確認状態(`confirmed`)も連動して解除する
 - [ ] 測定値・状態・備考を変えたら確認を解除する。業務条件を満たさない枠は確認済みにしない
 - [ ] Playwright の基盤を `tests/conftest.py` に置く
   - Chromium をセッション単位で起動する
@@ -206,7 +216,7 @@ D8〜D11 は提案であり、確認後に確定する。
 ### 5.5 完了記録 PR
 
 - [ ] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを 9 章へ記録する
-- [ ] D1〜D11 と 4 章のデータ形式を正本 5.2 章へ統合する。正本 8 章の Phase 2 記述と README の Phase 状況も更新する
+- [ ] D1〜D12 と 4 章のデータ形式を正本 5.2 章へ統合する。正本 8 章の Phase 2 記述と README の Phase 状況も更新する
 - [ ] 実機確認(端末、Chrome の版、起動経路、ファイルを移動したときの復元可否)は Phase 4 以降の作業として正本に明記する。Phase 2 の完了扱いにはしない。在庫アプリの実機確認を検針アプリの実績と記載しない
 - [ ] **参照実装 `mobile_stocktake.py` を削除する**(D4)
   - Phase 2 の実装(2a〜2d)がすべて main にマージされ、品質ゲートが成功したことを確認してから削除する
