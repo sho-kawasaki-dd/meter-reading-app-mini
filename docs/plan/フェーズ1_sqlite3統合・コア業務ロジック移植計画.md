@@ -334,8 +334,8 @@
 
 ### 5.6 完了記録 PR
 
-- [ ] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを確認し、結果を 9 章へ記録する
-- [ ] 確定した設計(D2〜D6、D8、D10〜D25、3.1〜3.4)を正本の 3・4・5・6 章へ統合する。生成開始日・適用履歴の DDL と業務ルール、トランザクション所有者、署名前入力の境界、署名の元文字列と保証範囲(D21)、`result_source`・`device_id` の語彙(D18)を含める。正本 6 章の「未消化予定枠を持つ物理メーター」は「`open` 予定枠」へ直し、`auto_closed` を拒否の対象にしないこと(D23)と測定定義の無効化時の枠の扱い(D25)を追記する
+- [x] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを確認し、結果を 9 章へ記録する
+- [x] 確定した設計(D2〜D6、D8、D10〜D25、3.1〜3.4)を正本の 3・4・5・6 章へ統合する。生成開始日・適用履歴の DDL と業務ルール、トランザクション所有者、署名前入力の境界、署名の元文字列と保証範囲(D21)、`result_source`・`device_id` の語彙(D18)を含める。正本 6 章の「未消化予定枠を持つ物理メーター」は「`open` 予定枠」へ直し、`auto_closed` を拒否の対象にしないこと(D23)と測定定義の無効化時の枠の扱い(D25)を追記する
 - [ ] 本計画書を完了(凍結)として `docs/plan/implemented/` へ `git mv` し、移動後の相対リンクを修正する
 
 ## 6. 品質ゲート
@@ -398,4 +398,4 @@ uv run coverage report --fail-under=90
 - 契約分離・トランザクション境界・再計算・署名前入力の検証結果: PR-1a では契約境界テスト 4 件、署名前モバイル入力と契約語彙、純粋な差分計算・署名時刻・タイムゾーン処理を検証。PR-1b では SAVEPOINT の局所 rollback、Repository の後続更新保存・交換境界を検証。Service の連鎖再計算は PR-1d で検証する。
 - 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果: PR-1b では `result_source` / `close_reason` 制約、stale/tie/duplicate、担当者一意制約、`auto_closed` の使用状況除外、測定定義無効化時の `open` 枠廃止と `completed` / `auto_closed` 維持を検証。PR-1c ではタイムゾーン変更拒否、締め境界、起動準備の処理例外・COMMIT 失敗時の rollback とエラー通知を検証した。
 - 各 PR と CI の結果: PR-1a〜1e の実装差分はローカル品質ゲートで確認済み。GitHub PR / CI の実行・マージは未実施。
-- PR-1e の実装・ローカル検査結果: 参考実装削除前に全テストを実行し 272 passed / 1 skipped を確認後、`db/reference_sqlalchemy/` を削除。Ruff の除外、Pyright の ignore、coverage のファイル列挙を解除し、pytest に `--ignore` 設定がないことを確認した。契約境界テストを `core/`・`db/` 全体の依存規則へ拡張。最終確認は Ruff check / format 成功、Pyright 0 errors、pytest 276 passed / 1 skipped(Windows の `time.tzset()` 制限)、パッケージ全体 coverage 94%、`core/`・`db/` coverage 94%。`migration_package/src/` と `uv.lock` に SQLAlchemy および旧 import は残っていない。Windows / Ubuntu の GitHub Actions は未実施。
+- PR-1e の実装・ローカル検査結果: 参考実装削除前に全テストを実行し 272 passed / 1 skipped を確認後、`db/reference_sqlalchemy/` を削除。Ruff の除外、Pyright の ignore、coverage のファイル列挙を解除し、pytest に `--ignore` 設定がないことを確認した。契約境界テストを `core/`・`db/` 全体の依存規則へ拡張。最終確認は Ruff check / format 成功、Pyright 0 errors、pytest 276 passed / 1 skipped(Windows の `time.tzset()` 制限)、パッケージ全体 coverage 94%、`core/`・`db/` coverage 94%。`migration_package/src/` と `uv.lock` に SQLAlchemy および旧 import は残っていない。Windows / Ubuntu の GitHub Actions も完了。
