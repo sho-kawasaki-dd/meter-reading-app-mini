@@ -5,7 +5,9 @@ from decimal import Decimal
 
 import pytest
 
-from application.reading_signature import (
+from meter_reading_mini.core.contract_models import ResultStatus
+from meter_reading_mini.core.errors import InvalidTimezoneError
+from meter_reading_mini.core.reading_signature import (
     InvalidMeterReadingSignatureError,
     MissingDeviceIdForSignatureError,
     SignatureCanonicalizationError,
@@ -14,8 +16,6 @@ from application.reading_signature import (
     canonicalize_signature_recorded_at,
     verify_meter_reading_signature,
 )
-from api.models import ResultStatus
-
 
 TEST_DEVICE_ID = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -42,8 +42,14 @@ def test_canonicalize_signature_payload_rejects_nan_values() -> None:
 
 
 def test_canonicalize_signature_recorded_at_requires_timezone_aware_datetime() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidTimezoneError):
         canonicalize_signature_recorded_at(datetime(2026, 4, 1, 8, 0, 0))
+
+
+def test_canonicalize_signature_recorded_at_uses_utc_seconds() -> None:
+    recorded_at = datetime.fromisoformat("2026-04-01T08:00:00.987654+09:00")
+
+    assert canonicalize_signature_recorded_at(recorded_at) == "2026-03-31 23:00:00"
 
 
 def test_verify_meter_reading_signature_rejects_mismatch() -> None:

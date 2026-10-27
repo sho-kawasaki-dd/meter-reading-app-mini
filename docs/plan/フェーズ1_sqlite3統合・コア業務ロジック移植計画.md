@@ -2,7 +2,7 @@
 
 - 作成日: 2026-10-25
 - 更新日: 2026-10-27(着手前レビュー・予定枠補完設計・レビュー指摘 D18〜D25 を反映)
-- ステータス: 計画(未着手)
+- ステータス: 進行中(PR-1a 完了、PR-1b〜1e 未着手)
 - 対象: `migration_package/` を基点とする Phase 1
 - 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md) 8 章 Phase 1
 - 前提: [Phase 0 計画](implemented/フェーズ0_共通基盤・CI整備計画.md) 完了済み(`uv.lock`、CI、`main` 保護)
@@ -157,18 +157,18 @@
 
 ### 5.1 PR-1a `feature/phase1-contracts-pure-logic`: 契約と純粋ロジック
 
-- [ ] `migration_package/` で `uv sync --locked` を実行し、全体を対象に ruff / pyright / pytest 収集 / coverage の件数を記録する(9 章の記録欄へ)
-- [ ] 対象 10 ファイルとテストを `ruff format` と `ruff check --fix` で機械整形し、機械的な変更だけを別コミットにする
-- [ ] import を置き換える
+- [x] `migration_package/` で `uv sync --locked` を実行し、全体を対象に ruff / pyright / pytest 収集 / coverage の件数を記録する(9 章の記録欄へ)
+- [x] 対象 10 ファイルとテストを `ruff format` と `ruff check --fix` で機械整形し、機械的な変更だけを別コミットにする
+- [x] import を置き換える
   - `api.models` → `meter_reading_mini.core.contract_models`
   - `application.` → `meter_reading_mini.core.`
-- [ ] `meter_reading_sync_repositories.py` から `core.database`(`MeasurementDefinitionORM`)への型依存を外し、純粋な契約型へ置き換える
-- [ ] 3.1 に従いスケジュール型・設定関連 Protocol を契約側へ移し、`TYPE_CHECKING` 内も含めて Service への依存を除去する。契約の依存方向テストをこの PR で追加する
-- [ ] 物理メーター・測定定義・割当・Staff の更新要求と結果レコード、使用状況照会、生成開始日・適用履歴・論理枠と差替え実体の照合に必要な Protocol を定義する
+- [x] `meter_reading_sync_repositories.py` から `core.database`(`MeasurementDefinitionORM`)への型依存を外し、純粋な契約型へ置き換える
+- [x] 3.1 に従いスケジュール型・設定関連 Protocol を契約側へ移し、`TYPE_CHECKING` 内も含めて Service への依存を除去する。契約の依存方向テストをこの PR で追加する
+- [x] 物理メーター・測定定義・割当・Staff の更新要求と結果レコード、使用状況照会、生成開始日・適用履歴・論理枠と差替え実体の照合に必要な Protocol を定義する
   - 測定定義の更新要求では `reading_cycle`・`value_schema`・`calculation_method`・`location_id` を作成後変更不可とする(D15)
   - `HistoricalMeasuredReadingLookupRepository`(前回実測取得・後続実測一覧取得)および `ReplacementBoundaryLookupRepository` に `meter_id` と順序境界引数(`before_scheduled_at`、`before_planned_reading_id`、`excluding_planned_reading_id`)を追加し、`new_initial_reading is None` の交換境界も返せる契約にする。後続再計算は Repository 内の計算メソッドを廃止し、後続実測枠の取得と計算済み結果の保存に分離する(D16、3.1)
-- [ ] スマホの未署名入力と PC 確定コンテキスト・保存要求を分け、署名や担当者のダミー値なしで検証できる契約テストを追加する(D17)
-- [ ] 契約と設定の語彙・不要機能を整理する
+- [x] スマホの未署名入力と PC 確定コンテキスト・保存要求を分け、署名や担当者のダミー値なしで検証できる契約テストを追加する(D17)
+- [x] 契約と設定の語彙・不要機能を整理する
   - `ResultSource` を `MOBILE_HTML = "mobile_html"` と `MANUAL = "manual"` の 2 値にし、`CLIENT`・`SYSTEM` を削除する(D18)
   - PC 直接入力の `device_id` 固定値 `pc-direct` を契約側の定数として定義する(D18)
   - `PlannedReadingCloseReason` に `METER_REPLACED = "meter_replaced"`、`SCHEDULE_RECOMPOSED = "schedule_recomposed"`、`DEFINITION_DEACTIVATED = "definition_deactivated"` を追加する(3.1、D25)
@@ -177,16 +177,16 @@
   - `WorkPackageResponse` から `backfill_pending` を削除する(3.3)
   - `contract_models.py` から旧 HTTP API / 主端末制専用の `ApiRequestErrorCode`・`ApiRequestErrorResponse` と、旧クライアント署名検証用の `SyncItemRejectCode` 項目を削除する(D4、D17)
   - `schedule_settings.py` から対象外の `ActiveDeviceBindingService` 関連を削除する
-- [ ] `UsageDeltaCalculationService.calculate` で、`rollover_value is None` かつ `raw_reading < last_reading` のときに `DomainError` 派生例外を送出するよう修正する
-- [ ] 署名の時刻表記を D21 に合わせる。`canonicalize_signature_recorded_at` を `YYYY-MM-DD HH:MM:SS`(UTC・秒単位)へ変更し、タイムゾーンなし・秒未満の入力の扱いをテストで固定する
-- [ ] `build_scheduled_at()` と `normalize_to_utc()` を `core/timezone_settings.py` へ移す(D5)
-- [ ] `build_current_datetime_provider` / `build_business_date_provider` は `timeutil.utc_now()` で UTC 現在時刻を取得し、設定された業務タイムゾーンへ明示的に変換する。`utc_now()` 自体に tz 引数は追加しない
-- [ ] 次のモジュールが pyright strict で 0 件になる: `contract_models`、`meter_reading_sync_repositories`、`usage_delta_calculation`、`reading_signature`、`timezone_settings`、`schedule_settings`
-- [ ] 業務例外を `core/errors.py` の `DomainError` 派生へそろえる。同期処理の拒否コードとの対応表を作る。D22(業務タイムゾーン変更の拒否)・3.3(適用履歴・割当の不足と重複)で必要な例外を追加する
-- [ ] 次のテストを移植する: `test_api_models`、`test_usage_delta_calculation`、`test_reading_signature`、`test_timezone_settings`(純粋関数の部分: 各プロバイダ、`normalize_to_utc`、`build_scheduled_at`)
-- [ ] `test_timezone_settings.py` のうち、設定 Repository・`core.bootstrap`・`create_database_schema` に依存する分は PR-1b へ、`core.startup_diagnostics` 依存分は削除する。移植・移送・削除の件数と理由を 9 章へ記録する
-- [ ] `test_measurement_definition_schedule_service.py` は適用履歴化(D14)で書き直すため PR-1c へ送る。`ActiveDeviceBindingService` 依存分の削除と件数は PR-1c で記録し、PR-1a では対象外のままにする
-- [ ] 上記の移植対象を `pyproject.toml` の ruff / pyright / pytest / coverage の対象外から外し、ローカルのゲートが通る。ただし `schedule_settings.py` はテストを PR-1c で移すため、ruff / pyright の対象には戻し、coverage の対象は PR-1c で戻す(テストのないファイルで 90% を割らないため)
+- [x] `UsageDeltaCalculationService.calculate` で、`rollover_value is None` かつ `raw_reading < last_reading` のときに `DomainError` 派生例外を送出するよう修正する
+- [x] 署名の時刻表記を D21 に合わせる。`canonicalize_signature_recorded_at` を `YYYY-MM-DD HH:MM:SS`(UTC・秒単位)へ変更し、タイムゾーンなし・秒未満の入力の扱いをテストで固定する
+- [x] `build_scheduled_at()` と `normalize_to_utc()` を `core/timezone_settings.py` へ移す(D5)
+- [x] `build_current_datetime_provider` / `build_business_date_provider` は `timeutil.utc_now()` で UTC 現在時刻を取得し、設定された業務タイムゾーンへ明示的に変換する。`utc_now()` 自体に tz 引数は追加しない
+- [x] 次のモジュールが pyright strict で 0 件になる: `contract_models`、`meter_reading_sync_repositories`、`usage_delta_calculation`、`reading_signature`、`timezone_settings`、`schedule_settings`
+- [x] 業務例外を `core/errors.py` の `DomainError` 派生へそろえる。同期処理の拒否コードとの対応表を作る。D22(業務タイムゾーン変更の拒否)・3.3(適用履歴・割当の不足と重複)で必要な例外を追加する
+- [x] 次のテストを移植する: `test_api_models`、`test_usage_delta_calculation`、`test_reading_signature`、`test_timezone_settings`(純粋関数の部分: 各プロバイダ、`normalize_to_utc`、`build_scheduled_at`)
+- [x] `test_timezone_settings.py` のうち、設定 Repository・`core.bootstrap`・`create_database_schema` に依存する分は PR-1b へ、`core.startup_diagnostics` 依存分は削除する。移植・移送・削除の件数と理由を 9 章へ記録する
+- [x] `test_measurement_definition_schedule_service.py` は適用履歴化(D14)で書き直すため PR-1c へ送る。`ActiveDeviceBindingService` 依存分の削除と件数は PR-1c で記録し、PR-1a では対象外のままにする
+- [x] 上記の移植対象を `pyproject.toml` の ruff / pyright / pytest / coverage の対象外から外し、ローカルのゲートが通る。ただし `schedule_settings.py` はテストを PR-1c で移すため、ruff / pyright の対象には戻し、coverage の対象は PR-1c で戻す(テストのないファイルで 90% を割らないため)
 
 ### 5.2 PR-1b `feature/phase1-sqlite-repositories`: 標準 sqlite3 Repository
 
@@ -384,14 +384,14 @@ uv run coverage report --fail-under=90
 - **署名の保証範囲:** SHA-256 署名は予定枠・結果状態・測定値・記録日時・`device_id` の改ざん検出に使う監査用途で、`updated_by`・`note`・`usage_delta` は対象外、送信者認証でもない。Phase 5 の復元検査で署名を再計算するため、元文字列の形式(D21)を正本へ統合する。
 - **PR の依存関係:** PR-1a から 1e は順に進める。交換(1d)は新メーター枠の生成(1c)に、補完(1c)は Repository(1b)と契約(1a)に依存する。PR-1a で持ち越すテスト(`test_timezone_settings` の設定 Repository 依存分は 1b、`test_measurement_definition_schedule_service` は 1c)は、各 PR の完了時に 9 章へ移送先と件数を記録する。
 
-## 9. 完了記録(Phase 1 完了時に追記)
+## 9. 完了記録(PR ごとに追記、Phase 1 完了時に集約)
 
-- 全体の現状計測(5.1 の初回計測):
-- PR 分割(1a〜1e)と、テスト移植先の実績:
-- 削除・置換したテストと理由:
+- 全体の現状計測(5.1 の初回計測): 初回は Ruff 0 件、Pyright 0 件、pytest 111 件収集(110 成功・1 skipped)、coverage 90%。PR-1a 完了時は Ruff / format / Pyright の全検査成功(Pyright 0 件)、pytest 159 件収集(158 成功・1 skipped)、設定対象 coverage 91%。`uv run coverage report --fail-under=90` 成功。`core/`・`db/` 全体を含む追加計測は未移植ファイルを含むため 38% で未達となり、Phase 1 全体の残課題として扱う。初回・完了時とも ResourceWarning が 1 件発生。
+- PR 分割(1a〜1e)と、テスト移植先の実績: PR-1a は `feature/phase1-contracts-pure-logic` で実装済み(実装差分は未コミット)。機械整形のみを `8b61855`(19 ファイル)へ分離してコミット。`test_timezone_settings.py` の Repository 依存 2 テストを PR-1b へ移送。`test_measurement_definition_schedule_service.py` の 13 テスト関数は適用履歴化に合わせ PR-1c で書き直す。
+- 削除・置換したテストと理由: `test_timezone_settings.py` の `core.startup_diagnostics` 依存 3 テストを対象外仕様に従い削除。純粋関数の既存 2 テストは新 API に合わせて更新し、UTC 正規化・業務タイムゾーン・現在時刻 provider 等のテストを追加。PR-1b へ移した 2 テストは新 Repository / bootstrap に合わせて再実装する。
 - スキーマ点検の結果(CHECK 制約の変更有無):
 - 生成開始日・適用履歴・差替え対応のスキーマと、変更前 v1 開発用 DB の取扱い:
 - 予定枠補完の受入テスト結果と、長期未起動時の処理時間・対象規模:
-- 契約分離・トランザクション境界・再計算・署名前入力の検証結果:
+- 契約分離・トランザクション境界・再計算・署名前入力の検証結果: PR-1a では契約境界テスト 4 件、署名前モバイル入力と契約語彙、純粋な差分計算・署名時刻・タイムゾーン処理を検証。トランザクション境界・再計算の統合検証は後続 PR で実施する。
 - 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果:
-- 各 PR と CI の結果:
+- 各 PR と CI の結果: PR-1a のローカル品質ゲートは成功。PR / CI は未実施。
