@@ -1,8 +1,8 @@
 # Phase 1 標準 sqlite3 統合・コア業務ロジック移植計画
 
 - 作成日: 2026-10-25
-- 更新日: 2026-10-27(PR-1c 予定枠補完・起動時準備実装)
-- ステータス: 進行中(PR-1a〜1c 実装完了、PR-1d〜1e 未着手)
+- 更新日: 2026-10-27(PR-1e 検査対象外解除・参考資産削除)
+- ステータス: 進行中(PR-1a〜1e の実装・ローカル品質ゲート完了、Windows / Ubuntu CI と完了記録未実施)
 - 対象: `migration_package/` を基点とする Phase 1
 - 正本: [ローカル検針管理アプリ開発計画書](ローカル検針管理アプリ開発計画書.md) 8 章 Phase 1
 - 前提: [Phase 0 計画](implemented/フェーズ0_共通基盤・CI整備計画.md) 完了済み(`uv.lock`、CI、`main` 保護)
@@ -321,16 +321,16 @@
 
 ### 5.5 PR-1e `feature/phase1-gate-cleanup`: 検査対象外の解除と参考資産の削除
 
-- [ ] `pyproject.toml` の ruff `extend-exclude`、pyright `ignore`、pytest `--ignore`、coverage の `include` に残る Phase 1 対象の設定をすべて消す。個別 skip の追加や閾値の引き下げは行わない
+- [x] `pyproject.toml` の ruff `extend-exclude`、pyright `ignore`、pytest `--ignore`、coverage の `include` に残る Phase 1 対象の設定をすべて消す。個別 skip の追加や閾値の引き下げは行わない
   - coverage の `include` はファイルの列挙をやめ、パッケージ全体を対象にする
   - coverage の `omit` の `core/mobile_reading.py` は Phase 2 の対象なので残し、Phase 2 の計画でこの除外を解除すると明記する
-- [ ] PR-1a から適用した契約の依存検査を維持し、全対象へ依存ルールのテストを拡張する
+- [x] PR-1a から適用した契約の依存検査を維持し、全対象へ依存ルールのテストを拡張する
   - `core/` と `db/` が PySide6 を import しない
   - 契約(`contract_models`、`errors`、Repository Protocol・入出力レコード)から Service・UI・DB 実装への依存がない
   - `db/` から Service・UI への依存がない
   - `timeutil` 以外で `datetime.now`、`date.today`、SQL の `'localtime'` を使っていない
-- [ ] 統合テストの成功を確認してから `db/reference_sqlalchemy/` を削除し、`sqlalchemy` と旧 import の参照が残っていないことを `grep` で確認する
-- [ ] [移行ガイド](../../migration_package/README.md) の Step 2 / 3、README、正本 8 章の Phase 1 記述を実態に合わせる
+- [x] 統合テストの成功を確認してから `db/reference_sqlalchemy/` を削除し、`sqlalchemy` と旧 import の参照が残っていないことを `grep` で確認する
+- [x] [移行ガイド](../../migration_package/README.md) の Step 2 / 3、README、正本 8 章の Phase 1 記述を実態に合わせる
 
 ### 5.6 完了記録 PR
 
@@ -397,4 +397,5 @@ uv run coverage report --fail-under=90
 - 旧補完テストの置換理由: 14 日超で段階的に次回呼出しを要求する `backfill_pending` 契約を廃止し、1 回の業務操作で全対象日を完了する設計へ変更。旧 SQLAlchemy import を含む fake テストを削除し、file DB を用いた適用履歴・トランザクション統合テストへ置換。
 - 契約分離・トランザクション境界・再計算・署名前入力の検証結果: PR-1a では契約境界テスト 4 件、署名前モバイル入力と契約語彙、純粋な差分計算・署名時刻・タイムゾーン処理を検証。PR-1b では SAVEPOINT の局所 rollback、Repository の後続更新保存・交換境界を検証。Service の連鎖再計算は PR-1d で検証する。
 - 監査情報・同期規則・マスタ保護・起動時準備失敗(D18〜D25)の検証結果: PR-1b では `result_source` / `close_reason` 制約、stale/tie/duplicate、担当者一意制約、`auto_closed` の使用状況除外、測定定義無効化時の `open` 枠廃止と `completed` / `auto_closed` 維持を検証。PR-1c ではタイムゾーン変更拒否、締め境界、起動準備の処理例外・COMMIT 失敗時の rollback とエラー通知を検証した。
-- 各 PR と CI の結果: PR-1a〜1c のローカル検査は成功。PR / CI は未実施。
+- 各 PR と CI の結果: PR-1a〜1e の実装差分はローカル品質ゲートで確認済み。GitHub PR / CI の実行・マージは未実施。
+- PR-1e の実装・ローカル検査結果: 参考実装削除前に全テストを実行し 272 passed / 1 skipped を確認後、`db/reference_sqlalchemy/` を削除。Ruff の除外、Pyright の ignore、coverage のファイル列挙を解除し、pytest に `--ignore` 設定がないことを確認した。契約境界テストを `core/`・`db/` 全体の依存規則へ拡張。最終確認は Ruff check / format 成功、Pyright 0 errors、pytest 276 passed / 1 skipped(Windows の `time.tzset()` 制限)、パッケージ全体 coverage 94%、`core/`・`db/` coverage 94%。`migration_package/src/` と `uv.lock` に SQLAlchemy および旧 import は残っていない。Windows / Ubuntu の GitHub Actions は未実施。

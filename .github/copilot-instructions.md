@@ -17,8 +17,8 @@
 - `core/contract_models.py`・`core/errors.py`・Repository Protocol / 入出力レコードは独立した契約です。`db/` から契約の参照は許可しますが、Service・UI への依存は禁止します。契約から Service・UI・DB 実装への依存も禁止します。
 - 開発計画書の概念上の `core/models.py` に対応する既存ファイルは `core/contract_models.py` です。名称違いを理由に契約を重複定義しません。
 - 既存サービス・時刻補助・契約・共通 UI 部品を再利用します。将来の在庫・業務日誌との統合を妨げる密結合を避けます。
-- `db/reference_sqlalchemy/` は移植リファレンスに限定します。新規依存として SQLAlchemy / Alembic、FastAPI / uvicorn / zeroconf 等を追加しません。
-- 旧 import・ORM の commit / rollback を整理し、標準 sqlite3 実装と統合テストの完了後に参考資産を削除します。純粋な日時補助を DB 実装へ残しません。
+- `db/` は標準 sqlite3 Repository を使用します。新規依存として SQLAlchemy / Alembic、FastAPI / uvicorn / zeroconf 等を追加しません。
+- 旧 import・ORM の commit / rollback は標準 sqlite3 実装と Service のトランザクションへ移行済みです。純粋な日時補助は `core/timezone_settings.py` に置きます。
 
 ## データベース・トランザクション
 

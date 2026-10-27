@@ -9,8 +9,8 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 ## 開発状況と仕様の正本
 
 現在は `migration_package/` を基点に開発中です。
-Phase 0 は完了しました。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
-旧 import や SQLAlchemy 実装の移植、メイン画面・起動用 `__main__.py`・標準 sqlite3 Repository は今後のフェーズで整備します。
+Phase 0 は完了しています。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
+Phase 1 の標準 sqlite3 Repository とコア業務ロジックの統合、および全ローカル品質ゲートは完了しています。Windows / Ubuntu の必須 CI と Phase 1 の完了記録は未実施です。メイン画面・起動用 `__main__.py`・スマホ検針の完成機能は後続フェーズの対象です。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -65,21 +65,9 @@ uv sync --locked
 ## 検査・テスト
 
 以下はプロジェクトディレクトリ (現在は `migration_package`) で実行する共通の品質ゲートです。
-検査対象は [開発計画書の Phase 0 品質ゲート検査対象](docs/plan/ローカル検針管理アプリ開発計画書.md) と
-`pyproject.toml` に定義しています。Phase 1 で統合する移植前の資産は対象外として明示しており、
-次のコマンドでローカル実行できます。GitHub Actions では Windows / Ubuntu の両ジョブで品質ゲートを実行します。
-
-Phase 1 で解除する検査対象外は次のとおりです。
-
-- `src/meter_reading_mini/core/contract_models.py`、`meter_master_service.py`、`meter_reading_sync.py`、
-  `meter_reading_sync_repositories.py`、`reading_signature.py`、`reading_write_orchestration.py`、
-  `schedule_settings.py`、`timezone_settings.py`、`usage_delta_calculation.py`、`work_package_download.py`
-- `src/meter_reading_mini/db/reference_sqlalchemy/**`
-- 対応するテスト: `tests/test_api_models.py`、`test_measurement_definition_schedule_service.py`、
-  `test_meter_master_service.py`、`test_meter_reading_sync_service.py`、
-  `test_meter_reading_sync_service_batch_txn.py`、`test_reading_signature.py`、
-  `test_reading_write_orchestration.py`、`test_timezone_settings.py`、
-  `test_usage_delta_calculation.py`、`test_work_package_download_service.py`
+検査対象は `pyproject.toml` に定義しています。Phase 1 の統合により、Ruff・Pyright・pytest の対象外設定はありません。
+coverage はパッケージ全体を対象とし、Phase 2 で機能とテストを整備する
+`core/mobile_reading.py` だけを一時的に集計から除外しています。GitHub Actions では Windows / Ubuntu の両ジョブで品質ゲートを実行します。
 
 ```powershell
 uv run playwright install chromium
@@ -263,26 +251,26 @@ uv run python -m meter_reading_mini
     │   ├── config.py
     │   ├── core/
     │   ├── db/
-    │   │   └── reference_sqlalchemy/
+
     │   └── ui/
     └── tests/
 ```
 
-`db/reference_sqlalchemy/` は SQL 移植用の参考資産です。新規実装は標準 `sqlite3` を使い、
-Repository の移植・テストが完了した段階で参考資産を削除します。
+`db/repositories.py` が標準 `sqlite3` Repository を実装しています。旧 SQLAlchemy 参考資産は統合テスト成功後に削除済みです。
 
 ## 開発フェーズ
 
 | フェーズ | 状況 | 主な対象 |
 | --- | --- | --- |
 | Phase 0 | 完了 | リポジトリ骨格・共通基盤・品質ゲートの整備 |
-| Phase 1 | 次フェーズ | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
+| Phase 1 | 実装済み (CI・完了記録待ち) | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
 | Phase 2 | 予定 | 単一 HTML 検針シート・結果パーサ・ブラウザ往復テスト |
 | Phase 3 | 予定 | メイン画面・マスタ・PC 直接入力・交換 UI |
 | Phase 4 | 予定 | スマホ検針ダイアログ・プレビュー・一括確定 |
 | Phase 5 | 予定 | 集計・出力・バックアップ / 復元・インストーラー |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。
+Phase 2 では `core/mobile_reading.py` の coverage 除外を解除し、単一 HTML 検針の実装範囲も含めて検査します。
 
 ## commit / PR / merge 方針
 
