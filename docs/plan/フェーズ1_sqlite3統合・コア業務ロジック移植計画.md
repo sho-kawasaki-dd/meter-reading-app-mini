@@ -25,9 +25,10 @@
   - [timezone_settings.py](../../migration_package/src/meter_reading_mini/core/timezone_settings.py): 設定値(既定 Asia/Tokyo)を使い、内部で `datetime.now` を呼ぶ。
   - [timeutil.py](../../migration_package/src/meter_reading_mini/core/timeutil.py): `tz=None` のとき OS のローカル時刻を使う。
 - 旧テスト 10 ファイルは、存在しない `core.startup_diagnostics`、`core.bootstrap`、`core.repositories.*` も参照する。
-- スキーマには臨時検針枠(`ad_hoc`)を区別する列がなく、旧実装は `ad_hoc_tasks=[]` 固定である。
+- 旧契約の `WorkPackageTaskGroups` には `ad_hoc_tasks` があるが、臨時検針枠(`ad_hoc`)は運用上不要なため廃止する。
+- [usage_delta_calculation.py](../../migration_package/src/meter_reading_mini/core/usage_delta_calculation.py) にロールオーバー未設定時の負の差分拒否がなく、参考実装の後続再計算は直後 1 件のみ(`.limit(1)`)、交換境界・交換後再計算は倍率(`multiplier`)とロールオーバー補正が漏れている。
 
-## 3. 決定事項(2026-10-25 確認済み)
+## 3. 決定事項(2026-10-25 確認済み、2026-10-27 追補)
 
 | # | 論点 | 決定 |
 | --- | --- | --- |
@@ -40,6 +41,8 @@
 | D7 | 初期データ | 設定の既定値のみ投入する。サンプルのマスタは架空のものをテスト用フィクスチャに限って用意し、実施設名のデータは移さない |
 | D8 | スキーマ修正 | 未配布のため v1 を直接修正し、`SCHEMA_VERSION` は 1 のままにする |
 | D9 | 担当者(`staff`) | Repository と Service を Phase 1 に含める |
+| D10 | 臨時検針枠(`ad_hoc`) | 運用上不要なため廃止する。`WorkPackageTaskGroups.ad_hoc_tasks` を削除し、スキーマへの列追加は行わない |
+| D11 | マスタの論理削除と保護 | マスタの物理削除は行わない。有効な測定定義に割当中または `open` 予定枠を持つ物理メーターの無効化は `MasterInUseError` で拒否し、無効化済みマスタ(`staff` 含む)の新規利用は `InactiveMasterError` で拒否する |
 
 ## 4. スコープ
 
@@ -67,17 +70,23 @@
 
 ### 5.1 PR-1a `feature/phase1-contracts-pure-logic`: 契約と純粋ロジック
 
-- [ ] `migration_package/` で `uv sync --locked` を実行し、全体を対象に ruff / pyright / pytest 収集 / coverage の件数を記録する(7 章の記録欄へ)
+- [ ] `migration_package/` で `uv sync --locked` を実行し、全体を対象に ruff / pyright / pytest 収集 / coverage の件数を記録する(9 章の記録欄へ)
 - [ ] 対象 10 ファイルとテストを `ruff format` と `ruff check --fix` で機械整形し、機械的な変更だけを別コミットにする
 - [ ] import を置き換える
   - `api.models` → `meter_reading_mini.core.contract_models`
   - `application.` → `meter_reading_mini.core.`
+- [ ] `meter_reading_sync_repositories.py` から `core.database`(`MeasurementDefinitionORM`)への型依存を外し、純粋な契約型へ置き換える
+- [ ] 契約と設定の語彙・不要機能を整理する
+  - `ResultSource` に `MOBILE_HTML = "mobile_html"` を追加する
+  - `WorkPackageTaskGroups` から廃止対象の `ad_hoc_tasks` を削除する(D10)
+  - `schedule_settings.py` から対象外の `ActiveDeviceBindingService` 関連を削除する
+- [ ] `UsageDeltaCalculationService.calculate` で、`rollover_value is None` かつ `raw_reading < last_reading` のときに `DomainError` 派生例外を送出するよう修正する
 - [ ] `build_scheduled_at()` と `normalize_to_utc()` を `core/timezone_settings.py` へ移す(D5)
 - [ ] `build_current_datetime_provider` / `build_business_date_provider` が `datetime.now` を直接呼ぶ箇所を、`timeutil.utc_now()` に tz を明示した形へ置き換える
-- [ ] 次のモジュールが pyright strict で 0 件になる: `contract_models`、`usage_delta_calculation`、`reading_signature`、`timezone_settings`、`schedule_settings`
+- [ ] 次のモジュールが pyright strict で 0 件になる: `contract_models`、`meter_reading_sync_repositories`、`usage_delta_calculation`、`reading_signature`、`timezone_settings`、`schedule_settings`
 - [ ] 業務例外を `core/errors.py` の `DomainError` 派生へそろえる。同期処理の拒否コードとの対応表を作る
 - [ ] 次のテストを移植する: `test_api_models`、`test_usage_delta_calculation`、`test_reading_signature`、`test_timezone_settings`、`test_measurement_definition_schedule_service`
-- [ ] `test_timezone_settings.py` のうち `core.startup_diagnostics` 等に依存する部分は削除または置換し、理由と件数を 7 章へ記録する
+- [ ] `test_timezone_settings.py` の `core.startup_diagnostics` 依存分、および `test_measurement_definition_schedule_service.py` の `ActiveDeviceBindingService` 依存分を削除または置換し、理由と件数を 9 章へ記録する
 - [ ] 上記ファイルを `pyproject.toml` の ruff / pyright / pytest / coverage の対象外から外し、ローカルのゲートが通る
 
 ### 5.2 PR-1b `feature/phase1-sqlite-repositories`: 標準 sqlite3 Repository
@@ -87,20 +96,19 @@
   - 例外時は `ROLLBACK TO` と `RELEASE` を行い、例外を再送出する
   - 正常時は `RELEASE` する
 - [ ] スキーマを点検し、必要なら v1 を修正する(D8)。`db/schema.sql`、`db/migrations.py` の版別検査定義を同時に直す。点検項目は次のとおり。
-  - [ ] 臨時検針枠(`ad_hoc`)を区別する列の要否(旧実装は固定の空配列)
   - [ ] `reading_transactions.result_source` の CHECK 制約の要否
   - [ ] 時刻列・Decimal 列の形式を保つ CHECK の要否
 - [ ] `db/repositories.py` に次の Repository を実装する(`core/meter_reading_sync_repositories.py` の Protocol に合わせる)
   - 予定枠: Lookup / Generation / Lifecycle / Recomposition / TaskQuery
   - 測定定義: Lookup / Schedule / Query
-  - その他: MeterMasterQuery / HistoricalMeasuredReadingLookup / ReadingPersistence(D3 を含む) / ReplacementEventUpsert / ReplacementReflection / ReplacementBoundaryLookup / Settings / Staff(新設)
+  - その他: MeterMasterQuery / HistoricalMeasuredReadingLookup / ReadingPersistence(D3 を含む) / ReplacementEventUpsert / ReplacementReflection / ReplacementBoundaryLookup / Settings(`meter_app_settings` 対象) / Staff(新設)
 - [ ] 実装規約を満たす
   - SQL の値はすべてプレースホルダで渡す
   - Decimal は有限の plain decimal 文字列で読み書きする
-  - 時刻は D6 の形式にする
+  - 時刻は D6 の形式にする。`client_updated_at` の新旧比較も D6 の秒単位 UTC に正規化した値同士で行う
   - 現在時刻と業務日付は注入した時計から受け取り、`date.today()` と `datetime.now()` を持ち込まない
   - 低レベル DB 例外(`IntegrityError` 等)は Repository で `DomainError` 派生へ変換する
-- [ ] `db/bootstrap_seeds.py` に設定の既定値を冪等に投入する処理を作る(D7)。投入する値は次のとおり。
+- [ ] `db/bootstrap_seeds.py` に `meter_app_settings` へ設定の既定値を冪等に投入する処理を作る(D7)。投入する値は次のとおり。
   - 締め時刻 `07:00`
   - タイムゾーン(`app.timezone.v1`)
   - 周期ごとの既定スケジュール
@@ -109,7 +117,7 @@
 - [ ] Repository の統合テストを書く(ロジックは `:memory:`、WAL・永続化は `tmp_path`)
   - CHECK / UNIQUE / FOREIGN KEY 違反が `DomainError` 派生へ変換される
   - 古い入力の無視と、同時刻での `arrival_sequence` による採用順(D3)
-  - 後続実測値が `scheduled_at, planned_reading_id` 順に取得できる
+  - 後続実測値が `scheduled_at, planned_reading_id` 順に取得・連鎖再計算できる
   - 期間検索が、ローカル暦の境界を UTC に変換した半開区間 `[start, end)` で行われ、SQL 内で TZ 補正しない
   - Staff の登録・無効化・一意制約
 
@@ -119,21 +127,21 @@
   - 業務拒否は SAVEPOINT 単位で戻し、拒否として集計する
   - 予期しない例外は全体を ROLLBACK して再送出する
   - 旧実装の `except Exception` による拒否扱いを廃止する
-- [ ] 署名は PC の確定時に生成する(D4)。`device_id = sheet_id`、`updated_by = 確定担当者名`、`result_source = 'mobile_html'` を受け取れるようにする
-- [ ] `ReadingWriteOrchestrationService` を、PC 直接入力とスマホ取込で共通の経路にする。結果保存・監査署名・交換境界・予定枠更新・後続再計算を同一トランザクションで整合させる
+- [ ] 署名は PC の確定時に生成する(D4)。スマホ側署名の検証を外し、`device_id = sheet_id`、`updated_by = 確定担当者名`、`result_source = 'mobile_html'` を受け取って確定時に署名を生成・記録できるようにする
+- [ ] `ReadingWriteOrchestrationService` を、PC 直接入力とスマホ取込で共通の経路にする。結果保存・監査署名・交換境界・予定枠更新・後続すべての実測値の連鎖再計算(`UsageDeltaCalculationService` に一元化)を同一トランザクションで整合させる
 - [ ] `WorkPackageDownloadService` に次を実装する
   - 予定枠の補完生成(backfill)
   - 締め時刻経過後の前日以前の `open` → `auto_closed`
   - `auto_closed` 枠への後日入力を `completed` にして再計算する処理
-  - 臨時検針枠(`ad_hoc`)を含むグループ化
+  - 周期区分(`daily` / `weekly` / `monthly` / `every_two_months`)によるグループ化(D10: `ad_hoc` は廃止)
 - [ ] メーター交換を原子的に実行する
   - 旧メーターの `open` / `auto_closed` 枠を `superseded` にする
   - 新メーター枠を生成する
   - 割当を切り替える
-  - 交換境界と交換記録を保存する
-- [ ] `MeterMasterService` を Repository 経由に作り直す。使用中マスタは論理削除で保護する
-- [ ] `StaffService` を新設する(D9)
-- [ ] `app.py` の起動順に「予定枠補完・自動クローズ」を、DB オープン・マイグレーションの後、MainWindow 表示の前として組み込み、`test_app.py` を更新する
+  - 交換境界(`old_meter_usage_delta` への倍率・ロールオーバー適用を含む)と交換記録を保存し、遅延交換時の完了済み新メーター実測値も倍率・ロールオーバー込みで再計算する
+- [ ] `MeterMasterService` を Repository 経由に作り直す。物理削除は行わず、有効な測定定義に割当中または `open` 予定枠を持つ物理メーターの無効化は `MasterInUseError` で拒否し、無効化済みマスタの新規利用は `InactiveMasterError` で拒否する(D11)
+- [ ] `StaffService` を新設する(D9、D11: 無効化済み担当者の指定は `InactiveMasterError` で拒否)
+- [ ] `app.py` の起動順に「`bootstrap_seeds` による既定設定投入 → 予定枠補完・自動クローズ」を、DB オープン・マイグレーションの後、MainWindow 表示の前として単一トランザクションで組み込み、`test_app.py` を更新する
 - [ ] 次のテストを移植し、ファイル DB(`tmp_path`)で実行する: `test_meter_master_service`、`test_meter_reading_sync_service`、`test_meter_reading_sync_service_batch_txn`、`test_reading_write_orchestration`、`test_work_package_download_service`
 - [ ] ロールバック検証を追加する
   - 結果保存後に例外が起きた場合
@@ -165,8 +173,8 @@
 
 ### 5.5 完了記録 PR
 
-- [ ] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを確認し、結果を 7 章へ記録する
-- [ ] 確定した設計(D2〜D6、D8)を正本の 4・5 章へ統合する
+- [ ] Windows / Ubuntu の必須チェック(`test (windows-latest)`・`test (ubuntu-latest)`)が成功していることを確認し、結果を 9 章へ記録する
+- [ ] 確定した設計(D2〜D6、D8、D10、D11)を正本の 4・5・6 章へ統合する
 - [ ] 本計画書を完了(凍結)として `docs/plan/implemented/` へ `git mv` し、移動後の相対リンクを修正する
 
 ## 6. 品質ゲート
@@ -199,8 +207,8 @@ uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_readin
 
 - **時刻が秒単位になる(D6 と D3):** 同じ秒に複数回更新があると `client_updated_at` だけでは順序を決められない。`arrival_sequence` で後着を採用する前提をテストで明示する。
   - 単一ユーザー運用を前提とし、同一秒の競合は `arrival_sequence` で解決する。マイクロ秒化はしない(D6 の形式は既存契約として維持する。スマホ側の時計ずれは精度を上げても解消しない)。
-  - 更新の新旧を `client_updated_at` の文字列比較だけで判定しない。「同時刻なら `arrival_sequence`」の分岐を必ず通す実装にし、同一秒の複数更新を投入するテストを置く。- **`ad_hoc` の区別:** 5.2 の点検で、v1 への列追加が必要になる可能性が高い。追加する場合は `schema.sql`・`migrations.py`・版別検査定義・テストを同時に更新する。
-- **旧テストの削減:** `startup_diagnostics` 依存分は移植しない。削除したテストと理由を完了記録に残す。
+  - 更新の新旧を `client_updated_at` の文字列比較やミリ秒付きの生の `datetime` 比較だけで判定しない。D6 の秒単位 UTC に正規化した上で比較し、「同時刻なら `arrival_sequence`」の分岐を必ず通す実装にして、同一秒の複数更新を投入するテストを置く。
+- **旧テストの削減:** `startup_diagnostics` 依存分および廃止対象の `ActiveDeviceBindingService` / `ad_hoc_tasks` 依存分は移植しない。削除・置換したテストと理由を 9 章の完了記録に残す。
 - **Phase 1 の SQL 移植:** `db/reference_sqlalchemy/` は ORM のセマンティクス(暗黙の flush、`onupdate`、型変換)に依存する。クエリ移植時は、ORM 側の暗黙の挙動を明示的な SQL と Python 側の処理へ置き換える。
 - **実データの保護:** テストは `:memory:` または `tmp_path` を使う。動作確認は `METER_READING_MINI_DATA_DIR` に一時保存先を指定し、実データ領域を使わない。
 
@@ -208,5 +216,5 @@ uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_readin
 
 - 全体の現状計測(5.1 の初回計測):
 - 削除・置換したテストと理由:
-- スキーマ点検の結果(`ad_hoc`・CHECK 制約の変更有無):
+- スキーマ点検の結果(CHECK 制約の変更有無):
 - 各 PR と CI の結果:
