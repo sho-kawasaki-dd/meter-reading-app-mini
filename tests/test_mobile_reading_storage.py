@@ -4,26 +4,8 @@ import json
 from pathlib import Path
 
 from conftest import SheetBrowser
-from mobile_sheet_helpers import simple_sheet_html
-from playwright.sync_api import BrowserContext, Page, expect
-
-
-def open_sheet(
-    sheet_browser: SheetBrowser,
-    *,
-    name: str = "draft-sheet.html",
-    context: BrowserContext | None = None,
-) -> Page:
-    page = sheet_browser.open_html(simple_sheet_html(), name=name, context=context)
-    page.wait_for_function(
-        "() => { const node = document.querySelector('#draft-storage-status'); "
-        "return node && node.dataset.status !== 'loading'; }"
-    )
-    return page
-
-
-def wait_saved(page: Page) -> None:
-    expect(page.locator("#draft-storage-status")).to_have_attribute("data-status", "saved")
+from mobile_draft_helpers import open_sheet, wait_saved
+from playwright.sync_api import expect
 
 
 def test_autosave_restores_partial_and_invalid_input_after_reload(

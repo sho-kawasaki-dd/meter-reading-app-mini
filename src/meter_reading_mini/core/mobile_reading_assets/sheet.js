@@ -1992,10 +1992,15 @@
       if (typeof text !== "string" || text.trim().length === 0) {
         throw new Error("JSON が空です。");
       }
-      if (text.indexOf("MR1:") !== -1) {
-        throw new Error("MR1 は結果コードです。途中経過 JSON としては読み込めません。");
+      var parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (parseError) {
+        if (text.indexOf("MR1:") !== -1) {
+          throw new Error("MR1 は結果コードです。途中経過 JSON としては読み込めません。");
+        }
+        throw parseError;
       }
-      var parsed = JSON.parse(text);
       if (parsed && parsed.kind === "mrm-meter-reading-result") {
         throw new Error("結果 JSON は途中経過として読み込めません。");
       }
