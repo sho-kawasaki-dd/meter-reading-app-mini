@@ -42,6 +42,7 @@ def build_services(
     repository: SQLiteRepository,
     *,
     multiplier: Decimal = Decimal("1"),
+    decimal_places: int = 2,
     rollover_value: Decimal | None = None,
 ) -> tuple[ReadingWriteOrchestrationService, MeterReadingSyncService]:
     with transaction(conn):
@@ -63,7 +64,7 @@ def build_services(
                 unit="m3",
                 value_schema=ValueSchema.DECIMAL_STRING,
                 multiplier=multiplier,
-                decimal_places=2,
+                decimal_places=decimal_places,
                 warning_threshold=None,
                 rollover_value=rollover_value,
                 calculation_method=CalculationMethod.DELTA,

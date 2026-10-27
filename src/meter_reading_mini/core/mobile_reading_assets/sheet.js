@@ -16,6 +16,7 @@
   var UNSET_LOCATION = "__unset__";
   var PF_SCHEMA = "power_factor_percent_phase";
   var DRAFT_KIND = "mrm-meter-reading-draft";
+  var RESULT_KIND = "mrm-meter-reading-result";
   var STORAGE_DATABASE_NAME = "mrm_meter_reading";
   var STORAGE_DATABASE_VERSION = 1;
   var STORAGE_TIMEOUT_MS = 5000;
@@ -390,6 +391,7 @@
     slot.state.client_updated_at = nowIso();
     slot.state.bad_input = Object.keys(validateSlot(slot).errors).length > 0;
     releaseAffectedConfirmations(before);
+    clearResultOutput();
     refresh();
     scheduleDraftSave(false);
   }
@@ -454,6 +456,11 @@
   var draftConfirmImportButton;
   var draftCancelImportButton;
   var draftExportText;
+  var resultCopyButton;
+  var resultDownloadButton;
+  var resultFeedbackNode;
+  var resultExportText;
+  var resultCountNode;
   var editGeneration = 0;
   var savedGeneration = 0;
   var pendingSave = null;
@@ -905,6 +912,7 @@
     updateLocationOptions();
     updateSections();
     updateSummary();
+    updateResultTools();
     updateStickyOffset();
   }
 
@@ -1012,6 +1020,88 @@
     ].forEach(function (control) {
       control.disabled = !enabled;
     });
+  }
+
+  function setResultFeedback(message) {
+    resultFeedbackNode.textContent = message;
+    resultFeedbackNode.hidden = message.length === 0;
+  }
+
+  function clearResultOutput() {
+    if (resultExportText) {
+      resultExportText.value = "";
+      resultExportText.hidden = true;
+    }
+    if (resultFeedbackNode) {
+      setResultFeedback("");
+    }
+  }
+
+  function isExportableResult(slot) {
+    var state = slot.state;
+    return (
+      state.confirmed &&
+      validateSlot(slot).complete &&
+      typeof state.recorded_at === "string" &&
+      validIsoTimestamp(state.recorded_at) &&
+      typeof state.client_updated_at === "string" &&
+      validIsoTimestamp(state.client_updated_at)
+    );
+  }
+
+  function exportableResults() {
+    return slots.filter(isExportableResult);
+  }
+
+  function updateResultTools() {
+    if (!resultCountNode) {
+      return;
+    }
+    var count = exportableResults().length;
+    resultCountNode.textContent =
+      count === 0
+        ? "確認済みの正常な枠がありません。1 件以上で出力できます。"
+        : "出力対象: " + count + " 件 (確認済みの正常な枠のみ)";
+    resultCopyButton.disabled = count === 0;
+    resultDownloadButton.disabled = count === 0;
+  }
+
+  function buildResultTools() {
+    var panel = element("section", "result-tools");
+    panel.setAttribute("aria-label", "検針結果の出力");
+    panel.appendChild(element("h2", "", "検針結果の出力"));
+    resultCountNode = element("p", "result-count", "");
+    resultCountNode.id = "result-count";
+    resultCountNode.setAttribute("role", "status");
+    panel.appendChild(resultCountNode);
+
+    var actions = element("div", "result-actions");
+    resultCopyButton = draftButton("result-copy", "MR1 をコピー");
+    resultCopyButton.addEventListener("click", function () {
+      void copyResultCode();
+    });
+    resultDownloadButton = draftButton("result-download", "結果 JSON を保存");
+    resultDownloadButton.addEventListener("click", function () {
+      downloadResultJson();
+    });
+    actions.appendChild(resultCopyButton);
+    actions.appendChild(resultDownloadButton);
+    panel.appendChild(actions);
+
+    resultExportText = document.createElement("textarea");
+    resultExportText.id = "result-export-text";
+    resultExportText.className = "draft-json";
+    resultExportText.setAttribute("aria-label", "表示した検針結果テキスト");
+    resultExportText.readOnly = true;
+    resultExportText.hidden = true;
+    panel.appendChild(resultExportText);
+
+    resultFeedbackNode = element("p", "result-feedback");
+    resultFeedbackNode.id = "result-feedback";
+    resultFeedbackNode.setAttribute("role", "status");
+    resultFeedbackNode.hidden = true;
+    panel.appendChild(resultFeedbackNode);
+    app.appendChild(panel);
   }
 
   function buildDraftTools() {
@@ -1258,6 +1348,118 @@
         };
       }),
     };
+  }
+
+  function createResultPayload() {
+    var entries = exportableResults().map(function (slot) {
+      var state = slot.state;
+      var isMeasured = state.result_status === "measured";
+      var isPowerFactor = slot.definition.value_schema === PF_SCHEMA;
+      return {
+        planned_reading_id: slot.id,
+        result_status: state.result_status,
+        raw_reading:
+          isMeasured && !isPowerFactor ? state.raw.trim() : null,
+        structured_payload:
+          isMeasured && isPowerFactor
+            ? { percent: state.pf_percent.trim(), phase: state.pf_phase }
+            : null,
+        recorded_at: state.recorded_at,
+        client_updated_at: state.client_updated_at,
+        note: state.note.trim() || null,
+      };
+    });
+    if (entries.length === 0) {
+      throw new Error("確認済みの正常な検針結果がありません。");
+    }
+    return {
+      kind: RESULT_KIND,
+      v: 1,
+      sheet_id: sheet.sheet_id,
+      business_date: sheet.business_date,
+      generated_at: sheet.generated_at,
+      filter: sheet.filter,
+      entries: entries,
+    };
+  }
+
+  function resultCode(payload) {
+    var encoded = new TextEncoder().encode(JSON.stringify(payload));
+    var binary = "";
+    for (var index = 0; index < encoded.length; index += 1) {
+      binary += String.fromCharCode(encoded[index]);
+    }
+    var base64 = btoa(binary);
+    var crc = 0xffffffff;
+    for (var byteIndex = 0; byteIndex < base64.length; byteIndex += 1) {
+      crc ^= base64.charCodeAt(byteIndex);
+      for (var bit = 0; bit < 8; bit += 1) {
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      }
+    }
+    var checksum = ((crc ^ 0xffffffff) >>> 0).toString(16);
+    checksum = ("00000000" + checksum).slice(-8);
+    return "MR1:" + base64 + "." + checksum + ":END";
+  }
+
+  function showResultText(text) {
+    resultExportText.value = text;
+    resultExportText.hidden = false;
+    resultExportText.focus();
+    resultExportText.select();
+  }
+
+  async function copyResultCode() {
+    try {
+      var code = resultCode(createResultPayload());
+      showResultText(code);
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+        throw new Error("この環境ではクリップボードを利用できません。");
+      }
+      await navigator.clipboard.writeText(code);
+      setResultFeedback("MR1 結果コードをクリップボードにコピーしました。");
+    } catch (error) {
+      if (resultExportText.value) {
+        resultExportText.focus();
+        resultExportText.select();
+      }
+      setResultFeedback(
+        "コピーできませんでした: " +
+          (error && error.message ? error.message : String(error)) +
+          " 表示した結果テキストを全選択して手動でコピーしてください。"
+      );
+    }
+  }
+
+  function downloadResultJson() {
+    var json;
+    try {
+      json = JSON.stringify(createResultPayload(), null, 2);
+      var blob = new Blob([json], { type: "application/json;charset=utf-8" });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement("a");
+      link.href = url;
+      link.download =
+        "meter_reading_result_" + sheet.business_date.replace(/-/g, "") + ".json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () {
+        URL.revokeObjectURL(url);
+      }, 1000);
+      setResultFeedback(
+        "結果 JSON のダウンロードを要求しました。保存先でファイルが作成されたことを確認してください。"
+      );
+    } catch (error) {
+      if (json) {
+        showResultText(json);
+      }
+      setResultFeedback(
+        "結果 JSON をダウンロードできません: " +
+          (error && error.message ? error.message : String(error)) +
+          " 表示した JSON を全選択して手動で退避してください。"
+      );
+    }
   }
 
   function validateDraft(value) {
@@ -1732,6 +1934,7 @@
   }
 
   function applyDraftStates(states, revision) {
+    clearResultOutput();
     slots.forEach(function (slot, index) {
       slot.state = states[index];
     });
@@ -2080,6 +2283,7 @@
     if (!draftImportCandidate) {
       return;
     }
+    clearResultOutput();
     slots.forEach(function (slot, index) {
       slot.state = draftImportCandidate[index];
     });
@@ -2271,6 +2475,7 @@
   buildDraftTools();
   buildNavigation();
   buildSections();
+  buildResultTools();
   view.tab = initialTab();
   refresh();
   centerTab(view.tab);

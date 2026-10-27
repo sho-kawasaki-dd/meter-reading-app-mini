@@ -352,7 +352,8 @@ label.field > .field-label {
   text-align: center;
 }
 
-.draft-tools {
+.draft-tools,
+.result-tools {
   margin: 10px 0 14px;
   padding: 12px;
   border: 1px solid var(--border);
@@ -360,14 +361,17 @@ label.field > .field-label {
   background: #fff;
 }
 
-.draft-tools h2 {
+.draft-tools h2,
+.result-tools h2 {
   margin: 0 0 6px;
   font-size: 1rem;
 }
 
 .draft-storage-status,
 .draft-storage-message,
-.draft-feedback {
+.draft-feedback,
+.result-feedback,
+.result-count {
   margin: 6px 0;
 }
 
@@ -381,7 +385,8 @@ label.field > .field-label {
   color: var(--error);
 }
 
-.draft-actions {
+.draft-actions,
+.result-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;

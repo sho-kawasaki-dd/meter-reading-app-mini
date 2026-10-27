@@ -217,13 +217,13 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
 
 ### 5.4 PR-2d `feature/phase2-result-roundtrip`: 結果出力・往復・品質ゲート
 
-- [ ] 結果出力を作る
+- [x] 結果出力を作る
   - 確認済みの正常な枠が 1 件以上あれば出力できる。未確認の枠は含めない
   - JavaScript で MR1 テキストを作る: UTF-8 → 標準 Base64 → Base64 文字列の CRC-32(小文字 16 進 8 桁)
   - 結果 JSON をダウンロードできる
   - クリップボードへのコピーが失敗したら、テキストを全選択して表示し、手動コピーを案内する
   - ダウンロードしただけでは「保存成功」と表示しない
-- [ ] 往復テストを作る
+- [x] 往復テストを作る
   1. JavaScript が出力した MR1 と JSON を取得する
   2. `parse_mobile_reading_result` で読む
   3. `MeterReadingSyncService.sync` で `tmp_path` のファイル DB に保存する
@@ -231,9 +231,9 @@ PC からスマホ用の単一 HTML 検針シートを出力する機能を作�
   - D12 の途中に `completed` 枠があるケースでも、ブラウザの参考使用量と PC 側の確定使用量が一致することを確認する
   - D9 の共通テストケース(28 桁境界とそれを超える値、大きな倍率、末尾ゼロ、小数桁数の異なる減算、ロールオーバー補正)で、JavaScript の参考使用量・Python の計算結果・DB 保存値が plain decimal 文字列として一致することを確認する
   - あわせて、メールの引用・折り返しの許容、同じブロックの重複を 1 件にすること、異なるブロックの拒否、下書きの拒否を確認する
-- [ ] [pyproject.toml](../../pyproject.toml) の coverage `omit` から `core/mobile_reading.py` を外す。6 章の全体・`core/` 単独・`db/` 単独の 3 つの閾値チェックがすべて成功することを確認する。個別 skip の追加や閾値の引き下げは行わない
-- [ ] [ci.yml](../../.github/workflows/ci.yml) に `core/` 単独・`db/` 単独の coverage 閾値チェックを追加し、Windows / Ubuntu ともに全体・各層それぞれ 90% 以上を必須にする。片方の層が 90% 未満の場合は、全体が 90% 以上でも CI を失敗させる
-- [ ] 外部通信がないこと、`localStorage` を使っていないこと、JavaScript エラーがないことを、全ブラウザテスト共通の後処理で確認する
+- [x] [pyproject.toml](../../pyproject.toml) の coverage `omit` から `core/mobile_reading.py` を外す。6 章の全体・`core/` 単独・`db/` 単独の 3 つの閾値チェックがすべて成功することを確認する。個別 skip の追加や閾値の引き下げは行わない
+- [x] [ci.yml](../../.github/workflows/ci.yml) に `core/` 単独・`db/` 単独の coverage 閾値チェックを追加し、Windows / Ubuntu ともに全体・各層それぞれ 90% 以上を必須にする。片方の層が 90% 未満の場合は、全体が 90% 以上でも CI を失敗させる
+- [x] 外部通信がないこと、`localStorage` を使っていないこと、JavaScript エラーがないことを、全ブラウザテスト共通の後処理で確認する
 
 ### 5.5 完了記録 PR
 
