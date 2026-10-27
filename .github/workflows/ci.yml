@@ -23,9 +23,6 @@ jobs:
         os:
           - windows-latest
           - ubuntu-latest
-    defaults:
-      run:
-        working-directory: migration_package
     steps:
       - uses: actions/checkout@v7
 
@@ -36,7 +33,7 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.11.32"
-          cache-dependency-glob: migration_package/uv.lock
+          cache-dependency-glob: uv.lock
 
       - name: Install locked dependencies
         run: uv sync --locked

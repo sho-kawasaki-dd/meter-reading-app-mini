@@ -3,10 +3,10 @@
 ## プロジェクト概要・仕様の正本
 
 - 基本設計・業務ルールの正本は [ローカル検針管理アプリ開発計画書](../docs/plan/ローカル検針管理アプリ開発計画書.md) です。旧企画書と異なる場合は開発計画書を優先します。
-- [旧企画書](../migration_package/docs/plan/オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md) は旧サーバー・Android 構成の参考記録として変更しません。旧アーキテクチャを新構成へ持ち込みません。
-- 現状と実行手順は [README](../README.md)、移植手順は [移行ガイド](../migration_package/README.md) を参照します。同梱資産を完成済みアプリと扱いません。
-- 現在のプロジェクト基点は `migration_package/` です。以下の `src/`・`tests/`・`pyproject.toml` 等は、特記しない限りこの基点からの相対パスです。開発計画書・作業用計画書はリポジトリ直下の `docs/plan/` にあります。`migration_package/docs/plan/` には旧企画書を残しています。
-- 正式なルート配置へ移行するときは import・設定・文書リンク・コマンドの実行位置を一緒に更新します。文書整備だけでソースを移動しません。
+- [旧企画書](../docs/plan/archive/オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md) は旧サーバー・Android 構成の参考記録として変更しません。旧アーキテクチャを新構成へ持ち込みません。
+- 現状と実行手順は [README](../README.md) を参照します。同梱資産を完成済みアプリと扱いません。
+- 現在のプロジェクト基点はリポジトリ直下です。`src/`・`tests/`・`pyproject.toml`・`uv.lock` はルートに配置し、開発計画書・作業用計画書は `docs/plan/` にあります。
+- ルート配置への移行は完了しています。ソース・設定・文書・コマンドを変更するときは、リポジトリルートを基準に関連するパスも一緒に更新します。
 - UI テキスト・ドキュメント・コミットメッセージ・コード内コメントは日本語を使用します。
 
 ## アーキテクチャと依存関係
@@ -82,9 +82,9 @@
 
 ## コマンド体系・品質ゲート
 
-開発・テスト・静的検査は `uv` 経由で、現在は `migration_package/` で実行します。
+開発・テスト・静的検査はリポジトリのルートで `uv` 経由で実行します。
 
-- 初回同期: `uv sync`。現状は `uv.lock` 未同梱です。確定後はロックファイルを管理し `uv sync --locked` に統一します。
+- 依存関係の同期: `uv sync --locked`。依存関係を変更するときは `uv lock` で `uv.lock` を更新し、差分を確認します。
 - 整形・静的検査: `uv run ruff check` / `uv run ruff format --check`
 - 型検査: `uv run pyright` (`core/`・`db/` strict、`ui/` standard)
 - ブラウザ準備: `uv run playwright install chromium` (Linux CI: `uv run playwright install --with-deps chromium`)
