@@ -109,6 +109,17 @@ $env:METER_READING_MINI_DATA_DIR = "<一時フォルダ>"
 uv run python -m meter_reading_mini
 ```
 
+手動確認用のサンプルデータを作る場合は、リポジトリルートで次を実行します。
+既定では OS の一時フォルダーに新しい DB を作り、既存 DB がある保存先への上書きは拒否します。
+
+```powershell
+uv run python scripts/create_manual_test_data.py
+```
+
+作成先はコマンド出力に表示されます。表示された環境変数の設定と起動コマンドを使ってください。
+担当者・複数場所のメーター・日次/週次の測定定義・直近の予定枠に加え、実測・計器不良のサンプル結果を作成します。
+予定枠の過去日数は `--days-back 30` のように変更でき、作成先を指定する場合は `--data-dir <フォルダー>` を使います。
+
 Linux では Qt の OS 依存も必要です。Ubuntu 系の準備例:
 
 ```sh
