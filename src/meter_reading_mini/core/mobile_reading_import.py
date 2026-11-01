@@ -1,9 +1,9 @@
-"""スマホ検針結果を DB に書き込まず、入力順に一括プレビューする。"""
+"""スマホ検針結果の一括プレビューと確定を行う。"""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -14,6 +14,7 @@ from meter_reading_mini.core.assignment_calculation import resolve_planned_assig
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     MeterReadingSubmission,
+    MeterReadingSyncRequest,
     ResultStatus,
 )
 from meter_reading_mini.core.errors import (
@@ -26,8 +27,10 @@ from meter_reading_mini.core.errors import (
 )
 from meter_reading_mini.core.meter_reading_sync import (
     InvalidReadingSubmissionError,
+    MeterReadingSyncService,
     MissingMeasurementDefinitionError,
     MissingPlannedReadingError,
+    ReadingSyncBatchResult,
     build_reading_upsert_request,
 )
 from meter_reading_mini.core.meter_reading_sync_repositories import (
@@ -36,6 +39,8 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MobileReadingImportTargetRecord,
     PlannedReadingCloseReason,
     PlannedReadingTaskState,
+    ReadingConfirmationContext,
+    ReplacementBoundaryCalculationRecord,
     ReplacementBoundaryCalculationUpdate,
     ResultSource,
     UpsertDisposition,
@@ -58,7 +63,10 @@ from meter_reading_mini.core.previous_reading import (
     describe_initial_previous_reading,
 )
 from meter_reading_mini.core.reading_comparison import serialize_structured_payload
-from meter_reading_mini.core.reading_write_orchestration import CalculatedReading
+from meter_reading_mini.core.reading_write_orchestration import (
+    CalculatedReading,
+    TransactionFactory,
+)
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
 from meter_reading_mini.core.virtual_reading_history import (
     VirtualReadingHistory,
@@ -96,6 +104,20 @@ class MobileReadingWarningCode(StrEnum):
     CYCLE_GROUP_MISMATCH = "cycle_group_mismatch"
     THRESHOLD_EXCEEDED = "threshold_exceeded"
     ROLLOVER_APPLIED = "rollover_applied"
+
+
+class MobileReadingPreviewChangedError(ValidationError):
+    """確定前後の入力・DB 状態または保存結果がプレビューと異なる。"""
+
+    def __init__(self) -> None:
+        super().__init__("検針結果または保存状態が変わりました。再度プレビューしてください。")
+
+
+class MobileReadingNothingToCommitError(ValidationError):
+    """採用できる検針結果がない。"""
+
+    def __init__(self) -> None:
+        super().__init__("確定できる検針結果がありません。")
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +274,56 @@ class MobileReadingImportPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class MobileReadingCommitRow:
+    row_number: int
+    planned_reading_id: str
+    disposition: MobileReadingDisposition
+    save_disposition: UpsertDisposition | None
+    reason: MobileReadingRejectReason | None
+    reason_message: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MobileReadingRejectionSummary:
+    code: MobileReadingRejectCode
+    message: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class MobileReadingCommitSummary:
+    confirmed: int
+    new: int
+    revived: int
+    overwritten: int
+    duplicate: int
+    stale: int
+    rejected: int
+    recalculated_existing: int
+    recalculated_boundaries: int
+    rejection_reasons: tuple[MobileReadingRejectionSummary, ...]
+
+    @property
+    def message(self) -> str:
+        summary = (
+            f"確定 {self.confirmed} 件、重複 {self.duplicate} 件、"
+            f"古い入力 {self.stale} 件、拒否 {self.rejected} 件"
+        )
+        if self.rejection_reasons:
+            reasons = "、".join(
+                f"{reason.message} {reason.count} 件" for reason in self.rejection_reasons
+            )
+            return f"{summary}\n拒否理由: {reasons}"
+        return summary
+
+
+@dataclass(frozen=True, slots=True)
+class MobileReadingCommitResult:
+    rows: tuple[MobileReadingCommitRow, ...]
+    summary: MobileReadingCommitSummary
+
+
+@dataclass(frozen=True, slots=True)
 class _EvaluatedRow:
     input: MobileReadingInputEntry
     target: MobileReadingImportTargetRecord | None
@@ -266,9 +338,13 @@ class MobileReadingImportService:
         repository: MobileReadingImportRepository,
         *,
         calculation_service: UsageDeltaCalculationService | None = None,
+        sync_service: MeterReadingSyncService | None = None,
+        transaction_factory: TransactionFactory | None = None,
     ) -> None:
         self._repository = repository
         self._calculation_service = calculation_service
+        self._sync_service = sync_service
+        self._transaction_factory = transaction_factory
 
     def preview(self, result: MobileReadingResult) -> MobileReadingImportPreview:
         """入力と参照 DB 状態を固定し、全行評価後の見込値を返す。"""
@@ -353,6 +429,263 @@ class MobileReadingImportService:
             summary=summary,
             effects=effects,
         )
+
+    def commit(
+        self,
+        result: MobileReadingResult,
+        expected_preview: MobileReadingImportPreview,
+        *,
+        staff_id: str,
+    ) -> MobileReadingCommitResult:
+        """担当者とプレビューを再検証し、採用行を同一トランザクションで確定する。"""
+
+        if self._sync_service is None or self._transaction_factory is None:
+            raise RuntimeError("一括確定には同期サービスとトランザクションが必要です。")
+        with self._transaction_factory():
+            confirmation = ReadingConfirmationContext(
+                sheet_id=result.sheet_id, staff_id=staff_id, staff_name=""
+            )
+            _, updated_by = self._sync_service.resolve_confirmation_context(confirmation)
+            current = self.preview(result)
+            if current != expected_preview:
+                raise MobileReadingPreviewChangedError()
+            if not current.can_commit:
+                raise MobileReadingNothingToCommitError()
+
+            accepted_rows = tuple(
+                row
+                for row in current.rows
+                if row.disposition
+                in {
+                    MobileReadingDisposition.NEW,
+                    MobileReadingDisposition.REVIVED,
+                    MobileReadingDisposition.OVERWRITTEN,
+                }
+            )
+            existing_before = self._repository.get_mobile_reading_import_targets(
+                current.effects.recalculated_existing_ids
+            )
+            boundaries_before = self._read_boundaries(current.effects.boundary_updates)
+            request = MeterReadingSyncRequest(
+                reading_items=[row.input.to_submission() for row in accepted_rows],
+                replacement_items=[],
+            )
+            batch = self._sync_service.sync_in_transaction(
+                request,
+                confirmation,
+                source_row_numbers=tuple(row.row_number for row in accepted_rows),
+            )
+            _verify_sync_results(accepted_rows, batch)
+            self._verify_final_state(current, existing_before, boundaries_before, updated_by)
+            committed = _build_commit_result(current, batch)
+        return committed
+
+    def _read_boundaries(
+        self, updates: tuple[ReplacementBoundaryCalculationUpdate, ...]
+    ) -> dict[tuple[str, str], ReplacementBoundaryCalculationRecord]:
+        event_ids = {update.replacement_event_id for update in updates}
+        return {
+            (boundary.replacement_event_id, boundary.measurement_definition_id): boundary
+            for event_id in event_ids
+            for boundary in self._repository.list_replacement_boundaries_for_event(event_id)
+        }
+
+    def _verify_final_state(
+        self,
+        preview: MobileReadingImportPreview,
+        existing_before: dict[str, MobileReadingImportTargetRecord],
+        boundaries_before: dict[tuple[str, str], ReplacementBoundaryCalculationRecord],
+        updated_by: str,
+    ) -> None:
+        ids = {row.input.planned_reading_id for row in preview.rows}
+        ids.update(planned_id for planned_id, _ in preview.effects.results)
+        targets = self._repository.get_mobile_reading_import_targets(ids)
+        accepted_ids = preview.effects.accepted_reading_ids
+        for row in preview.rows:
+            target = targets.get(row.input.planned_reading_id)
+            if row.target is None:
+                if target is not None or row.final is not None:
+                    raise MobileReadingPreviewChangedError()
+                continue
+            if target is None or row.final is None:
+                raise MobileReadingPreviewChangedError()
+            if (
+                target.task_state != row.final.task_state
+                or target.closed_at != row.final.closed_at
+                or target.close_reason != row.final.close_reason
+                or replace(
+                    target,
+                    task_state=row.target.task_state,
+                    closed_at=row.target.closed_at,
+                    close_reason=row.target.close_reason,
+                    existing_result=row.target.existing_result,
+                )
+                != row.target
+            ):
+                raise MobileReadingPreviewChangedError()
+            _verify_projected_result(
+                target.existing_result,
+                row.final.result,
+                accepted=row.input.planned_reading_id in accepted_ids,
+                updated_by=updated_by,
+            )
+
+        for planned_id, expected in preview.effects.results:
+            target = targets.get(planned_id)
+            if target is None:
+                raise MobileReadingPreviewChangedError()
+            _verify_projected_result(
+                target.existing_result,
+                expected,
+                accepted=planned_id in accepted_ids,
+                updated_by=updated_by,
+            )
+        for planned_id in preview.effects.recalculated_existing_ids:
+            before = existing_before.get(planned_id)
+            after = targets.get(planned_id)
+            if (
+                before is None
+                or after is None
+                or before.existing_result is None
+                or replace(after, existing_result=before.existing_result) != before
+            ):
+                raise MobileReadingPreviewChangedError()
+
+        boundaries = self._read_boundaries(preview.effects.boundary_updates)
+        for expected in preview.effects.boundary_updates:
+            key = (expected.replacement_event_id, expected.measurement_definition_id)
+            before = boundaries_before.get(key)
+            actual = boundaries.get(key)
+            if before is None or actual != replace(
+                before,
+                previous_measured_reading=expected.previous_measured_reading,
+                previous_measured_planned_reading_id=expected.previous_measured_planned_reading_id,
+                old_meter_usage_delta=expected.old_meter_usage_delta,
+            ):
+                raise MobileReadingPreviewChangedError()
+
+
+_REJECTION_MESSAGES = {
+    MobileReadingRejectCode.UNKNOWN_PLANNED_READING: "予定枠が見つかりません",
+    MobileReadingRejectCode.SUPERSEDED: "置き換え済みの予定枠です",
+    MobileReadingRejectCode.UNKNOWN_MEASUREMENT_DEFINITION: "測定定義が見つかりません",
+    MobileReadingRejectCode.MISSING_ASSIGNMENT: "対応するメーター割当がありません",
+    MobileReadingRejectCode.ASSIGNMENT_NEEDS_REVIEW: "割当条件の確認が必要です",
+    MobileReadingRejectCode.INVALID_INPUT: "入力内容が測定条件に合いません",
+    MobileReadingRejectCode.NEGATIVE_USAGE: "使用量が負になります",
+    MobileReadingRejectCode.DOWNSTREAM_RECALCULATION: "後続実測値の再計算に失敗しました",
+    MobileReadingRejectCode.BOUNDARY_RECALCULATION: "交換境界の再計算に失敗しました",
+    MobileReadingRejectCode.BUSINESS_RULE: "業務ルールにより確定できません",
+}
+
+
+def describe_mobile_reading_rejection(reason: MobileReadingRejectReason) -> str:
+    message = _REJECTION_MESSAGES[reason.code]
+    if reason.cause is not None:
+        message += f"（原因: {_REJECTION_MESSAGES[reason.cause]}）"
+    return message
+
+
+def _verify_sync_results(
+    accepted_rows: tuple[MobileReadingPreviewRow, ...], batch: ReadingSyncBatchResult
+) -> None:
+    response = batch.response
+    if (
+        len(batch.reading_items) != len(accepted_rows)
+        or response.accepted_reading_items != len(accepted_rows)
+        or response.accepted_replacement_items != 0
+        or response.ignored_reading_items
+        or response.rejected_reading_items
+        or response.ignored_replacement_items
+        or response.rejected_replacement_items
+    ):
+        raise MobileReadingPreviewChangedError()
+    for index, (row, item) in enumerate(zip(accepted_rows, batch.reading_items, strict=True)):
+        if (
+            row.target is None
+            or row.final is None
+            or row.final.result is None
+            or item.item_index != index
+            or item.source_row_number != row.row_number
+            or item.planned_reading_id != row.input.planned_reading_id
+            or item.task_state_before != row.target.task_state
+            or item.reject_code is not None
+            or item.disposition is None
+        ):
+            raise MobileReadingPreviewChangedError()
+        existing = row.target.existing_result
+        if existing is None:
+            expected_disposition = UpsertDisposition.INSERTED
+        elif row.final.result.client_updated_at == existing.client_updated_at:
+            expected_disposition = UpsertDisposition.REPLACED_ON_TIE
+        else:
+            expected_disposition = UpsertDisposition.UPDATED
+        if (
+            item.disposition is not expected_disposition
+            or _disposition(item.disposition, row.target) is not row.disposition
+        ):
+            raise MobileReadingPreviewChangedError()
+
+
+def _verify_projected_result(
+    actual: MobileReadingImportResultRecord | None,
+    expected: MobileReadingProjectedResult | None,
+    *,
+    accepted: bool,
+    updated_by: str,
+) -> None:
+    if expected is None:
+        if actual is not None or accepted:
+            raise MobileReadingPreviewChangedError()
+        return
+    if (
+        actual is None
+        or (accepted and actual.updated_by != updated_by)
+        or _project_result(actual, accepted) != expected
+    ):
+        raise MobileReadingPreviewChangedError()
+
+
+def _build_commit_result(
+    preview: MobileReadingImportPreview, batch: ReadingSyncBatchResult
+) -> MobileReadingCommitResult:
+    saved = {item.source_row_number: item.disposition for item in batch.reading_items}
+    reasons: dict[MobileReadingRejectCode, int] = {}
+    rows: list[MobileReadingCommitRow] = []
+    for row in preview.rows:
+        if row.reason is not None:
+            reasons[row.reason.code] = reasons.get(row.reason.code, 0) + 1
+        rows.append(
+            MobileReadingCommitRow(
+                row_number=row.row_number,
+                planned_reading_id=row.input.planned_reading_id,
+                disposition=row.disposition,
+                save_disposition=saved.get(row.row_number),
+                reason=row.reason,
+                reason_message=(
+                    describe_mobile_reading_rejection(row.reason) if row.reason else None
+                ),
+            )
+        )
+    summary = preview.summary
+    return MobileReadingCommitResult(
+        rows=tuple(rows),
+        summary=MobileReadingCommitSummary(
+            confirmed=summary.accepted,
+            new=summary.new,
+            revived=summary.revived,
+            overwritten=summary.overwritten,
+            duplicate=summary.duplicate,
+            stale=summary.stale,
+            rejected=summary.rejected,
+            recalculated_existing=summary.recalculated_existing,
+            recalculated_boundaries=summary.recalculated_boundaries,
+            rejection_reasons=tuple(
+                MobileReadingRejectionSummary(code, _REJECTION_MESSAGES[code], count)
+                for code, count in reasons.items()
+            ),
+        ),
+    )
 
 
 def _snapshot_input(result: MobileReadingResult) -> MobileReadingInputSnapshot:

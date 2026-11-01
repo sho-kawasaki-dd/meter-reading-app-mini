@@ -15,10 +15,13 @@ from reading_service_helpers import (
 
 from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    PlannedReadingTaskState,
     ReadingUpsertRequest,
     ReadingWriteService,
+    UpsertDisposition,
     UpsertOutcome,
 )
+from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
 
 
@@ -109,3 +112,75 @@ def test_commit_failure_rolls_back_completed_batch(
     assert conn.execute(
         "SELECT COUNT(*) FROM reading_transactions WHERE planned_reading_id = 'plan-commit-fails'"
     ).fetchone() == (0,)
+
+
+def test_internal_sync_preserves_source_rows_and_pre_write_states(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    _, service = build_services(conn, repository)
+    for slot, hour in (("existing", 4), ("revived", 5), ("new", 6)):
+        create_plan(repository, slot, _scheduled(hour))
+    service.sync(sync_request(mobile_submission("existing", "10")), confirmation_context())
+    conn.execute(
+        "UPDATE planned_readings SET task_state = 'auto_closed', "
+        "closed_at = ?, close_reason = 'cutoff_elapsed' WHERE planned_reading_id = ?",
+        ("2026-02-04 07:00:00", "revived"),
+    )
+    request = sync_request(
+        mobile_submission("missing", "1"),
+        mobile_submission("revived", "20"),
+        mobile_submission("existing", "12"),
+        mobile_submission("new", "30"),
+    )
+
+    with transaction(conn):
+        batch = service.sync_in_transaction(
+            request, confirmation_context(), source_row_numbers=(2, 4, 7, 9)
+        )
+        assert conn.in_transaction
+
+    assert batch.response.accepted_reading_items == 3
+    assert batch.response.rejected_reading_items[0].item_index == 0
+    assert [
+        (
+            item.item_index,
+            item.source_row_number,
+            item.planned_reading_id,
+            item.task_state_before,
+            item.disposition,
+            item.reject_code is not None,
+        )
+        for item in batch.reading_items
+    ] == [
+        (0, 2, "missing", None, None, True),
+        (1, 4, "revived", PlannedReadingTaskState.AUTO_CLOSED, UpsertDisposition.INSERTED, False),
+        (
+            2,
+            7,
+            "existing",
+            PlannedReadingTaskState.COMPLETED,
+            UpsertDisposition.REPLACED_ON_TIE,
+            False,
+        ),
+        (3, 9, "new", PlannedReadingTaskState.OPEN, UpsertDisposition.INSERTED, False),
+    ]
+
+
+@pytest.mark.parametrize("source_rows", [(1,), (1, 1), (0, 2)])
+def test_internal_sync_rejects_invalid_source_row_mapping(
+    file_database_repository: tuple,
+    source_rows: tuple[int, ...],
+) -> None:
+    conn, repository = file_database_repository
+    _, service = build_services(conn, repository)
+    request = sync_request(mobile_submission("one", "1"), mobile_submission("two", "2"))
+    with transaction(conn), pytest.raises(ValueError, match="行番号"):
+        service.sync_in_transaction(request, confirmation_context(), source_row_numbers=source_rows)
+
+
+def test_internal_sync_requires_an_existing_transaction(file_database_repository: tuple) -> None:
+    conn, repository = file_database_repository
+    _, service = build_services(conn, repository)
+    with pytest.raises(RuntimeError, match="トランザクション"):
+        service.sync_in_transaction(sync_request(), confirmation_context())
