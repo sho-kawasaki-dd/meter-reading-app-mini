@@ -52,6 +52,8 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeterMasterRecord,
     MeterMasterUpdateRequest,
     MeterMasterUsageRecord,
+    MobileReadingImportResultRecord,
+    MobileReadingImportTargetRecord,
     MonthlySchedule,
     MonthlyScheduleSelectorType,
     MonthParity,
@@ -73,6 +75,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReplacementDefinitionReading,
     ReplacementEventRecord,
     ReplacementUpsertRequest,
+    ResultSource,
     ScheduleItem,
     ScheduleSettings,
     SheetPlannedReadingRecord,
@@ -158,6 +161,13 @@ def _replacement_reading_map(
 
 
 _ID_CHUNK_SIZE = 500
+
+_REPLACEMENT_BOUNDARY_CALCULATION_SELECT = (
+    "SELECT replacement_event_id, measurement_definition_id, old_meter_id, new_meter_id, "
+    "replaced_at, old_final_reading, new_initial_reading, old_assignment_effective_from, "
+    "new_assignment_effective_from, old_meter_usage_delta, previous_measured_reading, "
+    "previous_measured_planned_reading_id FROM replacement_boundaries "
+)
 
 
 def _id_chunks(values: Collection[str]) -> list[tuple[str, ...]]:
@@ -356,6 +366,87 @@ class SQLiteRepository:
             close_reason=PlannedReadingCloseReason(str(row[7])) if row[7] else None,
             superseded_by_planned_reading_id=str(row[8]) if row[8] else None,
         )
+
+    def get_mobile_reading_import_targets(
+        self, planned_reading_ids: Collection[str]
+    ) -> dict[str, MobileReadingImportTargetRecord]:
+        targets: dict[str, MobileReadingImportTargetRecord] = {}
+        for chunk in _id_chunks(planned_reading_ids):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                "SELECT p.planned_reading_id, p.measurement_definition_id, p.meter_id, "
+                "p.location_id, p.business_date, p.reading_session, p.scheduled_at, "
+                "p.task_state, p.close_reason, p.closed_at, p.superseded_by_planned_reading_id, "
+                "m.location_name, m.meter_name, m.is_active, "
+                "d.display_name, d.category, d.unit, d.value_schema, d.calculation_method, "
+                "d.decimal_places, d.warning_threshold, d.reading_cycle, d.purpose, d.is_active, "
+                "r.result_status, r.raw_reading, r.structured_payload_json, r.note, "
+                "r.recorded_at, r.client_updated_at, r.result_source, r.device_id, r.updated_by, "
+                "r.signature, r.last_reading, r.usage_delta, r.arrival_sequence "
+                "FROM planned_readings AS p "
+                "LEFT JOIN physical_meters AS m ON m.meter_id = p.meter_id "
+                "LEFT JOIN measurement_definitions AS d "
+                "ON d.measurement_definition_id = p.measurement_definition_id "
+                "LEFT JOIN reading_transactions AS r "
+                "ON r.planned_reading_id = p.planned_reading_id "
+                f"WHERE p.planned_reading_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                if row[11] is None:
+                    raise ValidationError(f"予定枠に対応する物理メーターが見つかりません: {row[0]}")
+                if row[14] is None:
+                    raise ValidationError(f"予定枠に対応する測定定義が見つかりません: {row[0]}")
+                existing_result = None
+                if row[24] is not None:
+                    existing_result = MobileReadingImportResultRecord(
+                        result_status=ResultStatus(str(row[24])),
+                        raw_reading=_read_decimal(str(row[25]) if row[25] is not None else None),
+                        structured_payload_json=str(row[26]) if row[26] is not None else None,
+                        note=str(row[27]) if row[27] is not None else None,
+                        recorded_at=parse_utc(str(row[28])),
+                        client_updated_at=parse_utc(str(row[29])),
+                        result_source=ResultSource(str(row[30])),
+                        device_id=str(row[31]),
+                        updated_by=str(row[32]),
+                        signature=str(row[33]),
+                        last_reading=_read_decimal(str(row[34]) if row[34] is not None else None),
+                        usage_delta=_read_decimal(str(row[35]) if row[35] is not None else None),
+                        arrival_sequence=int(row[36]),
+                    )
+                target = MobileReadingImportTargetRecord(
+                    planned_reading_id=str(row[0]),
+                    measurement_definition_id=str(row[1]),
+                    meter_id=str(row[2]),
+                    location_id=str(row[3]),
+                    business_date=_read_date(str(row[4])),
+                    reading_session=ReadingSession(str(row[5])),
+                    scheduled_at=parse_utc(str(row[6])),
+                    task_state=PlannedReadingTaskState(str(row[7])),
+                    close_reason=(
+                        PlannedReadingCloseReason(str(row[8])) if row[8] is not None else None
+                    ),
+                    closed_at=parse_utc(str(row[9])) if row[9] is not None else None,
+                    superseded_by_planned_reading_id=(
+                        str(row[10]) if row[10] is not None else None
+                    ),
+                    location_name=str(row[11]),
+                    meter_name=str(row[12]),
+                    meter_is_active=bool(row[13]),
+                    display_name=str(row[14]),
+                    category=Category(str(row[15])),
+                    unit=str(row[16]),
+                    value_schema=ValueSchema(str(row[17])),
+                    calculation_method=CalculationMethod(str(row[18])),
+                    decimal_places=int(row[19]) if row[19] is not None else None,
+                    warning_threshold=_read_decimal(str(row[20]) if row[20] is not None else None),
+                    reading_cycle=ReadingCycle(str(row[21])),
+                    purpose=Purpose(str(row[22])),
+                    definition_is_active=bool(row[23]),
+                    existing_result=existing_result,
+                )
+                targets[target.planned_reading_id] = target
+        return targets
 
     def get_measurement_definition(
         self, measurement_definition_id: str
@@ -2288,16 +2379,15 @@ class SQLiteRepository:
             old_assignment_effective_from=parse_utc(str(row[7])),
             new_assignment_effective_from=parse_utc(str(row[8])),
             old_meter_usage_delta=_read_decimal(str(row[9]) if row[9] is not None else None),
+            previous_measured_reading=_read_decimal(str(row[10]) if row[10] is not None else None),
+            previous_measured_planned_reading_id=str(row[11]) if row[11] is not None else None,
         )
 
     def list_replacement_boundaries_for_event(
         self, replacement_event_id: str
     ) -> list[ReplacementBoundaryCalculationRecord]:
         rows = self._conn.execute(
-            "SELECT replacement_event_id, measurement_definition_id, old_meter_id, new_meter_id, "
-            "replaced_at, old_final_reading, new_initial_reading, old_assignment_effective_from, "
-            "new_assignment_effective_from, old_meter_usage_delta FROM replacement_boundaries "
-            "WHERE replacement_event_id = ? "
+            _REPLACEMENT_BOUNDARY_CALCULATION_SELECT + "WHERE replacement_event_id = ? "
             "ORDER BY measurement_definition_id",
             (replacement_event_id,),
         ).fetchall()
@@ -2307,12 +2397,25 @@ class SQLiteRepository:
         self, measurement_definition_id: str, old_meter_id: str
     ) -> list[ReplacementBoundaryCalculationRecord]:
         rows = self._conn.execute(
-            "SELECT replacement_event_id, measurement_definition_id, old_meter_id, new_meter_id, "
-            "replaced_at, old_final_reading, new_initial_reading, old_assignment_effective_from, "
-            "new_assignment_effective_from, old_meter_usage_delta FROM replacement_boundaries "
-            "WHERE measurement_definition_id = ? AND old_meter_id = ? "
+            _REPLACEMENT_BOUNDARY_CALCULATION_SELECT
+            + "WHERE measurement_definition_id = ? AND old_meter_id = ? "
             "ORDER BY replaced_at, replacement_event_id",
             (measurement_definition_id, old_meter_id),
+        ).fetchall()
+        return [self._replacement_boundary_calculation_record(row) for row in rows]
+
+    def list_replacement_boundaries_for_new_meter(
+        self,
+        measurement_definition_id: str,
+        new_meter_id: str,
+        *,
+        before_scheduled_at: datetime,
+    ) -> list[ReplacementBoundaryCalculationRecord]:
+        rows = self._conn.execute(
+            _REPLACEMENT_BOUNDARY_CALCULATION_SELECT
+            + "WHERE measurement_definition_id = ? AND new_meter_id = ? AND replaced_at <= ? "
+            "ORDER BY replaced_at DESC, replacement_event_id DESC",
+            (measurement_definition_id, new_meter_id, utc_now_str(before_scheduled_at)),
         ).fetchall()
         return [self._replacement_boundary_calculation_record(row) for row in rows]
 
@@ -2320,10 +2423,7 @@ class SQLiteRepository:
         self, assignment: MeterAssignmentRecord
     ) -> list[ReplacementBoundaryCalculationRecord]:
         rows = self._conn.execute(
-            "SELECT replacement_event_id, measurement_definition_id, old_meter_id, new_meter_id, "
-            "replaced_at, old_final_reading, new_initial_reading, old_assignment_effective_from, "
-            "new_assignment_effective_from, old_meter_usage_delta FROM replacement_boundaries "
-            "WHERE measurement_definition_id = ? AND "
+            _REPLACEMENT_BOUNDARY_CALCULATION_SELECT + "WHERE measurement_definition_id = ? AND "
             "((old_meter_id = ? AND old_assignment_effective_from = ?) OR "
             "(new_meter_id = ? AND new_assignment_effective_from = ?)) "
             "ORDER BY replaced_at, replacement_event_id",
