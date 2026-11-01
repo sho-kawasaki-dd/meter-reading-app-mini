@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -21,7 +22,20 @@ class ValidationError(DomainError):
 
 
 class NegativeUsageDeltaError(ValidationError):
-    """ロールオーバー未設定で累積値が前回値を下回ったことを表す。"""
+    """ロールオーバー補正後も使用量を計算できないことを表す。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_reading: Decimal | None = None,
+        last_reading: Decimal | None = None,
+        rollover_value: Decimal | None = None,
+    ) -> None:
+        self.raw_reading = raw_reading
+        self.last_reading = last_reading
+        self.rollover_value = rollover_value
+        super().__init__(message)
 
 
 class TimezoneChangeError(ValidationError):
@@ -92,6 +106,29 @@ class SupersededPlannedReadingError(ValidationError):
     def __init__(self, planned_reading_id: str) -> None:
         self.planned_reading_id = planned_reading_id
         super().__init__(f"置き換え済みの予定枠には検針結果を保存できません: {planned_reading_id}")
+
+
+class MissingPlannedAssignmentError(ValidationError):
+    """予定枠の日時・メーターに対応する割当がないことを表す。"""
+
+    def __init__(self, planned_reading_id: str, meter_id: str) -> None:
+        self.planned_reading_id = planned_reading_id
+        self.meter_id = meter_id
+        super().__init__(
+            f"予定枠に対応するメーター割当がありません: {planned_reading_id}/{meter_id}"
+        )
+
+
+class AssignmentNeedsReviewError(ValidationError):
+    """検針前に割当条件の確認が必要なことを表す。"""
+
+    def __init__(self, measurement_definition_id: str, meter_id: str) -> None:
+        self.measurement_definition_id = measurement_definition_id
+        self.meter_id = meter_id
+        super().__init__(
+            "割当条件の確認が必要です。先に条件を訂正してください: "
+            f"{measurement_definition_id}/{meter_id}"
+        )
 
 
 class MasterInUseError(DomainError):

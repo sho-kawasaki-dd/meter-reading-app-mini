@@ -393,7 +393,7 @@ def parse_mobile_reading_result(raw_text: object) -> MobileReadingResult:
         sheet_id=sheet_id,
         entries=entries,
         business_date=_parse_header_date(payload.get("business_date")),
-        generated_at=_parse_header_timestamp(payload.get("generated_at")),
+        generated_at=parse_result_header_timestamp(payload.get("generated_at")),
         filter=SheetFilter.from_json(payload["filter"]) if "filter" in payload else None,
     )
 
@@ -412,7 +412,7 @@ def _parse_header_date(value: object) -> date | None:
     return parsed
 
 
-def _parse_header_timestamp(value: object) -> str | None:
+def parse_result_header_timestamp(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):

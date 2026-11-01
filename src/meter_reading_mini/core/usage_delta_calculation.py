@@ -104,13 +104,18 @@ def _calculate_delta(
     if rollover_value is None:
         raise NegativeUsageDeltaError(
             f"前回値 {last_reading} より小さい今回値 {raw_reading} は、"
-            "ロールオーバー値未設定のため使用量を計算できません。"
+            "ロールオーバー値未設定のため使用量を計算できません。",
+            raw_reading=raw_reading,
+            last_reading=last_reading,
         )
 
     corrected_delta = exact_add(exact_subtract(rollover_value, last_reading), raw_reading)
     if corrected_delta < 0:
         raise NegativeUsageDeltaError(
-            f"今回値 {raw_reading} と前回値 {last_reading} から使用量を計算できません。"
+            f"今回値 {raw_reading} と前回値 {last_reading} から使用量を計算できません。",
+            raw_reading=raw_reading,
+            last_reading=last_reading,
+            rollover_value=rollover_value,
         )
     return corrected_delta
 

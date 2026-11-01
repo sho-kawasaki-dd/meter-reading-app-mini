@@ -73,6 +73,18 @@ class VirtualReadingHistorySnapshot:
     boundary_updates: tuple[ReplacementBoundaryCalculationUpdate, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class VirtualReadingEvaluated:
+    calculated: CalculatedReading
+    outcome: UpsertOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class VirtualReadingRejected:
+    calculated: CalculatedReading | None
+    error: DomainError
+
+
 class VirtualReadingHistory:
     """入力ごとに仮想状態を確定し、失敗した入力の変更だけを破棄する。"""
 
@@ -94,11 +106,27 @@ class VirtualReadingHistory:
     def apply(self, request: ReadingUpsertRequest) -> UpsertOutcome:
         """検証済み要求を評価し、採用時のみ後続値を含む仮想変更を反映する。"""
 
+        evaluation = self.evaluate(request)
+        if isinstance(evaluation, VirtualReadingRejected):
+            raise evaluation.error
+        return evaluation.outcome
+
+    def evaluate(
+        self, request: ReadingUpsertRequest
+    ) -> VirtualReadingEvaluated | VirtualReadingRejected:
+        """自身の計算結果を保持し、業務エラー時は仮想変更だけを破棄する。"""
+
         trial = self._state.fork()
-        outcome = self._writer(trial).upsert_reading(request)
+        writer = self._writer(trial)
+        calculated: CalculatedReading | None = None
+        try:
+            calculated = writer.calculate_reading(request)
+            outcome = writer.upsert_calculated_reading(calculated)
+        except DomainError as exc:
+            return VirtualReadingRejected(calculated, exc)
         if outcome.accepted:
             self._state = trial
-        return outcome
+        return VirtualReadingEvaluated(calculated, outcome)
 
     def get_result(self, planned_reading_id: str) -> MobileReadingImportResultRecord | None:
         """既存結果または採用した入力の、全行評価後の値を返す。"""
@@ -140,6 +168,9 @@ class VirtualReadingHistory:
 
 
 class _VirtualReadingWriter(ReadingWriteOrchestrationService):
+    def upsert_calculated_reading(self, calculated: CalculatedReading) -> UpsertOutcome:
+        return self._upsert_calculated_reading(calculated)
+
     def _refresh_old_meter_boundaries(
         self,
         measurement_definition: MeasurementDefinitionRecord,
@@ -570,8 +601,10 @@ def _reading_order(reading: HistoricalMeasuredReadingRecord) -> tuple[datetime, 
 
 
 __all__ = [
+    "VirtualReadingEvaluated",
     "VirtualReadingHistory",
     "VirtualReadingHistorySnapshot",
+    "VirtualReadingRejected",
     "VirtualRecalculationError",
     "VirtualRecalculationStage",
 ]

@@ -107,7 +107,9 @@ class ReadingWriteOrchestrationService:
     def upsert_reading(self, request: ReadingUpsertRequest) -> UpsertOutcome:
         """署名済み要求を計算・保存し、交換境界と後続実測値を再計算する。"""
 
-        calculated = self.calculate_reading(request)
+        return self._upsert_calculated_reading(self.calculate_reading(request))
+
+    def _upsert_calculated_reading(self, calculated: CalculatedReading) -> UpsertOutcome:
         planned_reading = calculated.planned_reading
         measurement_definition = calculated.definition
         outcome = self._persistence_repository.upsert_reading(calculated.request)
@@ -126,7 +128,7 @@ class ReadingWriteOrchestrationService:
         )
         logger.debug(
             "usage_delta for %s: %s (last_reading=%s)",
-            request.planned_reading_id,
+            calculated.request.planned_reading_id,
             calculated.request.usage_delta,
             calculated.request.last_reading,
         )

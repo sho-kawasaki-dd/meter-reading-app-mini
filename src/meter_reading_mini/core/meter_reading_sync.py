@@ -127,6 +127,76 @@ def _default_reading_submission_resolver(
     )
 
 
+def build_reading_upsert_request(
+    submission: MeterReadingSubmission,
+    *,
+    planned_reading_repository: PlannedReadingLookupRepository,
+    measurement_definition_repository: MeasurementDefinitionLookupRepository,
+    assignment_repository: AssignmentCalculationLookupRepository,
+    device_id: str,
+    updated_by: str,
+    resolve_submission: ReadingSubmissionResolver = _default_reading_submission_resolver,
+) -> ReadingUpsertRequest:
+    """スマホ入力を予定枠・割当条件で検証し、監査署名付きの保存要求にする。"""
+
+    planned_reading = planned_reading_repository.get_planned_reading(submission.planned_reading_id)
+    if planned_reading is None:
+        raise MissingPlannedReadingError(submission.planned_reading_id)
+    if planned_reading.task_state is PlannedReadingTaskState.SUPERSEDED:
+        raise SupersededPlannedReadingError(planned_reading.planned_reading_id)
+    measurement_definition = measurement_definition_repository.get_measurement_definition(
+        planned_reading.measurement_definition_id
+    )
+    if measurement_definition is None:
+        raise MissingMeasurementDefinitionError(planned_reading.measurement_definition_id)
+    assignment = resolve_planned_assignment(assignment_repository, planned_reading)
+    try:
+        resolved_submission = resolve_submission(
+            submission,
+            measurement_definition.measurement_definition_id,
+            measurement_definition.value_schema,
+            measurement_definition.decimal_places,
+            assignment.rollover_value,
+        )
+    except PydanticValidationError as exc:
+        raise InvalidReadingSubmissionError(
+            submission.planned_reading_id,
+            _format_validation_error(exc),
+        ) from exc
+
+    recorded_at = parse_utc(utc_now_str(resolved_submission.recorded_at))
+    client_updated_at = parse_utc(utc_now_str(resolved_submission.client_updated_at))
+    try:
+        signature = calculate_meter_reading_signature(
+            planned_reading_id=resolved_submission.planned_reading_id,
+            result_status=resolved_submission.result_status,
+            raw_reading=resolved_submission.raw_reading,
+            structured_payload_json=resolved_submission.structured_payload,
+            recorded_at=recorded_at,
+            device_id=device_id,
+        )
+    except SignatureCanonicalizationError as exc:
+        raise InvalidReadingSubmissionError(
+            submission.planned_reading_id,
+            str(exc),
+        ) from exc
+
+    return ReadingUpsertRequest(
+        planned_reading_id=resolved_submission.planned_reading_id,
+        measurement_definition_id=resolved_submission.measurement_definition_id,
+        result_status=resolved_submission.result_status,
+        recorded_at=recorded_at,
+        client_updated_at=client_updated_at,
+        raw_reading=resolved_submission.raw_reading,
+        structured_payload_json=resolved_submission.structured_payload,
+        device_id=device_id,
+        updated_by=updated_by,
+        signature=signature,
+        note=validate_note(resolved_submission.note),
+        result_source=ResultSource.MOBILE_HTML,
+    )
+
+
 class MeterReadingSyncService:
     """検針結果を確定し、バッチ全体のトランザクションを所有する service。"""
 
@@ -305,63 +375,14 @@ class MeterReadingSyncService:
     ) -> ReadingUpsertRequest:
         """未署名入力を検証し、PC 側監査情報と署名を付ける。"""
 
-        planned_reading = self._planned_reading_repository.get_planned_reading(
-            submission.planned_reading_id
-        )
-        if planned_reading is None:
-            raise MissingPlannedReadingError(submission.planned_reading_id)
-        if planned_reading.task_state is PlannedReadingTaskState.SUPERSEDED:
-            raise SupersededPlannedReadingError(planned_reading.planned_reading_id)
-        measurement_definition = self._measurement_definition_repository.get_measurement_definition(
-            planned_reading.measurement_definition_id
-        )
-        if measurement_definition is None:
-            raise MissingMeasurementDefinitionError(planned_reading.measurement_definition_id)
-        assignment = resolve_planned_assignment(self._assignment_repository, planned_reading)
-        try:
-            resolved_submission = self._resolve_submission(
-                submission,
-                measurement_definition.measurement_definition_id,
-                measurement_definition.value_schema,
-                measurement_definition.decimal_places,
-                assignment.rollover_value,
-            )
-        except PydanticValidationError as exc:
-            raise InvalidReadingSubmissionError(
-                submission.planned_reading_id,
-                _format_validation_error(exc),
-            ) from exc
-
-        recorded_at = parse_utc(utc_now_str(resolved_submission.recorded_at))
-        client_updated_at = parse_utc(utc_now_str(resolved_submission.client_updated_at))
-        try:
-            signature = calculate_meter_reading_signature(
-                planned_reading_id=resolved_submission.planned_reading_id,
-                result_status=resolved_submission.result_status,
-                raw_reading=resolved_submission.raw_reading,
-                structured_payload_json=resolved_submission.structured_payload,
-                recorded_at=recorded_at,
-                device_id=device_id,
-            )
-        except SignatureCanonicalizationError as exc:
-            raise InvalidReadingSubmissionError(
-                submission.planned_reading_id,
-                str(exc),
-            ) from exc
-
-        return ReadingUpsertRequest(
-            planned_reading_id=resolved_submission.planned_reading_id,
-            measurement_definition_id=resolved_submission.measurement_definition_id,
-            result_status=resolved_submission.result_status,
-            recorded_at=recorded_at,
-            client_updated_at=client_updated_at,
-            raw_reading=resolved_submission.raw_reading,
-            structured_payload_json=resolved_submission.structured_payload,
+        return build_reading_upsert_request(
+            submission,
+            planned_reading_repository=self._planned_reading_repository,
+            measurement_definition_repository=self._measurement_definition_repository,
+            assignment_repository=self._assignment_repository,
             device_id=device_id,
             updated_by=updated_by,
-            signature=signature,
-            note=validate_note(resolved_submission.note),
-            result_source=ResultSource.MOBILE_HTML,
+            resolve_submission=self._resolve_submission,
         )
 
     def _build_replacement_upsert_request(

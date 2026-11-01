@@ -6,7 +6,11 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Protocol
 
-from meter_reading_mini.core.errors import ValidationError
+from meter_reading_mini.core.errors import (
+    AssignmentNeedsReviewError,
+    MissingPlannedAssignmentError,
+    ValidationError,
+)
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     AssignmentCalculationLookupRepository,
     HistoricalMeasuredReadingLookupRepository,
@@ -36,15 +40,9 @@ def resolve_planned_assignment(
         planned.measurement_definition_id, planned.scheduled_at
     )
     if assignment is None or assignment.meter_id != planned.meter_id:
-        raise ValidationError(
-            "予定枠に対応するメーター割当がありません: "
-            f"{planned.planned_reading_id}/{planned.meter_id}"
-        )
+        raise MissingPlannedAssignmentError(planned.planned_reading_id, planned.meter_id)
     if assignment.needs_review:
-        raise ValidationError(
-            "割当条件の確認が必要です。先に条件を訂正してください: "
-            f"{planned.measurement_definition_id}/{assignment.meter_id}"
-        )
+        raise AssignmentNeedsReviewError(planned.measurement_definition_id, assignment.meter_id)
     return assignment
 
 
