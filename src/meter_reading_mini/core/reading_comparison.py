@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from meter_reading_mini.core.errors import ValidationError
 
@@ -36,6 +36,18 @@ def serialize_structured_payload(value: dict[str, Any] | None) -> str | None:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError) as exc:
         raise ValidationError(f"構造化入力を JSON 化できません: {exc}") from exc
+
+
+def normalize_stored_structured_payload(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed: object = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValidationError("保存済み構造化入力の JSON が不正です。") from exc
+    if not isinstance(parsed, dict):
+        raise ValidationError("保存済み構造化入力は JSON object である必要があります。")
+    return serialize_structured_payload(cast(dict[str, Any], parsed))
 
 
 def reading_content_matches(

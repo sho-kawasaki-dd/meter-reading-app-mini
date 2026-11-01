@@ -1194,6 +1194,10 @@ class MobileReadingImportRepository(
         self, measurement_definition_id: str, old_meter_id: str
     ) -> list[ReplacementBoundaryCalculationRecord]: ...
 
+    def list_replacement_boundaries_for_event(
+        self, replacement_event_id: str
+    ) -> list[ReplacementBoundaryCalculationRecord]: ...
+
     def list_replacement_boundaries_for_new_meter(
         self,
         measurement_definition_id: str,

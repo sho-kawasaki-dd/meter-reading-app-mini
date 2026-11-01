@@ -89,6 +89,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
 from meter_reading_mini.core.reading_comparison import (
     ComparableReadingContent,
     ComparableReadingHeader,
+    normalize_stored_structured_payload,
     reading_content_matches,
     serialize_structured_payload,
 )
@@ -1968,15 +1969,9 @@ class SQLiteRepository:
 
     @staticmethod
     def _reading_content_matches(row: tuple[Any, ...], request: ReadingUpsertRequest) -> bool:
-        stored_payload: str | None = None
-        if row[4] is not None:
-            try:
-                parsed_payload = json.loads(str(row[4]))
-            except json.JSONDecodeError as exc:
-                raise ValidationError("保存済み構造化入力の JSON が不正です。") from exc
-            if not isinstance(parsed_payload, dict):
-                raise ValidationError("保存済み構造化入力は JSON object である必要があります。")
-            stored_payload = _json_text(cast(dict[str, Any], parsed_payload))
+        stored_payload = normalize_stored_structured_payload(
+            str(row[4]) if row[4] is not None else None
+        )
         existing_header = ComparableReadingHeader(
             result_status=str(row[0]),
             recorded_at=str(row[1]),
