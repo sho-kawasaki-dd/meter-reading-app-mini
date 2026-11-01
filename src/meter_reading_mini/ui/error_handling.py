@@ -63,7 +63,7 @@ def install_excepthook(log_path: Path) -> None:
             exc_info=(exception_type, error, traceback),
         )
         application = QApplication.instance()
-        if application is not None:
+        if isinstance(application, QApplication):
             message = "予期しないエラーが発生しました。詳細はログを確認してください。"
             QMessageBox.critical(None, "エラー", f"{message}\nログ: {log_path}")
 

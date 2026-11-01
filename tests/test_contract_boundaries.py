@@ -18,6 +18,7 @@ from meter_reading_mini.core.mobile_reading import ASSET_FILENAMES, read_sheet_a
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "meter_reading_mini"
 CORE_ROOT = PACKAGE_ROOT / "core"
 DB_ROOT = PACKAGE_ROOT / "db"
+UI_ROOT = PACKAGE_ROOT / "ui"
 CONTRACT_FILES = (
     "contract_models.py",
     "errors.py",
@@ -146,9 +147,33 @@ def test_database_does_not_import_services_or_ui() -> None:
                 assert module in DATABASE_CORE_IMPORTS
 
 
+def test_ui_does_not_import_database_or_sqlite() -> None:
+    for path in _python_files(UI_ROOT):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for module in _imported_modules(tree, path):
+            assert not _is_module_or_submodule(module, "sqlite3"), path
+            assert not _is_module_or_submodule(module, "db"), path
+            assert not _is_module_or_submodule(module, "meter_reading_mini.db"), path
+
+
+def test_app_context_does_not_import_ui() -> None:
+    path = PACKAGE_ROOT / "app_context.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for module in _imported_modules(tree, path):
+        assert not _is_module_or_submodule(module, "ui")
+        assert not _is_module_or_submodule(module, "meter_reading_mini.ui")
+        assert not _is_module_or_submodule(module, "PySide6")
+
+
 def test_direct_wall_clock_access_is_limited_to_timeutil() -> None:
     allowed_path = CORE_ROOT / "timeutil.py"
-    for path in (*_python_files(CORE_ROOT), *_python_files(DB_ROOT)):
+    for path in (
+        *_python_files(CORE_ROOT),
+        *_python_files(DB_ROOT),
+        *_python_files(UI_ROOT),
+        PACKAGE_ROOT / "app.py",
+        PACKAGE_ROOT / "app_context.py",
+    ):
         if path == allowed_path:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -87,3 +88,31 @@ def test_install_excepthook_logs_and_shows_log_path(
 
     assert "未捕捉" in caplog.text
     assert str(log_path) in str(messages[0][2])
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["", "from PySide6.QtCore import QCoreApplication\napplication = QCoreApplication([])"],
+)
+def test_install_excepthook_does_not_create_dialog_without_qapplication(
+    tmp_path: Path, setup: str
+) -> None:
+    script = f"""
+{setup}
+import sys
+from pathlib import Path
+from meter_reading_mini.ui.error_handling import install_excepthook
+install_excepthook(Path({str(tmp_path / "app.log")!r}))
+error = RuntimeError("uncaught failure")
+sys.excepthook(type(error), error, None)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "uncaught failure" in completed.stderr

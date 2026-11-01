@@ -5,36 +5,25 @@ import sqlite3
 import sys
 from collections.abc import Callable
 from contextlib import ExitStack
-from functools import partial
 from pathlib import Path
 from typing import Protocol
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMainWindow
 from shiboken6 import delete as delete_qobject
 
+from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.config import AppPaths, ensure_dirs, resolve_paths
+from meter_reading_mini.core.errors import DomainError
 from meter_reading_mini.core.logging_config import configure_logging
-from meter_reading_mini.core.schedule_settings import (
-    CutoffSettingsService,
-    ReleaseOffsetSettingsService,
-)
-from meter_reading_mini.core.startup_preparation import StartupPreparationService
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
-from meter_reading_mini.core.timezone_settings import (
-    TimezoneSettingsService,
-    build_business_date_provider,
-    build_current_datetime_provider,
-)
-from meter_reading_mini.core.work_package_download import (
-    PlannedReadingGeneratorService,
-    PlannedReadingLifecycleService,
-)
-from meter_reading_mini.db.bootstrap_seeds import bootstrap_default_settings
-from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.migrations import open_database
-from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.ui.display_settings import apply_display_settings, load_display_settings
-from meter_reading_mini.ui.error_handling import show_unexpected_error
+from meter_reading_mini.ui.error_handling import (
+    install_excepthook,
+    show_domain_error,
+    show_unexpected_error,
+)
+from meter_reading_mini.ui.main_window import MainWindow
 from meter_reading_mini.ui.single_instance import SingleInstanceLock
 
 logger = logging.getLogger(__name__)
@@ -80,12 +69,12 @@ def _initialize_ui(
     resources: ExitStack,
     application_factory: Callable[[], QApplication] | None,
     paths: AppPaths,
-) -> None:
+) -> QApplication:
     application = QApplication.instance()
     if application is None:
         factory = application_factory or _create_qapplication
         application = factory()
-        if QApplication.instance() is not application:
+        if not isinstance(application, QApplication) or QApplication.instance() is not application:
             raise RuntimeError("QApplication ファクトリがアプリケーションを作成しませんでした")
 
         application_ref = [application]
@@ -96,45 +85,12 @@ def _initialize_ui(
             delete_qobject(created_application)
 
         resources.callback(release_application)
+    if not isinstance(application, QApplication):
+        raise RuntimeError("QApplication 以外のアプリケーションが既に存在します")
 
     settings = load_display_settings(paths.ui_settings_path)
     apply_display_settings(settings)
-
-
-def _prepare_startup(conn: sqlite3.Connection) -> None:
-    transaction_factory = partial(transaction, conn)
-    repository = SQLiteRepository(conn)
-    timezone_settings = TimezoneSettingsService(
-        repository,
-        transaction_factory=transaction_factory,
-    )
-    timezone_provider = timezone_settings.get_timezone
-    business_date_provider = build_business_date_provider(timezone_provider)
-    release_offset_settings = ReleaseOffsetSettingsService(
-        repository,
-        recomposition_repository=repository,
-        transaction_factory=transaction_factory,
-        current_business_date_provider=business_date_provider,
-    )
-    planned_reading_generator = PlannedReadingGeneratorService(
-        repository,
-        release_date_calculator=release_offset_settings,
-        scheduled_timezone_provider=timezone_provider,
-    )
-    planned_reading_lifecycle = PlannedReadingLifecycleService(
-        repository,
-        current_datetime_provider=build_current_datetime_provider(timezone_provider),
-        cutoff_time_provider=CutoffSettingsService(
-            repository, transaction_factory=transaction_factory
-        ).get_cutoff_time,
-    )
-    StartupPreparationService(
-        bootstrapper=lambda: bootstrap_default_settings(conn),
-        planned_reading_generator=planned_reading_generator,
-        planned_reading_lifecycle_service=planned_reading_lifecycle,
-        transaction_factory=transaction_factory,
-        business_date_provider=business_date_provider,
-    ).prepare()
+    return application
 
 
 def run_app(
@@ -146,6 +102,8 @@ def run_app(
     logging_configurator: LoggingConfigurator | None = None,
     startup_preparer: StartupPreparer | None = None,
     startup_error_notifier: StartupErrorNotifier | None = None,
+    main_window_factory: Callable[[AppContext], QMainWindow] | None = None,
+    event_loop_runner: Callable[[QApplication], int] | None = None,
 ) -> int:
     logging_initialized = False
 
@@ -163,6 +121,9 @@ def run_app(
 
             (logging_configurator or configure_logging)(log_dir=resolved_paths.log_dir)
             logging_initialized = True
+            previous_excepthook = sys.excepthook
+            install_excepthook(resolved_paths.log_path)
+            resources.callback(setattr, sys, "excepthook", previous_excepthook)
 
             connection = (database_opener or open_database)(
                 resolved_paths.db_path,
@@ -171,20 +132,48 @@ def run_app(
             )
             resources.callback(connection.close)
 
-            _initialize_ui(resources, application_factory, resolved_paths)
             try:
-                (startup_preparer or _prepare_startup)(connection)
+                application = _initialize_ui(resources, application_factory, resolved_paths)
+                context = create_app_context(connection)
+                try:
+                    if startup_preparer is not None:
+                        startup_preparer(connection)
+                    else:
+                        context.startup_preparation.prepare()
+                except Exception as error:
+                    logger.exception("起動時準備に失敗しました")
+                    (
+                        startup_error_notifier
+                        or (lambda failure: show_unexpected_error(None, failure))
+                    )(error)
+                    return STARTUP_FAILURE
+
+                window = (main_window_factory or MainWindow)(context)
+                resources.callback(window.close)
+                window.show()
+                return (event_loop_runner or (lambda app: app.exec()))(application)
+            except DomainError as error:
+                logger.warning("アプリケーションの起動または実行を中断しました: %s", error)
+                if startup_error_notifier is not None:
+                    startup_error_notifier(error)
+                elif isinstance(QApplication.instance(), QApplication):
+                    show_domain_error(None, error)
+                else:
+                    print(f"アプリケーションの起動に失敗しました: {error}", file=sys.stderr)
+                return STARTUP_FAILURE
             except Exception as error:
-                logger.exception("起動時準備に失敗しました")
-                (startup_error_notifier or (lambda failure: show_unexpected_error(None, failure)))(
-                    error
-                )
+                logger.exception("アプリケーションの起動または実行に失敗しました")
+                if isinstance(QApplication.instance(), QApplication):
+                    (
+                        startup_error_notifier
+                        or (lambda failure: show_unexpected_error(None, failure))
+                    )(error)
+                else:
+                    print(f"アプリケーションの起動に失敗しました: {error}", file=sys.stderr)
                 return STARTUP_FAILURE
 
-        return STARTUP_SUCCESS
     except Exception as error:
         if logging_initialized:
             logger.exception("アプリケーションの起動に失敗しました")
-        else:
-            print(f"アプリケーションの起動に失敗しました: {error}", file=sys.stderr)
+        print(f"アプリケーションの起動に失敗しました: {error}", file=sys.stderr)
         return STARTUP_FAILURE

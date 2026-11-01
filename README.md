@@ -10,8 +10,9 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 
 現在はリポジトリ直下をプロジェクト基点として開発中です。
 Phase 0 は完了しています。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
-Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロジックを統合し、全品質ゲートが Windows / Ubuntu の必須 CI で成功しました。完了記録と作業計画書の凍結移動も済んでいます。メイン画面・起動用 `__main__.py`・スマホ検針の完成機能は後続フェーズの対象です。
+Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロジックを統合し、全品質ゲートが Windows / Ubuntu の必須 CI で成功しました。完了記録と作業計画書の凍結移動も済んでいます。
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
+Phase 3 は開発中です。起動とメイン画面の予定枠一覧・検索・更新は利用できますが、マスタ管理・設定・PC 直接入力・メーター交換の各画面は未実装です。
 以下の機能・操作・配布手順は、明記した既存基盤を除き開発計画上の仕様であり、利用可能な完成版の案内ではありません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -92,14 +93,19 @@ uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
 通常の GUI 起動では `QT_QPA_PLATFORM=offscreen` を設定しません。
 テスト DB は `:memory:` または `tmp_path` を使い、実データの保存先は使用しません。
 
-## アプリの起動 (Phase 3 の画面・`__main__.py` 実装後)
+## アプリの起動
 
-起動オーケストレーション自体は `app.py` に実装済みですが、画面と起動用 `__main__.py` は未実装です。
-そのため、現時点では次のコマンドでは起動できません。Phase 3 で画面・`__main__.py` を実装した後、
-リポジトリのルートで実行する予定です。
+リポジトリのルートで実行します。Phase 3 は開発中のため、操作できる範囲は上記の開発状況を確認してください。
 
 ```powershell
 uv sync --locked
+uv run python -m meter_reading_mini
+```
+
+実データと分離して動作を確認するときは、一時フォルダを指定して起動します。
+
+```powershell
+$env:METER_READING_MINI_DATA_DIR = "<一時フォルダ>"
 uv run python -m meter_reading_mini
 ```
 
