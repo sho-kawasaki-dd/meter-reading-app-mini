@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -716,6 +716,266 @@ def test_reading_upsert_duplicate_tie_stale_and_decimal_storage(
         "SELECT result_source, device_id, arrival_sequence FROM reading_transactions "
         "WHERE planned_reading_id = 'plan-manual'"
     ).fetchone() == ("manual", PC_DIRECT_DEVICE_ID, 2)
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_reading_upsert_duplicate_preserves_all_stored_fields(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+    structured: bool,
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("plan-normalized", definition_id, meter_id)
+    )
+    first = replace(
+        _reading(
+            "plan-normalized",
+            raw=Decimal("10.50"),
+            recorded_at=READ_AT.replace(microsecond=123456),
+            client_updated_at=READ_AT.replace(microsecond=234567),
+        ),
+        raw_reading=None if structured else Decimal("10.50"),
+        structured_payload_json={"z": [True, "値"], "a": {"b": 2, "a": 1}} if structured else None,
+        signature="元の署名",
+        updated_by="元の担当者",
+    )
+    assert sqlite_repository.upsert_reading(first).disposition is UpsertDisposition.INSERTED
+    if structured:
+        memory_conn.execute(
+            "UPDATE reading_transactions SET structured_payload_json = ? "
+            "WHERE planned_reading_id = ?",
+            ('{"z": [true, "値"], "a": {"b": 2, "a": 1}}', "plan-normalized"),
+        )
+    before = memory_conn.execute(
+        "SELECT * FROM reading_transactions WHERE planned_reading_id = ?", ("plan-normalized",)
+    ).fetchone()
+    changes_before = memory_conn.total_changes
+    tokyo = timezone(timedelta(hours=9))
+    duplicate = replace(
+        first,
+        recorded_at=READ_AT.astimezone(tokyo).replace(microsecond=999999),
+        client_updated_at=READ_AT.astimezone(tokyo).replace(microsecond=888888),
+        raw_reading=None if structured else Decimal("10.5"),
+        structured_payload_json={"a": {"a": 1, "b": 2}, "z": [True, "値"]} if structured else None,
+        updated_by="別の担当者",
+        signature="別の署名",
+        device_id="別の端末",
+        last_reading=Decimal("1"),
+        usage_delta=Decimal("2"),
+    )
+
+    assert (
+        sqlite_repository.upsert_reading(duplicate).disposition
+        is UpsertDisposition.IGNORED_DUPLICATE
+    )
+    assert memory_conn.total_changes == changes_before
+    assert (
+        memory_conn.execute(
+            "SELECT * FROM reading_transactions WHERE planned_reading_id = ?", ("plan-normalized",)
+        ).fetchone()
+        == before
+    )
+
+    tie = replace(duplicate, note="同時刻の訂正")
+    assert sqlite_repository.upsert_reading(tie).disposition is UpsertDisposition.REPLACED_ON_TIE
+    after_tie = memory_conn.execute(
+        "SELECT * FROM reading_transactions WHERE planned_reading_id = ?", ("plan-normalized",)
+    ).fetchone()
+    changes_after_tie = memory_conn.total_changes
+    stale = replace(
+        tie,
+        client_updated_at=(READ_AT - timedelta(microseconds=1)).astimezone(tokyo),
+        note="古い入力",
+    )
+    assert sqlite_repository.upsert_reading(stale).disposition is UpsertDisposition.IGNORED_STALE
+    assert memory_conn.total_changes == changes_after_tie
+    assert (
+        memory_conn.execute(
+            "SELECT * FROM reading_transactions WHERE planned_reading_id = ?", ("plan-normalized",)
+        ).fetchone()
+        == after_tie
+    )
+    assert memory_conn.execute(
+        "SELECT note, arrival_sequence FROM reading_transactions WHERE planned_reading_id = ?",
+        ("plan-normalized",),
+    ).fetchone() == ("同時刻の訂正", 2)
+
+
+def test_mobile_duplicate_and_tie_against_existing_pc_reading(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("plan-pc-to-mobile", definition_id, meter_id)
+    )
+    manual = replace(
+        _reading("plan-pc-to-mobile", raw=Decimal("2")),
+        structured_payload_json=None,
+        result_source=ResultSource.MANUAL,
+        device_id=PC_DIRECT_DEVICE_ID,
+        updated_by="PC 担当",
+        signature="PC の署名",
+    )
+    assert sqlite_repository.upsert_reading(manual).disposition is UpsertDisposition.INSERTED
+    before = memory_conn.execute(
+        "SELECT * FROM reading_transactions WHERE planned_reading_id = ?", ("plan-pc-to-mobile",)
+    ).fetchone()
+    mobile = replace(
+        manual,
+        raw_reading=Decimal("2.00"),
+        result_source=ResultSource.MOBILE_HTML,
+        device_id="0123456789abcdef0123456789abcdef",
+        updated_by="スマホ確定担当",
+        signature="スマホ結果の署名",
+    )
+
+    assert (
+        sqlite_repository.upsert_reading(mobile).disposition is UpsertDisposition.IGNORED_DUPLICATE
+    )
+    assert (
+        memory_conn.execute(
+            "SELECT * FROM reading_transactions WHERE planned_reading_id = ?",
+            ("plan-pc-to-mobile",),
+        ).fetchone()
+        == before
+    )
+    assert (
+        sqlite_repository.upsert_reading(replace(mobile, raw_reading=Decimal("3"))).disposition
+        is UpsertDisposition.REPLACED_ON_TIE
+    )
+    assert memory_conn.execute(
+        "SELECT raw_reading, result_source, device_id, updated_by, signature, arrival_sequence "
+        "FROM reading_transactions WHERE planned_reading_id = ?",
+        ("plan-pc-to-mobile",),
+    ).fetchone() == (
+        "3",
+        "mobile_html",
+        "0123456789abcdef0123456789abcdef",
+        "スマホ確定担当",
+        "スマホ結果の署名",
+        2,
+    )
+
+
+@pytest.mark.parametrize(
+    "status", [ResultStatus.SKIPPED, ResultStatus.UNREACHABLE, ResultStatus.METER_FAULT]
+)
+def test_non_measured_reading_duplicates_preserve_note_and_audit(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+    status: ResultStatus,
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("plan-non-measured", definition_id, meter_id)
+    )
+    first = replace(
+        _reading("plan-non-measured", raw=Decimal("1")),
+        result_status=status,
+        raw_reading=None,
+        structured_payload_json=None,
+        note="確認できませんでした",
+    )
+    assert sqlite_repository.upsert_reading(first).disposition is UpsertDisposition.INSERTED
+    before = memory_conn.execute(
+        "SELECT * FROM reading_transactions WHERE planned_reading_id = ?", ("plan-non-measured",)
+    ).fetchone()
+    duplicate = replace(first, updated_by="別の担当者", signature="別の署名")
+
+    assert (
+        sqlite_repository.upsert_reading(duplicate).disposition
+        is UpsertDisposition.IGNORED_DUPLICATE
+    )
+    assert (
+        memory_conn.execute(
+            "SELECT * FROM reading_transactions WHERE planned_reading_id = ?",
+            ("plan-non-measured",),
+        ).fetchone()
+        == before
+    )
+
+
+@pytest.mark.parametrize("changed_value", [True, 1.0, "1"])
+def test_reading_upsert_distinguishes_structured_json_value_types(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+    changed_value: object,
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("plan-json", definition_id, meter_id)
+    )
+    first = replace(
+        _reading("plan-json", raw=Decimal("1")),
+        raw_reading=None,
+        structured_payload_json={"value": 1},
+    )
+    assert sqlite_repository.upsert_reading(first).disposition is UpsertDisposition.INSERTED
+
+    changed = replace(first, structured_payload_json={"value": changed_value})
+    assert (
+        sqlite_repository.upsert_reading(changed).disposition is UpsertDisposition.REPLACED_ON_TIE
+    )
+    stored = memory_conn.execute(
+        "SELECT structured_payload_json, arrival_sequence FROM reading_transactions "
+        "WHERE planned_reading_id = ?",
+        ("plan-json",),
+    ).fetchone()
+    assert stored == (_json_text({"value": changed_value}), 2)
+
+
+@pytest.mark.parametrize(
+    ("stored_payload", "message"),
+    [("{", "JSON が不正"), ("[]", "JSON object")],
+)
+def test_reading_upsert_reports_invalid_stored_structured_json(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+    stored_payload: str,
+    message: str,
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("plan-bad-json", definition_id, meter_id)
+    )
+    request = _reading("plan-bad-json", raw=Decimal("1"))
+    sqlite_repository.upsert_reading(request)
+    memory_conn.execute(
+        "UPDATE reading_transactions SET structured_payload_json = ? WHERE planned_reading_id = ?",
+        (stored_payload, "plan-bad-json"),
+    )
+
+    with pytest.raises(ValidationError, match=message):
+        sqlite_repository.upsert_reading(request)
+
+
+def test_stale_reading_preserves_existing_decimal_validation_order(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("plan-bad-decimal", definition_id, meter_id)
+    )
+    request = _reading("plan-bad-decimal", raw=Decimal("1"))
+    sqlite_repository.upsert_reading(request)
+    memory_conn.execute(
+        "UPDATE reading_transactions SET raw_reading = ? WHERE planned_reading_id = ?",
+        ("1e3", "plan-bad-decimal"),
+    )
+
+    stale = replace(request, client_updated_at=READ_AT - timedelta(seconds=1))
+    assert sqlite_repository.upsert_reading(stale).disposition is UpsertDisposition.IGNORED_STALE
+    with pytest.raises(ValidationError, match="plain decimal"):
+        sqlite_repository.upsert_reading(request)
 
 
 def test_measured_history_is_meter_and_sequence_scoped(

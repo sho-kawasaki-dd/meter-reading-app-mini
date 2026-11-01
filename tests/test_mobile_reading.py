@@ -17,6 +17,7 @@ from meter_reading_mini.core.mobile_reading import (
     RESULT_CODE_SUFFIX,
     RESULT_KIND,
     SHEET_KIND,
+    MobileReadingResult,
     SheetFilter,
     cycle_group_for,
     dump_mr1_json,
@@ -130,6 +131,16 @@ def test_extract_rejects_draft_payload_and_corrupted_blocks() -> None:
     ):
         with pytest.raises(ValidationError):
             extract_mr1_json_object(invalid_text)
+
+
+def test_parse_result_rejects_mr1_with_valid_format_but_incorrect_crc() -> None:
+    code = encode_mr1_envelope(_sample_payload())
+    prefix, checksum_with_suffix = code.rsplit(".", 1)
+    checksum = checksum_with_suffix.removesuffix(RESULT_CODE_SUFFIX)
+    incorrect_checksum = ("0" if checksum[0] != "0" else "1") + checksum[1:]
+
+    with pytest.raises(ValidationError, match="途中で欠けているか改変"):
+        parse_mobile_reading_result(f"{prefix}.{incorrect_checksum}{RESULT_CODE_SUFFIX}")
 
 
 def test_validate_sheet_id_note_and_safe_json_for_script() -> None:
@@ -313,19 +324,43 @@ def _with_top(**changes: object) -> dict[str, object]:
         _with_entry(result_status="skipped"),
     ],
 )
-def test_parse_result_rejects_invalid_payloads(payload: dict[str, object]) -> None:
+@pytest.mark.parametrize("as_mr1", [False, True])
+def test_parse_result_rejects_invalid_payloads(payload: dict[str, object], as_mr1: bool) -> None:
+    raw = _result_code(payload) if as_mr1 else json.dumps(payload, ensure_ascii=False)
     with pytest.raises(ValidationError):
-        parse_mobile_reading_result(_result_code(payload))
+        parse_mobile_reading_result(raw)
 
 
-def test_parse_result_rejects_duplicate_planned_reading_ids() -> None:
+@pytest.mark.parametrize("as_mr1", [False, True])
+def test_parse_result_rejects_duplicate_planned_reading_ids(as_mr1: bool) -> None:
     payload = _sample_payload()
     entries = payload["entries"]
     assert isinstance(entries, list)
     payload["entries"] = [entries[0], dict(entries[0])]
 
     with pytest.raises(ValidationError, match="重複"):
-        parse_mobile_reading_result(_result_code(payload))
+        parse_mobile_reading_result(
+            _result_code(payload) if as_mr1 else json.dumps(payload, ensure_ascii=False)
+        )
+
+
+def test_mobile_result_rejects_duplicate_ids_on_direct_construction() -> None:
+    entry = parse_mobile_reading_result(_result_code(_sample_payload())).entries[0]
+
+    with pytest.raises(ValidationError, match="重複"):
+        MobileReadingResult(sheet_id=VALID_SHEET_ID, entries=(entry, entry.model_copy()))
+
+
+def test_mobile_result_rechecks_duplicate_ids_before_sync_conversion() -> None:
+    first = parse_mobile_reading_result(_result_code(_sample_payload())).entries[0]
+    second = first.model_copy(update={"planned_reading_id": "pr-002"})
+    result = MobileReadingResult(sheet_id=VALID_SHEET_ID, entries=(first, second))
+    second.planned_reading_id = first.planned_reading_id
+
+    with pytest.raises(ValidationError, match="重複"):
+        result.validate_unique_entries()
+    with pytest.raises(ValidationError, match="重複"):
+        result.to_sync_request()
 
 
 def test_parse_result_rejects_drafts_unknown_kinds_and_non_json() -> None:

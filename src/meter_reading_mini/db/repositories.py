@@ -83,6 +83,12 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     UpsertOutcome,
     WeeklySchedule,
 )
+from meter_reading_mini.core.reading_comparison import (
+    ComparableReadingContent,
+    ComparableReadingHeader,
+    reading_content_matches,
+    serialize_structured_payload,
+)
 from meter_reading_mini.core.timeutil import parse_utc, utc_now, utc_now_str
 
 _TIMEZONE_SETTING = "app.timezone.v1"
@@ -163,12 +169,7 @@ def _id_chunks(values: Collection[str]) -> list[tuple[str, ...]]:
 
 
 def _json_text(value: dict[str, Any] | None) -> str | None:
-    if value is None:
-        return None
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError) as exc:
-        raise ValidationError(f"構造化入力を JSON 化できません: {exc}") from exc
+    return serialize_structured_payload(value)
 
 
 def _deserialize_schedule(cycle: ReadingCycle, raw: str) -> ScheduleSettings:
@@ -1885,13 +1886,32 @@ class SQLiteRepository:
             if not isinstance(parsed_payload, dict):
                 raise ValidationError("保存済み構造化入力は JSON object である必要があります。")
             stored_payload = _json_text(cast(dict[str, Any], parsed_payload))
-        return (
-            str(row[0]) == request.result_status.value
-            and str(row[1]) == utc_now_str(request.recorded_at)
-            and str(row[2]) == utc_now_str(request.client_updated_at)
-            and _read_decimal(str(row[3]) if row[3] is not None else None) == request.raw_reading
-            and stored_payload == _json_text(request.structured_payload_json)
-            and (str(row[5]) if row[5] is not None else None) == request.note
+        existing_header = ComparableReadingHeader(
+            result_status=str(row[0]),
+            recorded_at=str(row[1]),
+            client_updated_at=str(row[2]),
+        )
+        incoming_header = ComparableReadingHeader(
+            result_status=request.result_status.value,
+            recorded_at=utc_now_str(request.recorded_at),
+            client_updated_at=utc_now_str(request.client_updated_at),
+        )
+        # ヘッダー不一致時は既存読値をデコードしない従来の判定順を保つ。
+        if existing_header != incoming_header:
+            return False
+        return reading_content_matches(
+            ComparableReadingContent(
+                header=existing_header,
+                raw_reading=_read_decimal(str(row[3]) if row[3] is not None else None),
+                structured_payload_json=stored_payload,
+                note=str(row[5]) if row[5] is not None else None,
+            ),
+            ComparableReadingContent(
+                header=incoming_header,
+                raw_reading=request.raw_reading,
+                structured_payload_json=_json_text(request.structured_payload_json),
+                note=request.note,
+            ),
         )
 
     def _mark_planned_reading_completed(self, planned_reading_id: str, closed_at: datetime) -> None:

@@ -331,6 +331,18 @@ def extract_mr1_json_object(raw_text: object) -> dict[str, object]:
     return payload_dict
 
 
+def validate_unique_planned_reading_ids(entries: Iterable[MeterReadingSubmission]) -> None:
+    """可変な検針結果を使用する直前に、予定枠 ID の一意性を検証する。"""
+
+    seen: set[str] = set()
+    for submission in entries:
+        if submission.planned_reading_id in seen:
+            raise ValidationError(
+                f"同じ予定枠の検針結果が重複しています: {submission.planned_reading_id}"
+            )
+        seen.add(submission.planned_reading_id)
+
+
 @dataclass(frozen=True, slots=True)
 class MobileReadingResult:
     """検証済みのスマホ検針結果。ヘッダ値はシート由来の参考情報。"""
@@ -341,7 +353,14 @@ class MobileReadingResult:
     generated_at: str | None = None
     filter: SheetFilter | None = None
 
+    def __post_init__(self) -> None:
+        self.validate_unique_entries()
+
+    def validate_unique_entries(self) -> None:
+        validate_unique_planned_reading_ids(self.entries)
+
     def to_sync_request(self) -> MeterReadingSyncRequest:
+        self.validate_unique_entries()
         return MeterReadingSyncRequest(reading_items=list(self.entries), replacement_items=[])
 
     def to_confirmation_context(
@@ -413,13 +432,7 @@ def _parse_entries(value: object) -> tuple[MeterReadingSubmission, ...]:
     submissions = [
         _parse_entry(entry, index) for index, entry in enumerate(cast(list[object], value))
     ]
-    seen: set[str] = set()
-    for submission in submissions:
-        if submission.planned_reading_id in seen:
-            raise ValidationError(
-                f"同じ予定枠の検針結果が重複しています: {submission.planned_reading_id}"
-            )
-        seen.add(submission.planned_reading_id)
+    validate_unique_planned_reading_ids(submissions)
     return tuple(submissions)
 
 
