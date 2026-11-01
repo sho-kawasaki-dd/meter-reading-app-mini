@@ -99,6 +99,12 @@ class ReplacementHistoryEntry:
     definition_readings: tuple[ReplacementDefinitionReading, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ReplacementTarget:
+    definition: MeasurementDefinitionRecord
+    assignment: MeterAssignmentRecord
+
+
 class _ReplacementPreviewLookup:
     def __init__(
         self,
@@ -165,6 +171,35 @@ class MeterReplacementService:
         self._timezone_provider = timezone_provider
         self._calculation = UsageDeltaCalculationService()
 
+    def list_replacement_targets(
+        self, old_meter_id: str, replaced_at: datetime
+    ) -> tuple[ReplacementTarget, ...]:
+        requested_at = normalize_to_utc(replaced_at)
+        if requested_at > normalize_to_utc(self._now_provider()):
+            raise ValidationError("未来の交換日時は指定できません。")
+        at = parse_utc(utc_now_str(requested_at))
+        old_meter = self._meters.get_meter_master(old_meter_id)
+        if old_meter is None:
+            raise ValidationError(f"交換元メーターが見つかりません: {old_meter_id}")
+        assignments = self._repository.list_assignments_spanning_meter(old_meter_id, at)
+        if not assignments:
+            raise ValidationError("交換日時をまたぐ旧メーターの割当がありません。")
+        definition_ids = {assignment.measurement_definition_id for assignment in assignments}
+        if len(definition_ids) != len(assignments):
+            raise ValidationError("交換対象のメーター割当が重複しています。")
+        targets: list[ReplacementTarget] = []
+        for assignment in assignments:
+            definition = self._definitions.get_measurement_definition(
+                assignment.measurement_definition_id
+            )
+            if definition is None or definition.location_id != old_meter.location_id:
+                raise ValidationError(
+                    "交換対象の測定定義または場所が不正です: "
+                    f"{assignment.measurement_definition_id}"
+                )
+            targets.append(ReplacementTarget(definition, assignment))
+        return tuple(targets)
+
     def preview_replacement(self, request: MeterReplacementInput) -> ReplacementPreview:
         requested_at = normalize_to_utc(request.replaced_at)
         if requested_at > normalize_to_utc(self._now_provider()):
@@ -196,12 +231,9 @@ class MeterReplacementService:
             new_meter_id = "__new_meter_preview__"
             if new_meter_id == old_meter.meter_id:
                 new_meter_id += "_"
-        assignments = self._repository.list_assignments_spanning_meter(old_meter.meter_id, at)
-        if not assignments:
-            raise ValidationError("交換日時をまたぐ旧メーターの割当がありません。")
+        targets = self.list_replacement_targets(old_meter.meter_id, at)
+        assignments = [target.assignment for target in targets]
         definition_ids = {assignment.measurement_definition_id for assignment in assignments}
-        if len(definition_ids) != len(assignments):
-            raise ValidationError("交換対象のメーター割当が重複しています。")
         if set(request.new_terms) - definition_ids:
             raise ValidationError("交換対象外の測定定義に計算条件が指定されています。")
         for assignment in assignments:
@@ -226,7 +258,9 @@ class MeterReplacementService:
         errors: list[str] = []
         incomplete_count = 0
         nonmeasured_count = 0
-        for assignment in assignments:
+        for target in targets:
+            assignment = target.assignment
+            definition = target.definition
             definition_id = assignment.measurement_definition_id
             if self._assignments.get_meter_assignment(definition_id, at) != assignment:
                 raise ValidationError(f"交換対象の割当が一意ではありません: {definition_id}")
@@ -237,9 +271,6 @@ class MeterReplacementService:
                 raise ValidationError(
                     f"交換日時より後に割当切替または交換があります: {definition_id}"
                 )
-            definition = self._definitions.get_measurement_definition(definition_id)
-            if definition is None or definition.location_id != old_meter.location_id:
-                raise ValidationError(f"交換対象の測定定義または場所が不正です: {definition_id}")
             terms = request.new_terms.get(
                 definition_id,
                 AssignmentCalculationTerms(assignment.multiplier, assignment.rollover_value),
@@ -300,9 +331,9 @@ class MeterReplacementService:
                         previous = prior_boundary.new_initial_reading
                 rollover = (
                     definition.calculation_method is not CalculationMethod.RAW_ONLY
-                    and request.old_final_reading is not None
+                    and boundary.old_final_reading is not None
                     and previous is not None
-                    and request.old_final_reading < previous
+                    and boundary.old_final_reading < previous
                     and assignment.rollover_value is not None
                 )
                 definitions.append(
@@ -323,9 +354,16 @@ class MeterReplacementService:
             tuple(errors),
         )
 
-    def register_replacement(self, request: MeterReplacementInput) -> ReplacementEventRecord:
+    def register_replacement(
+        self,
+        request: MeterReplacementInput,
+        *,
+        expected_preview: ReplacementPreview | None = None,
+    ) -> ReplacementEventRecord:
         with self._transaction_factory():
             preview = self.preview_replacement(request)
+            if expected_preview is not None and preview != expected_preview:
+                raise ValidationError("交換の状況が変わりました。再度プレビューしてください。")
             if preview.errors:
                 raise ValidationError("交換できません: " + "、".join(preview.errors))
             if request.new_meter is not None:
@@ -373,7 +411,10 @@ class MeterReplacementService:
         return event
 
     def correct_replacement(
-        self, request: MeterReplacementCorrectionInput
+        self,
+        request: MeterReplacementCorrectionInput,
+        *,
+        expected_history: ReplacementHistoryEntry | None = None,
     ) -> ReplacementEventRecord:
         with self._transaction_factory():
             event = self._repository.get_replacement_event(request.replacement_event_id)
@@ -388,6 +429,19 @@ class MeterReplacementService:
             )
             if not boundaries:
                 raise ValidationError("訂正対象の交換境界がありません。")
+            current_readings = tuple(
+                ReplacementDefinitionReading(
+                    boundary.measurement_definition_id,
+                    boundary.old_final_reading,
+                    boundary.new_initial_reading,
+                )
+                for boundary in boundaries
+            )
+            if expected_history is not None and (
+                event != expected_history.event
+                or current_readings != expected_history.definition_readings
+            ):
+                raise ValidationError("交換履歴が変わりました。再読み込みしてください。")
             requested_readings = _resolve_definition_readings(
                 {boundary.measurement_definition_id for boundary in boundaries},
                 request.definition_readings,

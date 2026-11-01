@@ -180,6 +180,115 @@ def test_preview_rejects_correction_that_makes_a_following_reading_negative(
     assert conn.total_changes == changes
 
 
+@pytest.mark.parametrize("initial_state", ["open", "auto_closed", "nonmeasured"])
+def test_preview_includes_new_measured_reading_in_downstream_validation(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    initial_state: str,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, multiplier=Decimal("1"))
+    create_plan(repository, "previous", _at(3))
+    create_plan(repository, "target", _at(4))
+    create_plan(repository, "following", _at(5))
+    writer.save_manual_reading(_input("previous", "100", 3), staff_id=STAFF_ID)
+    if initial_state == "auto_closed":
+        conn.execute(
+            "UPDATE planned_readings SET task_state = 'auto_closed', "
+            "close_reason = 'cutoff_elapsed' WHERE planned_reading_id = 'target'"
+        )
+    elif initial_state == "nonmeasured":
+        writer.save_manual_reading(
+            ManualReadingInput("target", ResultStatus.SKIPPED, _at(4), None, None),
+            staff_id=STAFF_ID,
+        )
+    writer.save_manual_reading(_input("following", "130", 5), staff_id=STAFF_ID)
+    before = tuple(conn.iterdump())
+
+    preview = _preview(repository).preview_manual_reading(_input("target", "140", 4))
+
+    assert not preview.can_save
+    assert preview.error is not None and "ロールオーバー" in preview.error
+    assert tuple(conn.iterdump()) == before
+    with pytest.raises(ValidationError):
+        writer.save_manual_reading(_input("target", "140", 4), staff_id=STAFF_ID)
+    assert tuple(conn.iterdump()) == before
+
+
+def test_preview_includes_new_reading_in_later_replacement_boundary(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    create_plan(repository, "source", _at(4))
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="replacement-meter",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="交換先",
+            category=Category.WATER,
+        )
+    )
+    replacement = MeterReplacementService(
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        MeterMasterService(repository, transaction_factory=lambda: transaction(conn)),
+        writer,
+        transaction_factory=lambda: transaction(conn),
+        now_provider=lambda: NOW,
+    )
+    replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id=METER_ID,
+            replaced_at=_at(5),
+            old_final_reading=Decimal("120"),
+            new_initial_reading=Decimal("5"),
+            staff_id=STAFF_ID,
+            new_meter_id="replacement-meter",
+        )
+    )
+    before = tuple(conn.iterdump())
+
+    preview = _preview(repository).preview_manual_reading(_input("source", "130", 4))
+
+    assert not preview.can_save
+    assert preview.error is not None and "ロールオーバー" in preview.error
+    assert tuple(conn.iterdump()) == before
+    with pytest.raises(ValidationError):
+        writer.save_manual_reading(_input("source", "130", 4), staff_id=STAFF_ID)
+    assert tuple(conn.iterdump()) == before
+
+
+def test_preview_orders_new_readings_with_equal_scheduled_times_by_id(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    create_plan(repository, "previous", _at(3))
+    create_plan(repository, "a-target", _at(4))
+    create_plan(repository, "z-following", _at(4))
+    create_plan(repository, "zz-target", _at(4))
+    writer.save_manual_reading(_input("previous", "100", 3), staff_id=STAFF_ID)
+    writer.save_manual_reading(_input("z-following", "130", 4), staff_id=STAFF_ID)
+    service = _preview(repository)
+    assert not service.preview_manual_reading(_input("a-target", "140", 4)).can_save
+    assert service.preview_manual_reading(_input("a-target", "110", 4)).can_save
+    writer.save_manual_reading(_input("a-target", "110", 4), staff_id=STAFF_ID)
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions "
+        "WHERE planned_reading_id = 'z-following'"
+    ).fetchone() == ("110", "20")
+    later = service.preview_manual_reading(_input("zz-target", "140", 4))
+    assert later.previous_reading == Decimal("130")
+    assert later.usage_delta == Decimal("10")
+
+
 def test_preview_rejects_correction_that_makes_a_later_replacement_boundary_negative(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:

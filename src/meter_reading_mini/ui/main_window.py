@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTabBar,
@@ -43,7 +42,9 @@ from meter_reading_mini.core.reading_overview import (
     filter_reading_overview,
     summarize_reading_overview,
 )
+from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDialog
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
+from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
 from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.error_handling import run_guarded
 from meter_reading_mini.ui.models.reading_overview_model import (
@@ -236,9 +237,7 @@ class MainWindow(QMainWindow):
         self.refresh_action.triggered.connect(self.refresh_planned_readings)
         self.manual_reading_action.triggered.connect(self._on_manual_reading)
         self.master_action.triggered.connect(lambda: self._guard(self._open_master))
-        self.replacement_action.triggered.connect(
-            lambda: self._guard(lambda: self._show_unavailable("メーター交換"))
-        )
+        self.replacement_action.triggered.connect(lambda: self._guard(self._open_replacement))
         self.settings_action.triggered.connect(lambda: self._guard(self._open_settings))
         self.review_correction_button.clicked.connect(
             lambda: self._guard(self._show_review_guidance)
@@ -503,7 +502,9 @@ class MainWindow(QMainWindow):
         self._update_selection()
         if any(review.contains(reading) for review in self._review_assignments):
             raise ValidationError("計算条件の確認待ちです。訂正が完了するまで入力できません。")
-        self._show_unavailable("PC 直接入力・訂正")
+        dialog = DirectReadingDialog(self._services, reading, self._staff_memory, self)
+        dialog.saved.connect(self.notify_dialog_saved)
+        dialog.exec()
 
     def _show_review_guidance(self) -> None:
         reviews = self._load_review_assignments()
@@ -533,10 +534,17 @@ class MainWindow(QMainWindow):
         dialog.saved.connect(self.notify_dialog_saved)
         dialog.exec()
 
-    def _show_unavailable(self, feature: str) -> None:
-        QMessageBox.information(
-            self, feature, f"{feature}は今後の開発で実装予定です。現在は利用できません。"
+    def _open_replacement(self) -> None:
+        reading = self._selected_reading()
+        dialog = MeterReplacementDialog(
+            self._services,
+            self._staff_memory,
+            self,
+            location_id=reading.location_id if reading is not None else None,
+            old_meter_id=reading.meter_id if reading is not None else None,
         )
+        dialog.saved.connect(self.notify_dialog_saved)
+        dialog.exec()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.boundary_timer.stop()

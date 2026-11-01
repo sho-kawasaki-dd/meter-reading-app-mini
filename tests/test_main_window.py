@@ -38,7 +38,9 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingCreateRequest,
 )
 from meter_reading_mini.db.repositories import SQLiteRepository
+from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDialog
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
+from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
 from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.main_window import MainWindow, _ReviewAssignment
 
@@ -219,7 +221,7 @@ def _insert_review_flag(data: OverviewData, reason: str = "旧倍率が実測値
 
 
 def test_overview_displays_results_states_counts_and_selection(
-    window: MainWindow, messages: list[tuple[str, str, str]]
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     model = window.table_model
     assert model.rowCount() == 7
@@ -249,9 +251,14 @@ def test_overview_displays_results_states_counts_and_selection(
     _select(window, "plan-4")
     assert window.manual_reading_action.isEnabled()
     assert not window.successor_button.isEnabled()
+    opened: list[str] = []
+    monkeypatch.setattr(
+        DirectReadingDialog,
+        "exec",
+        lambda dialog: opened.append(dialog._reading.planned_reading_id) or 0,
+    )
     window.manual_reading_action.trigger()
-    assert messages[-1][0] == "information"
-    assert "現在は利用できません" in messages[-1][2]
+    assert opened == ["plan-4"]
     toolbar = window.findChild(QToolBar, "mainToolbar")
     assert toolbar is not None
     assert all(
@@ -367,6 +374,107 @@ def test_master_action_opens_dialog_and_refreshes_after_save(
     assert any(
         item.display_name == "画面から追加" for item in overview_data.services.staff.list_staff()
     )
+
+
+def test_replacement_action_uses_selection_and_refreshes_after_save(
+    overview_data: OverviewData, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    refresh = overview_data.services.planned_reading_maintenance.refresh
+
+    def tracked_refresh() -> None:
+        calls.append("refresh")
+        refresh()
+
+    def interact(dialog: MeterReplacementDialog) -> int:
+        assert dialog.parentWidget() is window
+        assert dialog.location_combo.currentData() == LOCATION_ID
+        assert dialog.registration_page.old_meter_combo.currentData() == METER_ID
+        dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+        assert window._staff_memory.staff_id == STAFF_ID
+        dialog.saved.emit()
+        return 0
+
+    monkeypatch.setattr(
+        overview_data.services.planned_reading_maintenance, "refresh", tracked_refresh
+    )
+    monkeypatch.setattr(MeterReplacementDialog, "exec", interact)
+    _select(window, "plan-4")
+    window.replacement_action.trigger()
+    assert calls == ["refresh"]
+
+
+def test_direct_action_saves_and_refreshes_the_selected_row(
+    overview_data: OverviewData, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+
+    def interact(dialog: DirectReadingDialog) -> int:
+        dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+        dialog.value_edit.setText("140")
+        assert dialog.save_button.isEnabled()
+        dialog.save_button.click()
+        return 0
+
+    monkeypatch.setattr(DirectReadingDialog, "exec", interact)
+    _select(window, "plan-4")
+    window.manual_reading_action.trigger()
+    row = window.table_model.row_for_id("plan-4")
+    assert row is not None
+    result = window.table_model.reading_at(row)
+    assert result is not None
+    assert result.result_status is ResultStatus.MEASURED
+    assert result.raw_reading == Decimal("140")
+    assert result.usage_delta == Decimal("10")
+    assert overview_data.services.staff.require_active_staff(STAFF_ID).display_name == "試験担当"
+
+
+def test_replacement_action_registers_and_refreshes_the_main_window(
+    overview_data: OverviewData, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    overview_data.repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="replacement-from-window",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="新メーター",
+            category=Category.WATER,
+        )
+    )
+    overview_data.clock.value = _at(8)
+    calls: list[str] = []
+    refresh = overview_data.services.planned_reading_maintenance.refresh
+
+    def tracked_refresh() -> None:
+        calls.append("refresh")
+        refresh()
+
+    def interact(dialog: MeterReplacementDialog) -> int:
+        dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+        page = dialog.registration_page
+        page.replaced_at.set_datetime(_at(7))
+        page.new_meter_combo.setCurrentIndex(
+            page.new_meter_combo.findData("replacement-from-window")
+        )
+        editor = page.definition_editors[DEFINITION_ID]
+        editor.old_final_edit.setText("140")
+        editor.new_initial_edit.setText("5")
+        page.preview_button.click()
+        assert page.apply_button.isEnabled(), page.preview_text.toPlainText()
+        page.apply_button.click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(
+        overview_data.services.planned_reading_maintenance, "refresh", tracked_refresh
+    )
+    monkeypatch.setattr(MeterReplacementDialog, "exec", interact)
+    _select(window, "plan-4")
+    window.replacement_action.trigger()
+    events = overview_data.services.meter_replacement.list_replacements(LOCATION_ID)
+    assert len(events) == 1
+    assert events[0].event.new_meter_id == "replacement-from-window"
+    assert calls == ["refresh"]
 
 
 def test_review_guidance_correction_clears_flag_and_unblocks_input(

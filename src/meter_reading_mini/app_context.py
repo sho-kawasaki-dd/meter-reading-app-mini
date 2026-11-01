@@ -13,8 +13,11 @@ from meter_reading_mini.core.assignment_calculation_settings import (
 )
 from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
 from meter_reading_mini.core.meter_master_service import MeterMasterService
+from meter_reading_mini.core.meter_replacement_service import MeterReplacementService
 from meter_reading_mini.core.planned_reading_maintenance import PlannedReadingMaintenanceService
 from meter_reading_mini.core.reading_overview import ReadingOverviewQueryService
+from meter_reading_mini.core.reading_preview import ReadingPreviewService
+from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
 from meter_reading_mini.core.schedule_settings import (
     CutoffSettingsService,
     MeasurementDefinitionScheduleService,
@@ -43,6 +46,9 @@ class AppContext:
     meter_master: MeterMasterService
     measurement_definitions: MeasurementDefinitionService
     staff: StaffService
+    reading_preview: ReadingPreviewService
+    reading_writer: ReadingWriteOrchestrationService
+    meter_replacement: MeterReplacementService
     schedule_defaults: ScheduleSettingsService
     measurement_schedules: MeasurementDefinitionScheduleService
     release_offsets: ReleaseOffsetSettingsService
@@ -107,6 +113,43 @@ def create_app_context(
         transaction_factory=transaction_factory,
         now_provider=clock,
     )
+    meter_master = MeterMasterService(repository, transaction_factory=transaction_factory)
+    reading_writer = ReadingWriteOrchestrationService(
+        repository,
+        repository,
+        repository,
+        planned_reading_repository=repository,
+        assignment_repository=repository,
+        boundary_repository=repository,
+        boundary_maintenance_repository=repository,
+        staff_repository=repository,
+        transaction_factory=transaction_factory,
+        now_provider=clock,
+    )
+    reading_preview = ReadingPreviewService(
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        now_provider=clock,
+    )
+    meter_replacement = MeterReplacementService(
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        meter_master,
+        reading_writer,
+        transaction_factory=transaction_factory,
+        now_provider=clock,
+        timezone_provider=timezone_settings.get_timezone,
+    )
     return AppContext(
         startup_preparation=startup,
         planned_reading_maintenance=maintenance,
@@ -114,11 +157,14 @@ def create_app_context(
             repository, business_date_provider=business_date
         ),
         assignment_calculation_settings=assignment_settings,
-        meter_master=MeterMasterService(repository, transaction_factory=transaction_factory),
+        meter_master=meter_master,
         measurement_definitions=MeasurementDefinitionService(
             repository, repository, repository, transaction_factory=transaction_factory
         ),
         staff=StaffService(repository, transaction_factory=transaction_factory),
+        reading_preview=reading_preview,
+        reading_writer=reading_writer,
+        meter_replacement=meter_replacement,
         schedule_defaults=ScheduleSettingsService(
             repository,
             recomposition_repository=repository,
