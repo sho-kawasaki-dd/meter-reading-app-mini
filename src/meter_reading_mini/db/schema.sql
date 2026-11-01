@@ -1,4 +1,4 @@
--- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 2)
+-- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 3)
 -- 将来の設備管理アプリ統合時にも備品在庫管理テーブルと衝突しない命名とする
 
 CREATE TABLE staff (
