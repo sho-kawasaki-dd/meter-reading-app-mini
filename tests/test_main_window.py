@@ -7,9 +7,9 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QDate, Qt, QTime
+from PySide6.QtCore import QDate, Qt, QTime, QTimer
 from PySide6.QtGui import QBrush
-from PySide6.QtWidgets import QMessageBox, QToolBar
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QToolBar
 from pytestqt.qtbot import QtBot
 from reading_service_helpers import (
     DEFINITION_ID,
@@ -402,6 +402,115 @@ def test_replacement_action_uses_selection_and_refreshes_after_save(
     _select(window, "plan-4")
     window.replacement_action.trigger()
     assert calls == ["refresh"]
+
+
+def test_row_context_menu_selects_row_and_opens_direct_reading(
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert window.table.contextMenuPolicy() is Qt.ContextMenuPolicy.CustomContextMenu
+    opened: list[str] = []
+    menus: list[QMenu] = []
+
+    def interact(dialog: DirectReadingDialog) -> int:
+        opened.append(dialog._reading.planned_reading_id)
+        return 0
+
+    def close_menu() -> None:
+        menu = QApplication.activePopupWidget()
+        assert isinstance(menu, QMenu)
+        menus.append(menu)
+        menu.close()
+
+    monkeypatch.setattr(DirectReadingDialog, "exec", interact)
+    _select(window, "plan-1")
+    row = window.table_model.row_for_id("plan-4")
+    assert row is not None
+    position = window.table.visualRect(window.table_model.index(row, 0)).center()
+
+    QTimer.singleShot(0, close_menu)
+    window.table.customContextMenuRequested.emit(position)
+    menus[0].actions()[0].trigger()
+
+    selected = window._selected_reading()
+    assert selected is not None
+    assert selected.planned_reading_id == "plan-4"
+    assert opened == ["plan-4"]
+    assert messages == []
+    assert len(menus) == 1
+    assert [action.text() for action in menus[0].actions()] == [
+        "PC 直接入力・訂正",
+        "メーター交換",
+    ]
+
+
+def test_row_context_menu_opens_replacement_for_right_clicked_row(
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[tuple[str | None, str | None]] = []
+    menus: list[QMenu] = []
+
+    def interact(dialog: MeterReplacementDialog) -> int:
+        opened.append(
+            (
+                dialog.location_combo.currentData(),
+                dialog.registration_page.old_meter_combo.currentData(),
+            )
+        )
+        return 0
+
+    def close_menu() -> None:
+        menu = QApplication.activePopupWidget()
+        assert isinstance(menu, QMenu)
+        menus.append(menu)
+        menu.close()
+
+    monkeypatch.setattr(MeterReplacementDialog, "exec", interact)
+    _select(window, "plan-4")
+    row = window.table_model.row_for_id("other-slot")
+    assert row is not None
+    position = window.table.visualRect(window.table_model.index(row, 0)).center()
+
+    QTimer.singleShot(0, close_menu)
+    window.table.customContextMenuRequested.emit(position)
+    menus[0].actions()[1].trigger()
+
+    assert opened == [("other-location", "other-meter")]
+    assert messages == []
+
+
+@pytest.mark.parametrize("blocked_reading_id", ["plan-3", "plan-4"])
+def test_row_context_menu_keeps_direct_action_disabled_for_blocked_readings(
+    overview_data: OverviewData,
+    qtbot: QtBot,
+    blocked_reading_id: str,
+) -> None:
+    if blocked_reading_id == "plan-4":
+        _insert_review_flag(overview_data)
+    window = MainWindow(overview_data.services)
+    qtbot.addWidget(window)
+    window.show()
+    menus: list[QMenu] = []
+
+    def close_menu() -> None:
+        menu = QApplication.activePopupWidget()
+        assert isinstance(menu, QMenu)
+        menus.append(menu)
+        menu.close()
+
+    row = window.table_model.row_for_id(blocked_reading_id)
+    assert row is not None
+    position = window.table.visualRect(window.table_model.index(row, 0)).center()
+
+    QTimer.singleShot(0, close_menu)
+    window.table.customContextMenuRequested.emit(position)
+
+    assert len(menus) == 1
+    assert menus[0].actions()[0] is window.manual_reading_action
+    assert not menus[0].actions()[0].isEnabled()
 
 
 def test_direct_action_saves_and_refreshes_the_selected_row(

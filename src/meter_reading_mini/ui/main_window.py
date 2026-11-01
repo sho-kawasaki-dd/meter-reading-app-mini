@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, time
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QDate, QPoint, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QTabBar,
@@ -216,6 +217,7 @@ class MainWindow(QMainWindow):
         self.table = QTableView()
         self.table.setObjectName("readingOverview")
         self.table.setModel(self.table_model)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -255,6 +257,7 @@ class MainWindow(QMainWindow):
         self.category_filter.currentIndexChanged.connect(self._on_filter_changed)
         self.location_filter.currentIndexChanged.connect(self._on_filter_changed)
         self.keyword_filter.textChanged.connect(self._on_filter_changed)
+        self.table.customContextMenuRequested.connect(self._show_reading_context_menu)
         selection = self.table.selectionModel()
         if selection is not None:
             selection.currentChanged.connect(self._on_selection_changed)
@@ -419,6 +422,17 @@ class MainWindow(QMainWindow):
 
     def _selected_reading(self) -> ReadingOverviewRecord | None:
         return self.table_model.reading_at(self.table.currentIndex().row())
+
+    def _show_reading_context_menu(self, position: QPoint) -> None:
+        index = self.table.indexAt(position)
+        if not index.isValid():
+            return
+        self.table.setCurrentIndex(index)
+        self.table.selectRow(index.row())
+        menu = QMenu(self)
+        menu.addAction(self.manual_reading_action)
+        menu.addAction(self.replacement_action)
+        menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _apply_filters(self) -> None:
         selected = self._selected_reading()
