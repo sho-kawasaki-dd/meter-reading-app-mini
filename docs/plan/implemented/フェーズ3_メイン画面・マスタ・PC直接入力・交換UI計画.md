@@ -1,11 +1,11 @@
 # Phase 3 メイン画面・マスタ管理・PC 直接検針・メーター交換 UI 計画
 
 - 作成日: 2026-10-28
-- 更新日: 2026-11-01(タスク5.3の実装・検証、検針予定行の右クリックメニュー、完了記録の正本・README反映を記録)
-- ステータス: 実装・手動確認完了(両 OS 必須 CI・merge 待ち)
+- 更新日: 2026-11-01(タスク5.3の実装・検証、検針予定行の右クリックメニュー、PR #29 の CI 成功・merge・凍結移動を記録)
+- ステータス: 完了(実装・手動確認・両 OS 必須 CI・merge)
 - 対象: リポジトリ直下を基点とする Phase 3(`src/`・`tests/`・`pyproject.toml`)
-- 正本: [ローカル検針管理アプリ開発計画書](./ローカル検針管理アプリ開発計画書.md) 3.1・5.1・6.1・8 章 Phase 3
-- 前提: [Phase 2 計画](implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) 完了済み
+- 正本: [ローカル検針管理アプリ開発計画書](../ローカル検針管理アプリ開発計画書.md) 3.1・5.1・6.1・8 章 Phase 3
+- 前提: [Phase 2 計画](フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) 完了済み
 - GitHub: `sho-kawasaki-dd/meter-reading-app-mini`
 
 ## 1. 目的
@@ -27,22 +27,22 @@
 
 | 機能 | 実装箇所 |
 | --- | --- |
-| メーター・担当者のマスタ操作 | [meter_master_service.py](../../src/meter_reading_mini/core/meter_master_service.py)、[staff_service.py](../../src/meter_reading_mini/core/staff_service.py) |
-| 測定定義の登録(初期割当・初期履歴も 1 トランザクションで保存) | [measurement_definition_service.py](../../src/meter_reading_mini/core/measurement_definition_service.py) |
-| スケジュール・配信オフセットの保存と予定枠の再構成 | [schedule_settings.py](../../src/meter_reading_mini/core/schedule_settings.py) |
-| PC 直接入力の保存 | `ReadingWriteOrchestrationService.save_manual_reading`([reading_write_orchestration.py](../../src/meter_reading_mini/core/reading_write_orchestration.py)) |
-| 交換の DB 反映(割当切替・境界作成・枠の `superseded` 化と後継枠生成) | `SQLiteRepository.reflect_replacement`([repositories.py](../../src/meter_reading_mini/db/repositories.py)) |
+| メーター・担当者のマスタ操作 | [meter_master_service.py](../../../src/meter_reading_mini/core/meter_master_service.py)、[staff_service.py](../../../src/meter_reading_mini/core/staff_service.py) |
+| 測定定義の登録(初期割当・初期履歴も 1 トランザクションで保存) | [measurement_definition_service.py](../../../src/meter_reading_mini/core/measurement_definition_service.py) |
+| スケジュール・配信オフセットの保存と予定枠の再構成 | [schedule_settings.py](../../../src/meter_reading_mini/core/schedule_settings.py) |
+| PC 直接入力の保存 | `ReadingWriteOrchestrationService.save_manual_reading`([reading_write_orchestration.py](../../../src/meter_reading_mini/core/reading_write_orchestration.py)) |
+| 交換の DB 反映(割当切替・境界作成・枠の `superseded` 化と後継枠生成) | `SQLiteRepository.reflect_replacement`([repositories.py](../../../src/meter_reading_mini/db/repositories.py)) |
 
 ### 足りないもの
 
-- **起動・画面**: [app.py](../../src/meter_reading_mini/app.py) は起動準備の後、画面を出さずに終了する。`__main__.py` もない。
+- **起動・画面**: [app.py](../../../src/meter_reading_mini/app.py) は起動準備の後、画面を出さずに終了する。`__main__.py` もない。
 - **一覧の取得**: MainWindow に必要な「業務日の全状態の枠 + 結果(`raw_reading`・力率の `structured_payload_json`) + マスタ名 + `warning_threshold`」の問い合わせがない。既存の取得処理はシート用で `open` と `auto_closed` しか返さない。
 - **測定定義の一覧と取得項目**: `MeasurementDefinitionService` に管理画面用の一覧取得(`list_measurement_definitions`)がない。また `MeasurementDefinitionRecord` と `SQLiteRepository.get_measurement_definition` に `warning_threshold` と現在割当中の `meter_id` が含まれておらず、編集画面の初期表示やプレビューの閾値超過判定に足りない。
 - **PC 用の交換 Service**: 交換は `MeterReadingSyncService.sync` の `replacement_items` 経由でしか実行できない。影響プレビュー・トランザクション・担当者確認・イベント ID 採番を持つ PC 用 Service が必要。
 - **交換の訂正**: `reflect_replacement` は登録済みの交換に再実行しても境界の読値を更新しない。割当の検索条件が「旧メーターの割当が交換日時をまたぐこと」で、初回反映で旧割当が交換日時で終わるため、再実行では対象 0 件になる。訂正には `replacement_events` と `replacement_boundaries` の双方を直接更新する専用処理が必要(5.1)。同じ問題は `sync` 経由の再送にもある(別 issue、7 章)。
 - **スケジュール・配信オフセットの履歴取得**: Repository には履歴一覧の取得があるが、`ScheduleSettingsService`・`MeasurementDefinitionScheduleService`・`ReleaseOffsetSettingsService` に履歴一覧を返す公開メソッドがない。また周期既定に戻す公開操作(NULL 履歴の保存)がない。
 - **締め時刻の保存**: `CutoffSettingsService.save_cutoff_time` にトランザクションと入力形式の検証がない。
-- **壁時計日時の検証・UTC 変換**: [timezone_settings.py](../../src/meter_reading_mini/core/timezone_settings.py) に、UI で入力した業務タイムゾーンの壁時計日時について存在しない時刻・重複する時刻(サマータイム)や未来日時を検証して UTC に変換する補助関数がない。
+- **壁時計日時の検証・UTC 変換**: [timezone_settings.py](../../../src/meter_reading_mini/core/timezone_settings.py) に、UI で入力した業務タイムゾーンの壁時計日時について存在しない時刻・重複する時刻(サマータイム)や未来日時を検証して UTC に変換する補助関数がない。
 - **ID の扱い**: 作成要求が `meter_id`・`measurement_definition_id`・`staff_id` の入力を必須にしており、自動採番がない(`staff` テーブルのみ `INTEGER PRIMARY KEY` で整数 ID を要求する)。
 - **場所名の一括変更**: 同じ `location_id` の全メーターへ場所名を反映する処理がない。
 - **割当期間ごとの計算条件**: 倍率・ロールオーバー値は測定定義の現在値しかなく、過去の正しい条件を復元できない。通常入力・スマホ取込・シート出力・交換境界・後続再計算を、対象割当の条件で統一する必要がある。
@@ -185,7 +185,7 @@ PR-3a の前半で計算条件の保存・移行・共通解決を実装し、�
 - [x] 測定定義の取得項目拡張と管理用一覧取得を追加する。
   - `MeasurementDefinitionRecord` と `SQLiteRepository.get_measurement_definition()` に `warning_threshold` と現在割当中の `meter_id` を含める。
   - `MeasurementDefinitionManagementRepository` と `MeasurementDefinitionService` に `list_measurement_definitions(*, show_inactive: bool = False)` を追加する。
-- [x] 壁時計日時の検証・UTC 変換補助を [timezone_settings.py](../../src/meter_reading_mini/core/timezone_settings.py) に追加する(P2)。
+- [x] 壁時計日時の検証・UTC 変換補助を [timezone_settings.py](../../../src/meter_reading_mini/core/timezone_settings.py) に追加する(P2)。
   - 業務タイムゾーンの壁時計日時を受け取り、サマータイムの存在しない時刻・重複する時刻、および未来日時を業務エラーとして拒否した上で UTC 秒単位へ変換する。
   - DST 境界を含む単体テストを追加する。
 - [x] 一覧用の読取 Repository を追加する。
@@ -198,7 +198,7 @@ PR-3a の前半で計算条件の保存・移行・共通解決を実装し、�
   - 未来日は業務エラーにする(D4)。
   - `superseded` は差し替え済み件数に分け、旧非実測結果を完了件数へ混ぜない。
 - [x] `ReadingPreviewService.preview_manual_reading()` を作る。
-  - 前回値・交換境界の判定は既存の共通化済みロジック([previous_reading.py](../../src/meter_reading_mini/core/previous_reading.py))を使う。
+  - 前回値・交換境界の判定は既存の共通化済みロジック([previous_reading.py](../../../src/meter_reading_mini/core/previous_reading.py))を使う。
   - 入力検証・計算条件は割当の共通解決を使い、保存経路と同じ条件にする。入力変更・検証失敗時の旧プレビュー無効化と確定時再検証を契約に含める。
   - 次を返す: 前回値・出所・使用量・ロールオーバー発生・閾値超過・負の差分エラー。
   - DB を変更しないことをテストで確認する。
@@ -367,7 +367,7 @@ PR-3a の前半で計算条件の保存・移行・共通解決を実装し、�
   - 旧・新の倍率／ロールオーバー値が異なる交換、各期間の入力検証・再計算
   - 訂正による再計算
 
-検証記録(2026-11-01、Windows): Ruff・Pyright 成功。`uv run pytest --cov -q` は 751 件成功、既存の `time.tzset()` 非対応テスト 1 件を Windows でスキップ。行 coverage は全体 94%、`core/` 96%、`db/` 91%。直接入力・交換画面の文字サイズ 150% での操作到達性は pytest-qt で検証したが、1366×768 での手動確認と両 OS の必須 CI は 5.5 に残す。
+検証記録(2026-11-01、Windows): Ruff・Pyright 成功。`uv run pytest --cov -q` は 751 件成功、既存の `time.tzset()` 非対応テスト 1 件を Windows でスキップ。行 coverage は全体 94%、`core/` 96%、`db/` 91%。直接入力・交換画面の文字サイズ 150% での操作到達性は pytest-qt で検証した。両 OS の必須 CI は完了記録 PR #29 で成功し、同 PR は merge 済み。
 
 ### 5.5 完了記録 PR `feature/phase3-completion`
 
@@ -375,9 +375,9 @@ PR-3a の前半で計算条件の保存・移行・共通解決を実装し、�
 - [x] 一時フォルダを指定した起動で、通しの手順を手動確認する: マスタ登録 → 予定枠の生成 → 締め時刻の経過による自動クローズ → 直接入力 → 非実測訂正 → 条件変更付き交換 → 読値訂正 → 過去割当の計算条件訂正。
 - [x] 正本へ反映する(2026-11-01)。
   - D1〜D17・P1〜P4 と 3.1〜3.4 の業務ルールを該当章へ統合した。割当条件・訂正履歴の保存構造、シート契約、復元検査、旧 DB の初期値引継ぎ・確認待ち・訂正手順も反映した。
-  - 8 章の Phase 3 に SettingsDialog を追加し、実装・手動確認完了日を記載した。両 OS 必須 CI と merge は未完了として区別した。
-- [x] README を更新した(2026-11-01)。起動手順の未実装表現を外し、Phase 3 の実装・手動確認完了と、必須 CI・merge 待ちを記載した。
-- [ ] 両 OS の必須 CI が成功した後に merge し、この計画書を `git mv` で `docs/plan/implemented/` へ移す。相対リンクも直す。
+  - 8 章の Phase 3 に SettingsDialog を追加し、実装・手動確認完了日を記載した。
+- [x] README を更新した(2026-11-01)。Phase 3 の実装・手動確認・両 OS 必須 CI・merge の完了状態を記載した。
+- [x] 両 OS の必須 CI 成功後に完了記録 PR #29 を merge し、この計画書を `git mv` で `docs/plan/implemented/` へ移動した。移動に伴う相対リンクも更新した。
 
 ## 6. 完了条件
 
