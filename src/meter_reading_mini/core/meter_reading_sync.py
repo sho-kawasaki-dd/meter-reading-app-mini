@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from pydantic import ValidationError as PydanticValidationError
 
+from meter_reading_mini.core.assignment_calculation import resolve_planned_assignment
 from meter_reading_mini.core.contract_models import (
     IgnoredReadingSyncItem,
     IgnoredReplacementSyncItem,
@@ -29,15 +30,22 @@ from meter_reading_mini.core.contract_models import (
     ValueSchema,
     resolve_meter_reading_submission,
 )
-from meter_reading_mini.core.errors import DomainError, InactiveMasterError
+from meter_reading_mini.core.errors import (
+    DomainError,
+    InactiveMasterError,
+    SupersededPlannedReadingError,
+)
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    AssignmentCalculationLookupRepository,
     MeasurementDefinitionLookupRepository,
     MeasurementDefinitionRecord,
     PlannedReadingLookupRepository,
     PlannedReadingRecord,
+    PlannedReadingTaskState,
     ReadingConfirmationContext,
     ReadingUpsertRequest,
     ReadingWriteService,
+    ReplacementDefinitionReading,
     ReplacementEventUpsertRepository,
     ReplacementReflectionRepository,
     ReplacementUpsertRequest,
@@ -132,6 +140,7 @@ class MeterReadingSyncService:
         staff_repository: StaffRepository,
         replacement_reflection_repository: ReplacementReflectionRepository,
         *,
+        assignment_repository: AssignmentCalculationLookupRepository,
         resolve_submission: ReadingSubmissionResolver = _default_reading_submission_resolver,
     ) -> None:
         self._conn = conn
@@ -141,6 +150,7 @@ class MeterReadingSyncService:
         self._replacement_repository = replacement_repository
         self._staff_repository = staff_repository
         self._replacement_reflection_repository = replacement_reflection_repository
+        self._assignment_repository = assignment_repository
         self._resolve_submission = resolve_submission
 
     def sync(
@@ -300,18 +310,21 @@ class MeterReadingSyncService:
         )
         if planned_reading is None:
             raise MissingPlannedReadingError(submission.planned_reading_id)
+        if planned_reading.task_state is PlannedReadingTaskState.SUPERSEDED:
+            raise SupersededPlannedReadingError(planned_reading.planned_reading_id)
         measurement_definition = self._measurement_definition_repository.get_measurement_definition(
             planned_reading.measurement_definition_id
         )
         if measurement_definition is None:
             raise MissingMeasurementDefinitionError(planned_reading.measurement_definition_id)
+        assignment = resolve_planned_assignment(self._assignment_repository, planned_reading)
         try:
             resolved_submission = self._resolve_submission(
                 submission,
                 measurement_definition.measurement_definition_id,
                 measurement_definition.value_schema,
                 measurement_definition.decimal_places,
-                measurement_definition.rollover_value,
+                assignment.rollover_value,
             )
         except PydanticValidationError as exc:
             raise InvalidReadingSubmissionError(
@@ -370,6 +383,14 @@ class MeterReadingSyncService:
             new_initial_reading=submission.new_initial_reading,
             updated_by=updated_by,
             note=submission.note,
+            definition_readings=tuple(
+                ReplacementDefinitionReading(
+                    reading.measurement_definition_id,
+                    reading.old_final_reading,
+                    reading.new_initial_reading,
+                )
+                for reading in submission.definition_readings
+            ),
         )
 
 

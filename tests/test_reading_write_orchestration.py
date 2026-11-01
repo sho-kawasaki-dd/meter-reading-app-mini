@@ -267,6 +267,7 @@ def test_manual_write_requires_configured_transaction_and_active_staff(
         repository,
         repository,
         planned_reading_repository=repository,
+        assignment_repository=repository,
         boundary_repository=repository,
         boundary_maintenance_repository=repository,
     )

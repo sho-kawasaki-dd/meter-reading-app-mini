@@ -73,10 +73,13 @@ def slot(
     last_reading: str | None = None,
     previous_scheduled_at: str | None = None,
     previous_planned_reading_id: str | None = None,
+    assignment_effective_from: str = "2026-02-01 00:00:00",
+    multiplier: str | None = None,
+    rollover_value: str | None = None,
 ) -> dict[str, Any]:
     hour, minute = int(session[:2]), int(session[3:])
     default_utc = datetime(2026, 2, 4, hour, minute) - timedelta(hours=9)
-    return {
+    result = {
         "planned_reading_id": planned_reading_id,
         "measurement_definition_id": definition_id,
         "meter_id": meter_id,
@@ -88,7 +91,12 @@ def slot(
         "initial_previous_scheduled_at": previous_scheduled_at,
         "initial_previous_planned_reading_id": previous_planned_reading_id,
         "previous_source": previous_source,
+        "assignment_effective_from": assignment_effective_from,
     }
+    if multiplier is not None:
+        result["multiplier"] = multiplier
+        result["rollover_value"] = rollover_value
+    return result
 
 
 def sheet_data(
@@ -100,6 +108,14 @@ def sheet_data(
     for item in meters:
         if item["location_id"] is not None:
             locations.setdefault(item["location_id"], item["location_name"])
+    definitions_by_id = {item["measurement_definition_id"]: item for item in definitions}
+    slots_with_conditions = []
+    for item in slots:
+        definition_data = definitions_by_id[item["measurement_definition_id"]]
+        slot_data = dict(item)
+        slot_data.setdefault("multiplier", definition_data["multiplier"])
+        slot_data.setdefault("rollover_value", definition_data["rollover_value"])
+        slots_with_conditions.append(slot_data)
     return {
         "kind": "mrm-meter-reading-sheet",
         "v": 1,
@@ -113,7 +129,7 @@ def sheet_data(
         ],
         "meters": list(meters),
         "definitions": list(definitions),
-        "slots": list(slots),
+        "slots": slots_with_conditions,
     }
 
 

@@ -145,6 +145,22 @@ def test_measurement_definition_rejects_negative_decimal_fields() -> None:
         )
 
 
+@pytest.mark.parametrize("value", [Decimal("-1"), Decimal("-0")])
+def test_nonnegative_contract_rejects_signed_decimal_objects(value: Decimal) -> None:
+    with pytest.raises(ValidationError):
+        MeterReadingSubmission.model_validate(
+            {
+                "planned_reading_id": "plan-001",
+                "result_status": "measured",
+                "raw_reading": value,
+                "recorded_at": "2026-04-01T08:00:00+09:00",
+                "client_updated_at": "2026-04-01T08:05:00+09:00",
+            }
+        )
+    with pytest.raises(ValidationError):
+        PowerFactorReading.model_validate({"percent": value, "phase": "lead"})
+
+
 def test_meter_reading_submission_requires_raw_reading_for_measured() -> None:
     with pytest.raises(ValidationError):
         MeterReadingSubmission.model_validate(

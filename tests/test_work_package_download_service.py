@@ -32,6 +32,7 @@ from meter_reading_mini.core.work_package_download import (
     PlannedReadingGeneratorService,
     PlannedReadingLifecycleService,
     WorkPackageDownloadService,
+    WorkPackageDownloadServiceError,
     _resolve_auto_close_through_business_date,
 )
 from meter_reading_mini.db.connection import transaction
@@ -181,6 +182,61 @@ def test_backfill_completes_in_fourteen_day_chunks_and_is_idempotent(
     batch_sizes.clear()
     service.download_for_business_date(date(2026, 2, 25))
     assert batch_sizes == []
+
+
+def test_backfill_does_not_treat_a_superseded_slot_as_an_existing_active_slot(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _create_definition(conn, repository, definition_id="definition-missing-successor")
+    generator = _build_generator(conn, repository)
+    target = date(2026, 2, 5)
+    generator.ensure_generated_through(target)
+    conn.execute(
+        "UPDATE planned_readings SET task_state = 'superseded', "
+        "close_reason = 'meter_replaced' "
+        "WHERE measurement_definition_id = ?",
+        ("definition-missing-successor",),
+    )
+
+    with pytest.raises(WorkPackageDownloadServiceError, match="補完を完了できません"):
+        generator.ensure_generated_through(target)
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM planned_readings WHERE task_state != 'superseded'"
+    ).fetchone() == (0,)
+
+
+def test_backfill_accepts_a_replacement_successor_for_a_superseded_slot(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    meter_id = _create_definition(conn, repository, definition_id="definition-successor")
+    generator = _build_generator(conn, repository)
+    target = date(2026, 2, 5)
+    generator.ensure_generated_through(target)
+    old_id = conn.execute("SELECT planned_reading_id FROM planned_readings").fetchone()[0]
+    successor = PlannedReadingCreateRequest(
+        planned_reading_id="successor",
+        measurement_definition_id="definition-successor",
+        meter_id=meter_id,
+        location_id="location-work-package",
+        business_date=target,
+        release_date=target,
+        reading_session=ReadingSession.SESSION_0800,
+        scheduled_at=build_scheduled_at(target, "08:00"),
+    )
+    repository.create_planned_reading_if_missing(successor)
+    conn.execute(
+        "UPDATE planned_readings SET task_state = 'superseded', "
+        "close_reason = 'meter_replaced', superseded_by_planned_reading_id = ? "
+        "WHERE planned_reading_id = ?",
+        ("successor", old_id),
+    )
+
+    generator.ensure_generated_through(target)
+
+    assert conn.execute("SELECT COUNT(*) FROM planned_readings").fetchone() == (2,)
 
 
 def test_new_definition_backfills_from_its_own_start_despite_other_existing_rows(

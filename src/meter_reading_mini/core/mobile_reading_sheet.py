@@ -9,12 +9,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
 from decimal import Decimal
 
+from meter_reading_mini.core.assignment_calculation import resolve_planned_calculation_context
 from meter_reading_mini.core.contract_models import (
     MeasurementDefinitionData,
     MeterMasterData,
 )
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    AssignmentCalculationLookupRepository,
     HistoricalMeasuredReadingLookupRepository,
     PlannedReadingRecord,
     PlannedReadingTaskQueryRepository,
@@ -31,10 +33,7 @@ from meter_reading_mini.core.mobile_reading import (
     format_sheet_timestamps,
     render_sheet_html,
 )
-from meter_reading_mini.core.previous_reading import (
-    describe_initial_previous_reading,
-    resolve_calculation_context,
-)
+from meter_reading_mini.core.previous_reading import describe_initial_previous_reading
 from meter_reading_mini.core.timeutil import utc_now, utc_now_str
 from meter_reading_mini.core.timezone_settings import DEFAULT_APP_TIMEZONE
 from meter_reading_mini.core.work_package_download import (
@@ -103,6 +102,7 @@ class MobileReadingSheetService:
         task_repository: PlannedReadingTaskQueryRepository,
         master_repository: SheetMasterQueryRepository,
         historical_reading_repository: HistoricalMeasuredReadingLookupRepository,
+        assignment_repository: AssignmentCalculationLookupRepository,
         boundary_repository: ReplacementBoundaryLookupRepository,
         transaction_factory: Callable[[], AbstractContextManager[object]],
         timezone_provider: Callable[[], tzinfo] | None = None,
@@ -114,6 +114,7 @@ class MobileReadingSheetService:
         self._task_repository = task_repository
         self._master_repository = master_repository
         self._historical_reading_repository = historical_reading_repository
+        self._assignment_repository = assignment_repository
         self._boundary_repository = boundary_repository
         self._transaction_factory = transaction_factory
         self._timezone_provider = timezone_provider or (lambda: DEFAULT_APP_TIMEZONE)
@@ -174,15 +175,24 @@ class MobileReadingSheetService:
             {slot.measurement_definition_id for slot in slots}
         )
         _require_masters(slots, meters, definitions)
+        definitions_by_id = {
+            definition.measurement_definition_id: definition for definition in definitions
+        }
         return {
             "locations": _build_locations(slots, meters),
             "meters": [_meter_json(meter) for meter in meters],
             "definitions": [_definition_json(definition) for definition in definitions],
-            "slots": [self._slot_json(slot) for slot in slots],
+            "slots": [
+                self._slot_json(slot, definitions_by_id[slot.measurement_definition_id])
+                for slot in slots
+            ],
         }
 
-    def _slot_json(self, slot: SheetPlannedReadingRecord) -> dict[str, object]:
-        context = resolve_calculation_context(
+    def _slot_json(
+        self, slot: SheetPlannedReadingRecord, definition: MeasurementDefinitionData
+    ) -> dict[str, object]:
+        assignment, context = resolve_planned_calculation_context(
+            self._assignment_repository,
             self._historical_reading_repository,
             self._boundary_repository,
             PlannedReadingRecord(
@@ -191,13 +201,16 @@ class MobileReadingSheetService:
                 meter_id=slot.meter_id,
                 scheduled_at=slot.scheduled_at,
             ),
-            excluding_planned_reading_id=slot.planned_reading_id,
+            definition,
         )
         initial = describe_initial_previous_reading(context)
         return {
             "planned_reading_id": slot.planned_reading_id,
             "measurement_definition_id": slot.measurement_definition_id,
             "meter_id": slot.meter_id,
+            "assignment_effective_from": utc_now_str(assignment.effective_from),
+            "multiplier": format(assignment.multiplier, "f"),
+            "rollover_value": _decimal_json(assignment.rollover_value),
             "reading_session": slot.reading_session.value,
             "scheduled_at": utc_now_str(slot.scheduled_at),
             "reading_cycle": slot.reading_cycle.value,
@@ -276,10 +289,8 @@ def _definition_json(definition: MeasurementDefinitionData) -> dict[str, object]
         "category": definition.category.value,
         "unit": definition.unit,
         "value_schema": definition.value_schema.value,
-        "multiplier": format(definition.multiplier, "f"),
         "decimal_places": definition.decimal_places,
         "warning_threshold": _decimal_json(definition.warning_threshold),
-        "rollover_value": _decimal_json(definition.rollover_value),
         "calculation_method": definition.calculation_method.value,
     }
 

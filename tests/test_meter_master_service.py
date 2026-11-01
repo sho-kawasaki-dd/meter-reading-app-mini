@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import partial
+from uuid import uuid4
 
 import pytest
 from reading_service_helpers import (
     DEFINITION_ID,
     LOCATION_ID,
     METER_ID,
+    STAFF_ID,
     TEST_NOW,
     build_services,
     create_plan,
@@ -20,12 +23,14 @@ from meter_reading_mini.core.contract_models import (
     Category,
     Purpose,
     ReadingCycle,
+    ResultStatus,
     ValueSchema,
 )
 from meter_reading_mini.core.errors import (
     InactiveMasterError,
     InvalidTimezoneError,
     MasterInUseError,
+    MeterAssignmentResolutionError,
     ValidationError,
 )
 from meter_reading_mini.core.measurement_definition_service import (
@@ -37,8 +42,11 @@ from meter_reading_mini.core.meter_master_service import (
     MeterValidationError,
 )
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    ManualReadingInput,
+    MeasurementDefinitionCreateInput,
     MeasurementDefinitionCreateRequest,
     MeasurementDefinitionUpdateRequest,
+    MeterMasterCreateInput,
     MeterMasterCreateRequest,
     MeterMasterUpdateRequest,
     PlannedReadingCloseReason,
@@ -58,17 +66,19 @@ def _meter_service(conn, repository: SQLiteRepository) -> MeterMasterService:
     return MeterMasterService(repository, transaction_factory=partial(transaction, conn))
 
 
-def _definition_service(conn, repository: SQLiteRepository) -> MeasurementDefinitionService:
+def _definition_service(
+    conn, repository: SQLiteRepository, *, id_provider: Callable[[], str] | None = None
+) -> MeasurementDefinitionService:
     return MeasurementDefinitionService(
         repository,
         repository,
         repository,
         transaction_factory=partial(transaction, conn),
+        id_provider=id_provider or (lambda: uuid4().hex),
     )
 
 
 def _new_definition_request(
-    measurement_definition_id: str,
     *,
     multiplier: Decimal = Decimal("1"),
     warning_threshold: Decimal | None = None,
@@ -77,9 +87,8 @@ def _new_definition_request(
     initial_schedule_json: str | None = None,
     initial_meter_id: str | None = None,
     display_name: str = "測定対象",
-) -> MeasurementDefinitionCreateRequest:
-    return MeasurementDefinitionCreateRequest(
-        measurement_definition_id=measurement_definition_id,
+) -> MeasurementDefinitionCreateInput:
+    return MeasurementDefinitionCreateInput(
         location_id=LOCATION_ID,
         display_name=display_name,
         category=Category.WATER,
@@ -103,7 +112,11 @@ def test_meter_master_service_uses_repository_and_protects_active_meters(
 ) -> None:
     conn, repository = file_database_repository
     build_services(conn, repository)
-    service = _meter_service(conn, repository)
+    service = MeterMasterService(
+        repository,
+        transaction_factory=partial(transaction, conn),
+        id_provider=lambda: "meter-unused",
+    )
     assert [meter.meter_id for meter in service.list_meters()] == [METER_ID]
     assert service.get_usage(METER_ID).has_active_assignment is True
     with pytest.raises(MasterInUseError):
@@ -112,20 +125,16 @@ def test_meter_master_service_uses_repository_and_protects_active_meters(
         service.get_usage("missing-meter")
     with pytest.raises(MeterValidationError):
         service.create_meter(
-            MeterMasterCreateRequest(
-                meter_id=" ",
+            MeterMasterCreateInput(
                 location_id=LOCATION_ID,
-                location_name="試験場所",
-                meter_name="不正",
+                meter_name=" ",
                 category=Category.WATER,
             )
         )
 
     created = service.create_meter(
-        MeterMasterCreateRequest(
-            meter_id="meter-unused",
+        MeterMasterCreateInput(
             location_id=LOCATION_ID,
-            location_name="試験場所",
             meter_name="予備メーター",
             category=Category.WATER,
             meter_serial="S-001",
@@ -134,13 +143,12 @@ def test_meter_master_service_uses_repository_and_protects_active_meters(
     updated = service.update_meter(
         created.meter_id,
         MeterMasterUpdateRequest(
-            location_name="更新場所",
             meter_name="更新メーター",
             category=Category.GAS,
             meter_serial=None,
         ),
     )
-    assert updated.location_name == "更新場所"
+    assert updated.location_name == "試験場所"
     assert updated.category is Category.GAS
 
     service.deactivate_meter(created.meter_id)
@@ -160,7 +168,10 @@ def test_meter_master_service_rolls_back_partial_repository_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn, repository = file_database_repository
-    service = _meter_service(conn, repository)
+    ids = iter(("meter-rollback", "new-location"))
+    service = MeterMasterService(
+        repository, transaction_factory=partial(transaction, conn), id_provider=lambda: next(ids)
+    )
     original_create = repository.create_meter_master
 
     def create_then_fail(request: MeterMasterCreateRequest):
@@ -170,10 +181,8 @@ def test_meter_master_service_rolls_back_partial_repository_failure(
     monkeypatch.setattr(repository, "create_meter_master", create_then_fail)
     with pytest.raises(RuntimeError, match="予期しない障害"):
         service.create_meter(
-            MeterMasterCreateRequest(
-                meter_id="meter-rollback",
-                location_id=LOCATION_ID,
-                location_name="試験場所",
+            MeterMasterCreateInput(
+                new_location_name="試験場所",
                 meter_name="rollback",
                 category=Category.WATER,
             )
@@ -181,14 +190,160 @@ def test_meter_master_service_rolls_back_partial_repository_failure(
     assert repository.get_meter_master("meter-rollback") is None
 
 
+def test_meter_and_location_ids_are_generated_and_renames_include_inactive_meters(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    ids = iter(("meter-a", "location-a", "meter-b", "meter-c"))
+    service = MeterMasterService(
+        repository, transaction_factory=partial(transaction, conn), id_provider=lambda: next(ids)
+    )
+    first = service.create_meter(
+        MeterMasterCreateInput(
+            meter_name="メーター A", category=Category.WATER, new_location_name="旧名称"
+        )
+    )
+    second = service.create_meter(
+        MeterMasterCreateInput(
+            meter_name="メーター B", category=Category.WATER, location_id=first.location_id
+        )
+    )
+    assert (first.meter_id, first.location_id, second.meter_id) == (
+        "meter-a",
+        "location-a",
+        "meter-b",
+    )
+    service.deactivate_meter(second.meter_id)
+    service.rename_location(first.location_id, "  新名称  ")
+    assert [(item.location_id, item.location_name) for item in service.list_locations()] == [
+        ("location-a", "新名称")
+    ]
+    assert repository.get_meter_master(second.meter_id).location_name == "新名称"
+    third = service.create_meter(
+        MeterMasterCreateInput(
+            meter_name="メーター C", category=Category.WATER, location_id=first.location_id
+        )
+    )
+    assert third.location_name == "新名称"
+    with pytest.raises(ValidationError, match="一致しません"):
+        repository.create_meter_master(
+            MeterMasterCreateRequest(
+                meter_id="mismatch",
+                location_id=first.location_id,
+                location_name="旧名称",
+                meter_name="不正",
+                category=Category.WATER,
+            )
+        )
+
+
+def test_meter_validation_and_nested_registration_roll_back(
+    file_database_repository: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = MeterMasterService(
+        repository, transaction_factory=partial(transaction, conn), id_provider=lambda: "new-meter"
+    )
+    for request in (
+        MeterMasterCreateInput(meter_name="x", category=Category.WATER),
+        MeterMasterCreateInput(meter_name="x", category=Category.WATER, location_id="missing"),
+        MeterMasterCreateInput(
+            meter_name="x",
+            category=Category.WATER,
+            location_id=LOCATION_ID,
+            new_location_name="新規",
+        ),
+    ):
+        with pytest.raises(MeterValidationError):
+            service.create_meter(request)
+    with pytest.raises(RuntimeError, match="交換失敗"), transaction(conn):
+        service.create_meter_within_transaction(
+            MeterMasterCreateInput(
+                meter_name="交換用", category=Category.WATER, location_id=LOCATION_ID
+            )
+        )
+        raise RuntimeError("交換失敗")
+    assert repository.get_meter_master("new-meter") is None
+
+    original_rename = repository.rename_meter_location
+
+    def rename_then_fail(location_id: str, name: str) -> None:
+        original_rename(location_id, name)
+        raise RuntimeError("名称変更失敗")
+
+    monkeypatch.setattr(repository, "rename_meter_location", rename_then_fail)
+    with pytest.raises(RuntimeError, match="名称変更失敗"):
+        service.rename_location(LOCATION_ID, "新名称")
+    assert repository.get_meter_location(LOCATION_ID).location_name == "試験場所"
+
+    duplicate = MeterMasterService(
+        repository, transaction_factory=partial(transaction, conn), id_provider=lambda: METER_ID
+    )
+    with pytest.raises(MeterValidationError, match="既に存在"):
+        duplicate.create_meter(
+            MeterMasterCreateInput(
+                meter_name="重複", category=Category.WATER, location_id=LOCATION_ID
+            )
+        )
+    location_ids = iter(("new-meter", LOCATION_ID))
+    duplicate_location = MeterMasterService(
+        repository,
+        transaction_factory=partial(transaction, conn),
+        id_provider=lambda: next(location_ids),
+    )
+    with pytest.raises(MeterValidationError, match="location_id.*既に存在"):
+        duplicate_location.create_meter(
+            MeterMasterCreateInput(
+                meter_name="重複場所",
+                category=Category.WATER,
+                new_location_name="別の場所",
+            )
+        )
+    assert repository.get_meter_master("new-meter") is None
+
+
+def test_inconsistent_legacy_location_names_can_be_listed_and_repaired(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = MeterMasterService(
+        repository, transaction_factory=partial(transaction, conn), id_provider=lambda: "unused"
+    )
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="second-meter",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="別メーター",
+            category=Category.WATER,
+        )
+    )
+    conn.execute(
+        "UPDATE physical_meters SET location_name = '別名' WHERE meter_id = ?",
+        (METER_ID,),
+    )
+
+    location = next(item for item in service.list_locations() if item.location_id == LOCATION_ID)
+    assert location.has_name_conflict
+    assert set(location.location_names) == {"試験場所", "別名"}
+
+    service.rename_location(LOCATION_ID, "統一名称")
+
+    repaired = repository.get_meter_location(LOCATION_ID)
+    assert repaired is not None and not repaired.has_name_conflict
+    assert repaired.location_names == ("統一名称",)
+
+
 def test_measurement_definition_service_persists_initial_schedule_and_assignment_atomically(
     file_database_repository: tuple,
 ) -> None:
     conn, repository = file_database_repository
     build_services(conn, repository)
-    service = _definition_service(conn, repository)
-    request = MeasurementDefinitionCreateRequest(
-        measurement_definition_id="definition-created",
+    service = _definition_service(conn, repository, id_provider=lambda: "definition-created")
+    request = MeasurementDefinitionCreateInput(
         location_id=LOCATION_ID,
         display_name="追加測定対象",
         category=Category.WATER,
@@ -210,14 +365,13 @@ def test_measurement_definition_service_persists_initial_schedule_and_assignment
     with pytest.raises(ValidationError, match="既に登録"):
         service.create_measurement_definition(request)
 
-    assert created.measurement_definition_id == request.measurement_definition_id
-    history = repository.list_measurement_definition_schedule_history(
-        request.measurement_definition_id
-    )
+    definition_id = created.measurement_definition_id
+    assert definition_id == "definition-created"
+    history = repository.list_measurement_definition_schedule_history(definition_id)
     assert len(history) == 1
     assert history[0].effective_from_date == request.generation_start_date
     assignment = repository.get_meter_assignment(
-        request.measurement_definition_id,
+        definition_id,
         TEST_NOW,
     )
     assert assignment is not None
@@ -227,14 +381,12 @@ def test_measurement_definition_service_persists_initial_schedule_and_assignment
         display_name="更新対象",
         category=Category.WATER,
         unit="m3",
-        multiplier=Decimal("2"),
         decimal_places=2,
         warning_threshold=None,
-        rollover_value=None,
         purpose=Purpose.AUDIT,
     )
     updated = service.update_measurement_definition(
-        request.measurement_definition_id,
+        definition_id,
         base_update,
     )
     assert updated.display_name == "更新対象"
@@ -253,17 +405,131 @@ def test_measurement_definition_service_persists_initial_schedule_and_assignment
     for update_request, label in immutable_requests:
         with pytest.raises(ValidationError, match=label):
             service.update_measurement_definition(
-                request.measurement_definition_id,
+                definition_id,
                 update_request,
             )
     with pytest.raises(ValidationError, match="集計目的"):
         service.update_measurement_definition(
-            request.measurement_definition_id,
+            definition_id,
             replace(base_update, purpose="invalid"),
         )
-    unchanged = service.get_measurement_definition(request.measurement_definition_id)
+    unchanged = service.get_measurement_definition(definition_id)
     assert unchanged is not None
     assert unchanged.location_id == LOCATION_ID
+
+
+def test_measurement_definition_management_lists_current_assignment_and_threshold(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = _definition_service(conn, repository)
+    active = service.create_measurement_definition(
+        _new_definition_request(
+            initial_meter_id=METER_ID,
+            warning_threshold=Decimal("123.45"),
+        )
+    )
+    inactive = service.create_measurement_definition(_new_definition_request())
+    service.deactivate_measurement_definition(inactive.measurement_definition_id)
+    future = service.create_measurement_definition(
+        replace(
+            _new_definition_request(initial_meter_id=METER_ID),
+            generation_start_date=date(2026, 2, 5),
+        )
+    )
+
+    assert active.warning_threshold == Decimal("123.45")
+    assert active.meter_id == METER_ID
+    assert future.meter_id is None
+    active_ids = {
+        definition.measurement_definition_id
+        for definition in service.list_measurement_definitions()
+    }
+    all_ids = {
+        definition.measurement_definition_id
+        for definition in service.list_measurement_definitions(show_inactive=True)
+    }
+    assert inactive.measurement_definition_id not in active_ids
+    assert all_ids == active_ids | {inactive.measurement_definition_id}
+    assert service.get_measurement_definition(active.measurement_definition_id) == active
+
+
+def test_decimal_places_change_preserves_historical_reading_and_rejects_unrepresentable_rollover(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    service = _definition_service(conn, repository)
+    before_at = datetime(2026, 2, 4, 4, tzinfo=UTC)
+    after_at = datetime(2026, 2, 4, 5, tzinfo=UTC)
+    create_plan(repository, "precision-before", before_at)
+    create_plan(repository, "precision-after", after_at)
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "precision-before", ResultStatus.MEASURED, before_at, Decimal("1.23"), None
+        ),
+        staff_id=STAFF_ID,
+    )
+    conn.execute(
+        "UPDATE meter_assignments SET rollover_value = '1000.25' "
+        "WHERE measurement_definition_id = ?",
+        (DEFINITION_ID,),
+    )
+    update = MeasurementDefinitionUpdateRequest(
+        display_name="精度変更",
+        category=Category.WATER,
+        unit="m3",
+        decimal_places=0,
+        warning_threshold=None,
+        purpose=Purpose.OPERATIONAL,
+    )
+    with pytest.raises(ValidationError, match="ロールオーバー値"):
+        service.update_measurement_definition(DEFINITION_ID, update)
+
+    conn.execute(
+        "UPDATE meter_assignments SET rollover_value = '1000' WHERE measurement_definition_id = ?",
+        (DEFINITION_ID,),
+    )
+    service.update_measurement_definition(DEFINITION_ID, update)
+    writer.save_manual_reading(
+        ManualReadingInput("precision-after", ResultStatus.MEASURED, after_at, Decimal("2"), None),
+        staff_id=STAFF_ID,
+    )
+
+    assert conn.execute(
+        "SELECT raw_reading, last_reading, usage_delta FROM reading_transactions "
+        "WHERE planned_reading_id = 'precision-after'"
+    ).fetchone() == ("2", "1.23", "0.77")
+
+
+def test_measurement_definition_rejects_overlapping_current_assignments(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = _definition_service(conn, repository)
+    with transaction(conn):
+        repository.create_meter_master(
+            MeterMasterCreateRequest(
+                meter_id="meter-overlapping",
+                location_id=LOCATION_ID,
+                location_name="試験場所",
+                meter_name="予備",
+                category=Category.WATER,
+            )
+        )
+        conn.execute(
+            "INSERT INTO meter_assignments "
+            "(measurement_definition_id, meter_id, effective_from, effective_to, multiplier) "
+            "VALUES (?, ?, ?, NULL, '1')",
+            (DEFINITION_ID, "meter-overlapping", "2026-02-02 00:00:00"),
+        )
+
+    with pytest.raises(MeterAssignmentResolutionError, match="複数"):
+        service.get_measurement_definition(DEFINITION_ID)
+    with pytest.raises(MeterAssignmentResolutionError, match="複数"):
+        service.list_measurement_definitions()
 
 
 def test_measurement_definition_service_validates_create_values(
@@ -271,7 +537,7 @@ def test_measurement_definition_service_validates_create_values(
 ) -> None:
     conn, repository = file_database_repository
     service = _definition_service(conn, repository)
-    base = _new_definition_request("definition-invalid")
+    base = _new_definition_request()
     invalid_requests = (
         replace(base, multiplier=Decimal("0")),
         replace(base, warning_threshold=Decimal("-1")),
@@ -292,15 +558,11 @@ def test_measurement_definition_service_sets_initial_assignment_and_reactivation
     conn, repository = file_database_repository
     build_services(conn, repository)
     service = _definition_service(conn, repository)
-    definition_id = "definition-assigned-later"
-    service.create_measurement_definition(
-        _new_definition_request(definition_id, initial_meter_id=" ")
-    )
+    created = service.create_measurement_definition(_new_definition_request(initial_meter_id=" "))
+    definition_id = created.measurement_definition_id
     spare_meter = _meter_service(conn, repository).create_meter(
-        MeterMasterCreateRequest(
-            meter_id="meter-disabled",
+        MeterMasterCreateInput(
             location_id=LOCATION_ID,
-            location_name="試験場所",
             meter_name="無効化メーター",
             category=Category.WATER,
         )
@@ -357,7 +619,7 @@ def test_measurement_definition_service_rolls_back_create_after_partial_reposito
 ) -> None:
     conn, repository = file_database_repository
     build_services(conn, repository)
-    service = _definition_service(conn, repository)
+    service = _definition_service(conn, repository, id_provider=lambda: "definition-rollback")
     original_create = repository.create_measurement_definition
 
     def create_then_fail(request: MeasurementDefinitionCreateRequest) -> None:
@@ -366,9 +628,7 @@ def test_measurement_definition_service_rolls_back_create_after_partial_reposito
 
     monkeypatch.setattr(repository, "create_measurement_definition", create_then_fail)
     with pytest.raises(RuntimeError, match="初期履歴保存後の障害"):
-        service.create_measurement_definition(
-            _new_definition_request("definition-rollback", initial_meter_id=METER_ID)
-        )
+        service.create_measurement_definition(_new_definition_request(initial_meter_id=METER_ID))
     assert repository.get_measurement_definition("definition-rollback") is None
     assert repository.list_measurement_definition_schedule_history("definition-rollback") == []
     assert repository.list_meter_assignments("definition-rollback") == []
@@ -379,12 +639,12 @@ def test_measurement_definition_service_rolls_back_when_readback_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn, repository = file_database_repository
-    service = _definition_service(conn, repository)
+    service = _definition_service(conn, repository, id_provider=lambda: "definition-no-readback")
     original_get = repository.get_measurement_definition
     monkeypatch.setattr(repository, "get_measurement_definition", lambda definition_id: None)
 
     with pytest.raises(ValidationError, match="登録した測定定義"):
-        service.create_measurement_definition(_new_definition_request("definition-no-readback"))
+        service.create_measurement_definition(_new_definition_request())
 
     assert original_get("definition-no-readback") is None
 
@@ -411,10 +671,8 @@ def test_measurement_definition_service_update_readback_failure_rolls_back(
         display_name="更新後",
         category=Category.WATER,
         unit="m3",
-        multiplier=Decimal("3"),
         decimal_places=2,
         warning_threshold=None,
-        rollover_value=None,
         purpose=Purpose.AUDIT,
     )
     with pytest.raises(ValidationError, match="更新した測定定義"):
@@ -466,27 +724,32 @@ def test_staff_service_crud_and_inactive_staff_rejection(
     conn, repository = file_database_repository
     service = StaffService(repository, transaction_factory=partial(transaction, conn))
 
-    staff = service.create_staff(StaffCreateRequest("12", "  担当者A  "))
+    staff = service.create_staff(StaffCreateRequest("  担当者A  "))
+    assert staff.staff_id == "1"
     assert staff.display_name == "担当者A"
-    assert service.require_active_staff("12") == staff
-    updated = service.update_staff("12", StaffUpdateRequest("担当者B"))
+    assert service.require_active_staff(staff.staff_id) == staff
+    updated = service.update_staff(staff.staff_id, StaffUpdateRequest("担当者B"))
     assert updated.display_name == "担当者B"
-    service.deactivate_staff("12")
+    service.deactivate_staff(staff.staff_id)
     assert service.list_staff() == []
     with pytest.raises(InactiveMasterError):
-        service.require_active_staff("12")
-    service.activate_staff("12")
-    assert service.require_active_staff("12").is_active is True
+        service.require_active_staff(staff.staff_id)
     with pytest.raises(StaffValidationError, match="既に登録"):
-        service.create_staff(StaffCreateRequest("12", "別の担当者"))
-    with pytest.raises(ValidationError):
-        service.create_staff(StaffCreateRequest("13", "担当者B"))
+        service.create_staff(StaffCreateRequest("担当者B"))
+    service.activate_staff(staff.staff_id)
+    assert service.require_active_staff(staff.staff_id).is_active is True
+    with pytest.raises(StaffValidationError, match="既に登録"):
+        service.create_staff(StaffCreateRequest("担当者B"))
+    another = service.create_staff(StaffCreateRequest("担当者C"))
+    assert another.staff_id == "2"
+    with pytest.raises(StaffValidationError, match="既に登録"):
+        service.update_staff(another.staff_id, StaffUpdateRequest("担当者B"))
     with pytest.raises(StaffValidationError, match="整数"):
         service.get_staff("invalid")
     with pytest.raises(StaffValidationError, match="正の整数"):
-        service.create_staff(StaffCreateRequest("0", "担当者C"))
+        service.get_staff("0")
     with pytest.raises(StaffValidationError, match="担当者名"):
-        service.update_staff("12", StaffUpdateRequest("  "))
+        service.update_staff(staff.staff_id, StaffUpdateRequest("  "))
     with pytest.raises(StaffNotFoundError):
         service.update_staff("99", StaffUpdateRequest("担当者"))
     with pytest.raises(StaffNotFoundError):

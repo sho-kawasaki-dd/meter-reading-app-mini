@@ -136,7 +136,43 @@ class MeterAssignmentRecord:
     measurement_definition_id: str
     meter_id: str
     effective_from: datetime
+    multiplier: Decimal
+    rollover_value: Decimal | None
     effective_to: datetime | None = None
+    needs_review: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentReviewFlagRecord:
+    measurement_definition_id: str
+    meter_id: str
+    assignment_effective_from: datetime
+    reason: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentMeasuredReadingRecord:
+    planned_reading_id: str
+    raw_reading: Decimal | None
+    last_reading: Decimal | None
+    usage_delta: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentCalculationCorrectionRecord:
+    correction_id: str
+    measurement_definition_id: str
+    meter_id: str
+    assignment_effective_from: datetime
+    old_multiplier: Decimal
+    old_rollover_value: Decimal | None
+    new_multiplier: Decimal
+    new_rollover_value: Decimal | None
+    staff_id: str
+    staff_name: str
+    corrected_at: datetime
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +187,26 @@ class MeterMasterRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class MeterLocationRecord:
+    location_id: str
+    location_name: str
+    location_names: tuple[str, ...] = ()
+
+    @property
+    def has_name_conflict(self) -> bool:
+        return len(self.location_names) > 1
+
+
+@dataclass(frozen=True, slots=True)
+class MeterMasterCreateInput:
+    meter_name: str
+    category: Category
+    location_id: str | None = None
+    new_location_name: str | None = None
+    meter_serial: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MeterMasterCreateRequest:
     meter_id: str
     location_id: str
@@ -162,7 +218,6 @@ class MeterMasterCreateRequest:
 
 @dataclass(frozen=True, slots=True)
 class MeterMasterUpdateRequest:
-    location_name: str
     meter_name: str
     category: Category
     meter_serial: str | None = None
@@ -175,8 +230,7 @@ class MeterMasterUsageRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class MeasurementDefinitionCreateRequest:
-    measurement_definition_id: str
+class MeasurementDefinitionCreateInput:
     location_id: str
     display_name: str
     category: Category
@@ -195,14 +249,17 @@ class MeasurementDefinitionCreateRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class MeasurementDefinitionCreateRequest(MeasurementDefinitionCreateInput):
+    measurement_definition_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class MeasurementDefinitionUpdateRequest:
     display_name: str
     category: Category
     unit: str
-    multiplier: Decimal
     decimal_places: int | None
     warning_threshold: Decimal | None
-    rollover_value: Decimal | None
     purpose: Purpose | str
     location_id: str | None = None
     reading_cycle: ReadingCycle | None = None
@@ -219,7 +276,6 @@ class StaffRecord:
 
 @dataclass(frozen=True, slots=True)
 class StaffCreateRequest:
-    staff_id: str
     display_name: str
 
 
@@ -281,7 +337,7 @@ class PlannedReadingRecord:
 
 @dataclass(frozen=True, slots=True)
 class MeasurementDefinitionRecord:
-    """measurement definition lookup の最小結果。"""
+    """現在割当があればその条件を返し、なければ初期登録時の条件を返す。"""
 
     measurement_definition_id: str
     value_schema: ValueSchema
@@ -297,6 +353,8 @@ class MeasurementDefinitionRecord:
     category: Category | None = None
     unit: str | None = None
     purpose: Purpose | None = None
+    warning_threshold: Decimal | None = None
+    meter_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,6 +421,34 @@ class SheetPlannedReadingRecord:
     task_state: PlannedReadingTaskState
 
 
+@dataclass(frozen=True, slots=True)
+class ReadingOverviewRecord:
+    planned_reading_id: str
+    measurement_definition_id: str
+    meter_id: str
+    location_id: str
+    location_name: str
+    meter_name: str
+    display_name: str
+    category: Category
+    reading_cycle: ReadingCycle
+    unit: str
+    business_date: date
+    reading_session: ReadingSession
+    scheduled_at: datetime
+    task_state: PlannedReadingTaskState
+    close_reason: PlannedReadingCloseReason | None
+    superseded_by_planned_reading_id: str | None
+    result_status: ResultStatus | None
+    raw_reading: Decimal | None
+    structured_payload_json: str | None
+    last_reading: Decimal | None
+    usage_delta: Decimal | None
+    warning_threshold: Decimal | None
+    recorded_at: datetime | None
+    note: str | None
+
+
 class ResultSource(StrEnum):
     """reading transaction の監査用ソース語彙。"""
 
@@ -422,6 +508,46 @@ class ReplacementUpsertRequest:
     new_initial_reading: Decimal | None
     updated_by: str
     note: str | None
+    definition_readings: tuple[ReplacementDefinitionReading, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementDefinitionReading:
+    measurement_definition_id: str
+    old_final_reading: Decimal | None
+    new_initial_reading: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentCalculationTerms:
+    multiplier: Decimal
+    rollover_value: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementEventRecord:
+    replacement_event_id: str
+    location_id: str
+    old_meter_id: str
+    new_meter_id: str
+    replaced_at: datetime
+    old_final_reading: Decimal | None
+    new_initial_reading: Decimal | None
+    client_updated_at: datetime
+    updated_by: str
+    note: str | None
+    arrival_sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementAffectedSlot:
+    planned_reading_id: str
+    task_state: PlannedReadingTaskState
+    result_status: ResultStatus | None
+    raw_reading: Decimal | None
+    last_reading: Decimal | None
+    usage_delta: Decimal | None
+    structured_payload_json: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,6 +569,10 @@ class ReplacementBoundaryCalculationRecord:
     new_meter_id: str
     replaced_at: datetime
     old_final_reading: Decimal | None
+    new_initial_reading: Decimal | None
+    old_assignment_effective_from: datetime
+    new_assignment_effective_from: datetime
+    old_meter_usage_delta: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,6 +767,12 @@ class MeterMasterWriteRepository(Protocol):
 
     def get_meter_master(self, meter_id: str) -> MeterMasterRecord | None: ...
 
+    def list_meter_locations(self) -> list[MeterLocationRecord]: ...
+
+    def get_meter_location(self, location_id: str) -> MeterLocationRecord | None: ...
+
+    def rename_meter_location(self, location_id: str, location_name: str) -> None: ...
+
     def create_meter_master(self, request: MeterMasterCreateRequest) -> MeterMasterRecord: ...
 
     def update_meter_master(
@@ -668,11 +804,17 @@ class MeasurementDefinitionWriteRepository(Protocol):
     ) -> None: ...
 
 
-class MeterAssignmentRepository(Protocol):
+class AssignmentCalculationLookupRepository(Protocol):
     def get_meter_assignment(
         self, measurement_definition_id: str, at: datetime
     ) -> MeterAssignmentRecord | None: ...
 
+    def get_meter_assignment_by_key(
+        self, measurement_definition_id: str, meter_id: str, effective_from: datetime
+    ) -> MeterAssignmentRecord | None: ...
+
+
+class MeterAssignmentRepository(AssignmentCalculationLookupRepository, Protocol):
     def list_meter_assignments(
         self, measurement_definition_id: str
     ) -> list[MeterAssignmentRecord]: ...
@@ -680,6 +822,30 @@ class MeterAssignmentRepository(Protocol):
     def set_initial_meter_assignment(
         self, measurement_definition_id: str, meter_id: str, effective_from: datetime
     ) -> None: ...
+
+
+class AssignmentCalculationSettingsRepository(MeterAssignmentRepository, Protocol):
+    def list_assignment_review_flags(self) -> list[AssignmentReviewFlagRecord]: ...
+
+    def clear_assignment_review_flag(self, assignment: MeterAssignmentRecord) -> None: ...
+
+    def list_assignment_measured_readings(
+        self, assignment: MeterAssignmentRecord
+    ) -> list[AssignmentMeasuredReadingRecord]: ...
+
+    def list_assignment_boundaries(
+        self, assignment: MeterAssignmentRecord
+    ) -> list[ReplacementBoundaryCalculationRecord]: ...
+
+    def update_assignment_calculation(self, assignment: MeterAssignmentRecord) -> None: ...
+
+    def save_assignment_calculation_correction(
+        self, correction: AssignmentCalculationCorrectionRecord
+    ) -> None: ...
+
+    def list_assignment_calculation_corrections(
+        self, assignment: MeterAssignmentRecord
+    ) -> list[AssignmentCalculationCorrectionRecord]: ...
 
 
 class StaffRepository(Protocol):
@@ -717,6 +883,10 @@ class MeasurementDefinitionManagementRepository(
     Protocol,
 ):
     """測定定義の読み書きをまとめる管理用境界。"""
+
+    def list_measurement_definitions(
+        self, *, show_inactive: bool = False
+    ) -> list[MeasurementDefinitionRecord]: ...
 
 
 class MeasurementDefinitionQueryRepository(Protocol):
@@ -767,6 +937,10 @@ class PlannedReadingTaskQueryRepository(Protocol):
     def list_open_planned_reading_tasks(self, business_date: date) -> list[PlannedReadingTask]:
         """Deprecated alias for business_date-specific queries."""
         ...
+
+
+class ReadingOverviewRepository(Protocol):
+    def list_reading_overview(self, business_date: date) -> list[ReadingOverviewRecord]: ...
 
 
 class ReleaseDateCalculator(Protocol):
@@ -944,10 +1118,43 @@ class ReplacementBoundaryMaintenanceRepository(Protocol):
     ) -> None: ...
 
 
+class MeterReplacementRepository(ReplacementEventUpsertRepository, Protocol):
+    def list_assignments_spanning_meter(
+        self, meter_id: str, replaced_at: datetime
+    ) -> list[MeterAssignmentRecord]: ...
+
+    def has_meter_assignment_on_or_after(self, meter_id: str, at: datetime) -> bool: ...
+
+    def has_later_assignment_or_replacement(
+        self, measurement_definition_id: str, replaced_at: datetime
+    ) -> bool: ...
+
+    def list_replacement_affected_slots(
+        self, measurement_definition_id: str, meter_id: str, replaced_at: datetime
+    ) -> list[ReplacementAffectedSlot]: ...
+
+    def get_replacement_event(self, replacement_event_id: str) -> ReplacementEventRecord | None: ...
+
+    def list_replacement_events(self, location_id: str) -> list[ReplacementEventRecord]: ...
+
+    def reflect_verified_replacement(
+        self, request: ReplacementUpsertRequest, terms: dict[str, AssignmentCalculationTerms]
+    ) -> None: ...
+
+    def correct_replacement_event(self, request: ReplacementUpsertRequest) -> None: ...
+
+
 __all__ = [
+    "AssignmentCalculationCorrectionRecord",
+    "AssignmentCalculationLookupRepository",
+    "AssignmentCalculationSettingsRepository",
+    "AssignmentCalculationTerms",
+    "AssignmentMeasuredReadingRecord",
+    "AssignmentReviewFlagRecord",
     "CalculatedUsageUpdate",
     "DailySchedule",
     "EveryTwoMonthsSchedule",
+    "MeasurementDefinitionCreateInput",
     "MeasurementDefinitionCreateRequest",
     "MeasurementDefinitionData",
     "MeasurementDefinitionLookupRepository",
@@ -963,6 +1170,8 @@ __all__ = [
     "MeasurementDefinitionWriteRepository",
     "MeterAssignmentRecord",
     "MeterAssignmentRepository",
+    "MeterLocationRecord",
+    "MeterMasterCreateInput",
     "MeterMasterCreateRequest",
     "MeterMasterData",
     "MeterMasterQueryRepository",
@@ -970,6 +1179,7 @@ __all__ = [
     "MeterMasterUpdateRequest",
     "MeterMasterUsageRecord",
     "MeterMasterWriteRepository",
+    "MeterReplacementRepository",
     "MonthlySchedule",
     "MonthlyScheduleSelectorType",
     "MonthParity",
@@ -994,6 +1204,8 @@ __all__ = [
     "ReadingCycleScheduleDefaultsRepository",
     "ReleaseDateCalculator",
     "ReadingPersistenceRepository",
+    "ReadingOverviewRecord",
+    "ReadingOverviewRepository",
     "ReadingSessionReleaseOffsetRecord",
     "ReadingSessionReleaseOffsetsRepository",
     "ReadingUpsertRepository",
@@ -1006,6 +1218,9 @@ __all__ = [
     "ReplacementBoundaryRecord",
     "ReplacementReflectionRepository",
     "ReplacementEventUpsertRepository",
+    "ReplacementEventRecord",
+    "ReplacementAffectedSlot",
+    "ReplacementDefinitionReading",
     "ReplacementUpsertRequest",
     "ScheduleItem",
     "ScheduleSettings",

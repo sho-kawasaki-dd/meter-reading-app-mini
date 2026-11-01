@@ -6,6 +6,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import date
 
+from meter_reading_mini.core.planned_reading_maintenance import reconcile_planned_readings
 from meter_reading_mini.core.work_package_download import (
     PlannedReadingGeneratorService,
     PlannedReadingLifecycleService,
@@ -35,8 +36,11 @@ class StartupPreparationService:
 
         with self._transaction_factory():
             self._bootstrapper()
-            self._planned_reading_generator.ensure_generated_through(self._business_date_provider())
-            self._planned_reading_lifecycle_service.reconcile_before_download()
+            reconcile_planned_readings(
+                self._planned_reading_generator,
+                self._planned_reading_lifecycle_service,
+                self._business_date_provider,
+            )
 
 
 __all__ = ["StartupPreparationService"]

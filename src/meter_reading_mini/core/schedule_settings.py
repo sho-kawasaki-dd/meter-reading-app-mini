@@ -19,12 +19,15 @@ from meter_reading_mini.core.errors import ScheduleHistoryResolutionError, Sched
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
     EveryTwoMonthsSchedule,
+    MeasurementDefinitionScheduleRecord,
     MeasurementDefinitionScheduleRepository,
     MonthlySchedule,
     MonthlyScheduleSelectorType,
     MonthParity,
     PlannedReadingRecompositionRepository,
+    ReadingCycleScheduleDefaultRecord,
     ReadingCycleScheduleDefaultsRepository,
+    ReadingSessionReleaseOffsetRecord,
     ReadingSessionReleaseOffsetsRepository,
     ReleaseDateCalculator,
     ReleaseOffsetRecompositionRepository,
@@ -475,6 +478,11 @@ class ScheduleSettingsService:
         effective_date = business_date or self._current_business_date_provider()
         return _deserialize_default_history(self._repository, reading_cycle, effective_date)
 
+    def list_schedule_history(
+        self, reading_cycle: ReadingCycle
+    ) -> list[ReadingCycleScheduleDefaultRecord]:
+        return self._repository.list_reading_cycle_schedule_defaults(reading_cycle)
+
     def save_schedule(
         self,
         reading_cycle: ReadingCycle,
@@ -574,6 +582,13 @@ class MeasurementDefinitionScheduleService:
                 f"測定定義別スケジュール履歴が不正です: {error}",
             ) from error
 
+    def list_schedule_history(
+        self, measurement_definition_id: str
+    ) -> list[MeasurementDefinitionScheduleRecord]:
+        return self._repository.list_measurement_definition_schedule_history(
+            measurement_definition_id
+        )
+
     def save_schedule(
         self,
         measurement_definition_id: str,
@@ -610,6 +625,37 @@ class MeasurementDefinitionScheduleService:
                 superseded_count,
                 generated_count,
             )
+
+    def reset_to_default(
+        self,
+        measurement_definition_id: str,
+        reading_cycle: ReadingCycle,
+        *,
+        effective_from_date: date | None = None,
+    ) -> None:
+        """周期別既定へ戻し、履歴と予定枠を同時に更新する。"""
+
+        effective_date = _resolve_effective_date(
+            effective_from_date, self._current_business_date_provider
+        )
+        with self._transaction_factory():
+            _deserialize_default_history(
+                self._schedule_defaults_repository, reading_cycle, effective_date
+            )
+            self._repository.upsert_measurement_definition_schedule(
+                measurement_definition_id,
+                None,
+                effective_from_date=effective_date,
+                created_at=self._clock(),
+            )
+            self._recomposition_repository.recompose_future_planned_readings(
+                measurement_definition_id, from_business_date=effective_date
+            )
+        logger.info(
+            "測定定義のスケジュールを周期別既定へ戻しました: definition=%s from=%s",
+            measurement_definition_id,
+            effective_date.isoformat(),
+        )
 
     def ensure_default_schedule(
         self,
@@ -685,6 +731,11 @@ class ReleaseOffsetSettingsService(ReleaseDateCalculator):
             )
         return record.offset_days
 
+    def list_release_offset_history(
+        self, reading_session: ReadingSession
+    ) -> list[ReadingSessionReleaseOffsetRecord]:
+        return self._repository.list_reading_session_release_offsets(reading_session)
+
     def save_release_offset_days(
         self,
         reading_session: ReadingSession,
@@ -740,8 +791,14 @@ DEFAULT_CUTOFF_TIME = time(hour=7, minute=0)
 class CutoffSettingsService:
     """auto-close の cutoff 時刻を読み書きする service。"""
 
-    def __init__(self, repository: ScheduleSettingsRepository) -> None:
+    def __init__(
+        self,
+        repository: ScheduleSettingsRepository,
+        *,
+        transaction_factory: TransactionFactory,
+    ) -> None:
         self._repository = repository
+        self._transaction_factory = transaction_factory
 
     def get_cutoff_time(self) -> time:
         """cutoff 時刻を返す。DB 未設定時は DEFAULT_CUTOFF_TIME。"""
@@ -749,13 +806,28 @@ class CutoffSettingsService:
         raw = self._repository.get_setting(CUTOFF_SETTINGS_KEY)
         if raw is None:
             return DEFAULT_CUTOFF_TIME
-        return time.fromisoformat(raw)
+        return _validate_cutoff_time(raw)
 
-    def save_cutoff_time(self, cutoff: time) -> None:
+    def save_cutoff_time(self, cutoff: time | str) -> None:
         """cutoff 時刻を保存する。"""
 
-        self._repository.upsert_setting(CUTOFF_SETTINGS_KEY, cutoff.strftime("%H:%M"))
-        logger.info("Saved cutoff time: %s", cutoff.strftime("%H:%M"))
+        normalized = _validate_cutoff_time(cutoff).strftime("%H:%M")
+        with self._transaction_factory():
+            self._repository.upsert_setting(CUTOFF_SETTINGS_KEY, normalized)
+        logger.info("Saved cutoff time: %s", normalized)
+
+
+def _validate_cutoff_time(value: object) -> time:
+    if isinstance(value, str):
+        if re.fullmatch(r"[0-9]{2}:[0-9]{2}", value) is None:
+            raise ScheduleValidationError(["締め時刻は HH:MM 形式で指定してください"])
+        try:
+            value = time.fromisoformat(value)
+        except ValueError as exc:
+            raise ScheduleValidationError(["締め時刻が正しくありません"]) from exc
+    if not isinstance(value, time) or value.tzinfo is not None or value.second or value.microsecond:
+        raise ScheduleValidationError(["締め時刻はタイムゾーンなしの分単位で指定してください"])
+    return value
 
 
 # ---------------------------------------------------------------------------

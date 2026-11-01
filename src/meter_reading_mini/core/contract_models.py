@@ -81,7 +81,10 @@ def _serialize_decimal_as_string(value: Decimal) -> str:
 
 
 def _parse_non_negative_decimal_as_string(value: object) -> Decimal:
-    return _parse_decimal_as_string(value, pattern=NON_NEGATIVE_DECIMAL_STRING_PATTERN)
+    parsed = _parse_decimal_as_string(value, pattern=NON_NEGATIVE_DECIMAL_STRING_PATTERN)
+    if parsed.is_signed():
+        raise ValueError("Decimal は符号のない 0 以上の値で指定してください。")
+    return parsed
 
 
 def _parse_signed_decimal_as_string(value: object) -> Decimal:
@@ -497,6 +500,12 @@ def resolve_meter_reading_submission(
     )
 
 
+class ReplacementDefinitionReadingSubmission(BaseApiModel):
+    measurement_definition_id: str = Field(min_length=1)
+    old_final_reading: DecimalAsString | None = None
+    new_initial_reading: DecimalAsString | None = None
+
+
 class MeterReplacementSubmission(BaseApiModel):
     """Android から返却されるメーター交換イベント。"""
 
@@ -521,6 +530,10 @@ class MeterReplacementSubmission(BaseApiModel):
     new_initial_reading: DecimalAsString | None = Field(
         default=None,
         description="Optional initial reading captured from the new meter.",
+    )
+    definition_readings: list[ReplacementDefinitionReadingSubmission] = Field(
+        default_factory=lambda: list[ReplacementDefinitionReadingSubmission](),
+        description="Replacement readings keyed by measurement definition.",
     )
     updated_by: str = Field(
         min_length=1, description="User or device identifier that last updated the event."

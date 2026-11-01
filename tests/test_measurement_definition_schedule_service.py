@@ -779,8 +779,127 @@ def test_service_default_dates_serializers_and_cutoff_settings(
     assert MeasurementDefinitionScheduleService.serialize_default(ReadingCycle.WEEKLY)
     assert ReleaseOffsetSettingsService.serialize_default(ReadingSession.SESSION_0000) == "-1"
 
-    cutoff_service = CutoffSettingsService(repository)
+    cutoff_service = CutoffSettingsService(
+        repository, transaction_factory=_transaction_factory(conn)
+    )
     assert cutoff_service.get_cutoff_time() == time(7)
     cutoff_service.save_cutoff_time(time(6, 30))
     assert cutoff_service.get_cutoff_time() == time(6, 30)
     assert repository.get_setting(CUTOFF_SETTINGS_KEY) == "06:30"
+
+
+@pytest.mark.parametrize(
+    "value", ["6:30", "24:00", "06:30:01", " 06:30", time(6, 30, 1), time(6, 30, tzinfo=UTC)]
+)
+def test_cutoff_rejects_invalid_values_without_changing_the_setting(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    value: str | time,
+) -> None:
+    conn, repository = file_database_repository
+    service = CutoffSettingsService(repository, transaction_factory=_transaction_factory(conn))
+    with pytest.raises(ScheduleValidationError):
+        service.save_cutoff_time(value)
+    assert service.get_cutoff_time() == time(7)
+
+
+def test_cutoff_save_rolls_back_on_transaction_failure(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    from contextlib import contextmanager
+
+    conn, repository = file_database_repository
+
+    @contextmanager
+    def failing_transaction():
+        with transaction(conn):
+            yield
+            raise RuntimeError("保存失敗")
+
+    service = CutoffSettingsService(repository, transaction_factory=failing_transaction)
+    with pytest.raises(RuntimeError, match="保存失敗"):
+        service.save_cutoff_time("06:30")
+    assert service.get_cutoff_time() == time(7)
+
+
+def test_schedule_histories_and_reset_to_default(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _create_definition(conn, repository, definition_id="definition-reset")
+    definition_service, default_service, offset_service = _create_services(conn, repository)
+    _generate_through(conn, repository, date(2026, 2, 6))
+    custom = DailySchedule((ScheduleItem(ReadingSession.SESSION_1400),))
+    definition_service.save_schedule(
+        "definition-reset", ReadingCycle.DAILY_1X, custom, effective_from_date=date(2026, 2, 5)
+    )
+
+    definition_service.reset_to_default(
+        "definition-reset", ReadingCycle.DAILY_1X, effective_from_date=date(2026, 2, 6)
+    )
+
+    history = definition_service.list_schedule_history("definition-reset")
+    assert history[-1].effective_from_date == date(2026, 2, 6)
+    assert history[-1].schedule_json is None
+    assert (
+        definition_service.get_schedule("definition-reset", ReadingCycle.DAILY_1X, date(2026, 2, 5))
+        == custom
+    )
+    assert definition_service.get_schedule(
+        "definition-reset", ReadingCycle.DAILY_1X, date(2026, 2, 6)
+    ) == default_service.get_schedule(ReadingCycle.DAILY_1X, date(2026, 2, 6))
+    assert default_service.list_schedule_history(
+        ReadingCycle.DAILY_1X
+    ) == repository.list_reading_cycle_schedule_defaults(ReadingCycle.DAILY_1X)
+    assert offset_service.list_release_offset_history(
+        ReadingSession.SESSION_0800
+    ) == repository.list_reading_session_release_offsets(ReadingSession.SESSION_0800)
+    assert (
+        conn.execute(
+            "SELECT reading_session, task_state FROM planned_readings "
+            "WHERE measurement_definition_id = ? AND business_date = ? ORDER BY planned_reading_id",
+            ("definition-reset", "2026-02-06"),
+        )
+        .fetchall()
+        .count(("14:00", "superseded"))
+        == 1
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM planned_readings WHERE measurement_definition_id = ? "
+        "AND business_date = ? AND reading_session = ? AND task_state = 'open'",
+        ("definition-reset", "2026-02-06", "08:00"),
+    ).fetchone() == (1,)
+
+
+def test_reset_to_default_rolls_back_history_and_recomposition_on_failure(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, repository = file_database_repository
+    _create_definition(conn, repository, definition_id="definition-reset-rollback")
+    service, _, _ = _create_services(conn, repository)
+    _generate_through(conn, repository, date(2026, 2, 6))
+    before_history = service.list_schedule_history("definition-reset-rollback")
+    before_slots = conn.execute(
+        "SELECT planned_reading_id, task_state FROM planned_readings ORDER BY planned_reading_id"
+    ).fetchall()
+    recompose = repository.recompose_future_planned_readings
+
+    def recompose_then_fail(measurement_definition_id, *, from_business_date):
+        recompose(measurement_definition_id, from_business_date=from_business_date)
+        raise RuntimeError("再構成失敗")
+
+    monkeypatch.setattr(repository, "recompose_future_planned_readings", recompose_then_fail)
+    with pytest.raises(RuntimeError, match="再構成失敗"):
+        service.reset_to_default(
+            "definition-reset-rollback",
+            ReadingCycle.DAILY_1X,
+            effective_from_date=date(2026, 2, 6),
+        )
+    assert service.list_schedule_history("definition-reset-rollback") == before_history
+    assert (
+        conn.execute(
+            "SELECT planned_reading_id, task_state FROM planned_readings "
+            "ORDER BY planned_reading_id"
+        ).fetchall()
+        == before_slots
+    )
