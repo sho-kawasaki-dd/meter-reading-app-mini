@@ -65,6 +65,7 @@ class _Assignment:
     end: datetime | None
     decimal_places: int | None
     rollover: Decimal | None
+    needs_review: bool
 
 
 def _read_datetime(value: object, label: str, reasons: list[str]) -> datetime | None:
@@ -115,6 +116,9 @@ def _check_assignments(
     rows = conn.execute(
         "SELECT a.rowid, a.measurement_definition_id, a.meter_id, a.effective_from, "
         "a.effective_to, d.decimal_places, d.location_id, m.location_id "
+        ", EXISTS (SELECT 1 FROM assignment_review_flags AS f "
+        "WHERE f.measurement_definition_id = a.measurement_definition_id "
+        "AND f.meter_id = a.meter_id AND f.assignment_effective_from = a.effective_from) "
         "FROM meter_assignments AS a "
         "JOIN measurement_definitions AS d USING (measurement_definition_id) "
         "JOIN physical_meters AS m ON m.meter_id = a.meter_id "
@@ -129,6 +133,7 @@ def _check_assignments(
         places,
         def_location,
         meter_location,
+        needs_review,
     ) in rows:
         label = f"割当 {definition_id}/{meter_id}/{start_text}"
         start = _read_datetime(start_text, f"{label}の開始日時", reasons)
@@ -152,6 +157,7 @@ def _check_assignments(
             end=end,
             decimal_places=int(places) if places is not None else None,
             rollover=numbers.get(("meter_assignments", int(rowid), "rollover_value")),
+            needs_review=bool(needs_review),
         )
         by_key[(assignment.definition_id, assignment.meter_id, assignment.start_text)] = assignment
         by_definition.setdefault(assignment.definition_id, []).append(assignment)
@@ -176,7 +182,9 @@ def _check_reading_value(
         return
     try:
         validate_reading_value(
-            value, decimal_places=assignment.decimal_places, rollover_value=assignment.rollover
+            value,
+            decimal_places=None,
+            rollover_value=None if assignment.needs_review else assignment.rollover,
         )
     except ValidationError as exc:
         reasons.append(f"{label}: {exc}")
@@ -309,7 +317,7 @@ def _check_boundaries(
         "b.old_meter_id, b.new_meter_id, b.replaced_at, b.old_assignment_effective_from, "
         "b.new_assignment_effective_from, b.previous_measured_reading, "
         "b.previous_measured_planned_reading_id, b.old_final_reading, b.old_meter_usage_delta, "
-        "b.new_initial_reading, e.rowid, e.location_id, e.old_meter_id, e.new_meter_id, "
+        "e.location_id, e.old_meter_id, e.new_meter_id, "
         "e.replaced_at, e.old_final_reading, e.new_initial_reading, "
         "d.location_id, d.calculation_method "
         "FROM replacement_boundaries AS b "
@@ -332,8 +340,6 @@ def _check_boundaries(
             previous_id,
             old_final,
             old_usage,
-            new_initial,
-            event_rowid,
             event_location,
             event_old,
             event_new,
@@ -352,18 +358,8 @@ def _check_boundaries(
             or old_meter == new_meter
         ):
             reasons.append(f"{label}と交換イベントまたは測定定義が一致しません。")
-        for column, boundary_value, event_value in (
-            ("old_final_reading", old_final, event_final),
-            ("new_initial_reading", new_initial, event_initial),
-        ):
-            boundary_number = numbers.get(("replacement_boundaries", int(rowid), column))
-            event_number = numbers.get(("replacement_events", int(event_rowid), column))
-            if (boundary_value is None) != (event_value is None) or (
-                boundary_number is not None
-                and event_number is not None
-                and boundary_number != event_number
-            ):
-                reasons.append(f"{label}の{column}が交換イベントと一致しません。")
+        if event_final is not None or event_initial is not None:
+            reasons.append(f"{label}の読値が交換イベント側に重複保存されています。")
         old = by_key.get((str(definition_id), str(old_meter), str(old_start)))
         new = by_key.get((str(definition_id), str(new_meter), str(new_start)))
         if (
@@ -457,4 +453,45 @@ def check_business_integrity(conn: sqlite3.Connection) -> list[str]:
         return reasons
 
 
-__all__ = ["check_business_integrity"]
+def list_assignment_review_warnings(conn: sqlite3.Connection) -> list[str]:
+    """移行時に旧条件との矛盾が見つかった割当を、利用者へ示す警告として返す。"""
+
+    with read_transaction(conn):
+        return [
+            f"割当条件の確認が必要です ({definition_id}/{meter_id}/{effective_from}): {reason}"
+            for definition_id, meter_id, effective_from, reason in conn.execute(
+                "SELECT measurement_definition_id, meter_id, assignment_effective_from, reason "
+                "FROM assignment_review_flags "
+                "ORDER BY measurement_definition_id, assignment_effective_from"
+            )
+        ]
+
+
+def list_business_integrity_warnings(conn: sqlite3.Connection) -> list[str]:
+    """復元後の利用者確認が必要な、旧条件・場所名の不一致を返す。"""
+
+    with read_transaction(conn):
+        warnings = [
+            f"割当条件の確認が必要です ({definition_id}/{meter_id}/{effective_from}): {reason}"
+            for definition_id, meter_id, effective_from, reason in conn.execute(
+                "SELECT measurement_definition_id, meter_id, assignment_effective_from, reason "
+                "FROM assignment_review_flags "
+                "ORDER BY measurement_definition_id, assignment_effective_from"
+            )
+        ]
+        warnings.extend(
+            f"場所 {location_id} に異なる場所名があります。"
+            for (location_id,) in conn.execute(
+                "SELECT location_id FROM physical_meters "
+                "GROUP BY location_id HAVING COUNT(DISTINCT location_name) > 1 "
+                "ORDER BY location_id"
+            )
+        )
+        return warnings
+
+
+__all__ = [
+    "check_business_integrity",
+    "list_assignment_review_warnings",
+    "list_business_integrity_warnings",
+]

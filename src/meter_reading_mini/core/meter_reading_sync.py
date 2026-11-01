@@ -45,6 +45,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReadingConfirmationContext,
     ReadingUpsertRequest,
     ReadingWriteService,
+    ReplacementDefinitionReading,
     ReplacementEventUpsertRepository,
     ReplacementReflectionRepository,
     ReplacementUpsertRequest,
@@ -382,6 +383,14 @@ class MeterReadingSyncService:
             new_initial_reading=submission.new_initial_reading,
             updated_by=updated_by,
             note=submission.note,
+            definition_readings=tuple(
+                ReplacementDefinitionReading(
+                    reading.measurement_definition_id,
+                    reading.old_final_reading,
+                    reading.new_initial_reading,
+                )
+                for reading in submission.definition_readings
+            ),
         )
 
 

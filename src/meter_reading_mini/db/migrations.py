@@ -15,11 +15,11 @@ from meter_reading_mini.core.errors import (
     SchemaTooNewError,
     UnsupportedSchemaError,
 )
-from meter_reading_mini.core.timeutil import parse_utc
+from meter_reading_mini.core.timeutil import parse_utc, utc_now_str
 from meter_reading_mini.db.backup import copy_database
 from meter_reading_mini.db.connection import connect, transaction
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MIN_SUPPORTED_SCHEMA_VERSION = 1
 
 
@@ -302,12 +302,121 @@ def _migrate_assignment_calculation_settings(conn: sqlite3.Connection) -> None:
     conn.execute(correction_index)
 
 
+def _migrate_review_flags_and_replacement_values(conn: sqlite3.Connection) -> None:
+    review_table = next(
+        table.sql for table in SCHEMA_SPECS[3].tables if table.name == "assignment_review_flags"
+    )
+    conn.execute(review_table)
+    conn.execute(
+        "UPDATE replacement_events SET old_final_reading = NULL, new_initial_reading = NULL"
+    )
+
+    assignments: dict[tuple[str, str, str], tuple[Decimal | None, list[str]]] = {}
+    rows = conn.execute(
+        "SELECT measurement_definition_id, meter_id, effective_from, rollover_value "
+        "FROM meter_assignments"
+    )
+    for definition_id, meter_id, effective_from, rollover in rows:
+        key = (str(definition_id), str(meter_id), str(effective_from))
+        assignments[key] = (
+            Decimal(str(rollover)) if rollover is not None else None,
+            [],
+        )
+
+    def check_value(key: tuple[str, str, str], raw_value: object, *, label: str) -> Decimal | None:
+        details = assignments.get(key)
+        if details is None or not isinstance(raw_value, str):
+            return None
+        try:
+            value = Decimal(raw_value)
+        except InvalidOperation:
+            return None
+        if not value.is_finite() or value < 0:
+            return None
+        rollover, reasons = details
+        if rollover is not None and value >= rollover:
+            reasons.append(f"{label}が現在のロールオーバー値以上です")
+        return value
+
+    reading_rows = conn.execute(
+        "SELECT p.measurement_definition_id, p.meter_id, a.effective_from, "
+        "p.scheduled_at, p.planned_reading_id, r.raw_reading "
+        "FROM planned_readings AS p JOIN reading_transactions AS r USING (planned_reading_id) "
+        "JOIN meter_assignments AS a ON a.measurement_definition_id = p.measurement_definition_id "
+        "AND a.meter_id = p.meter_id AND p.scheduled_at >= a.effective_from "
+        "AND (a.effective_to IS NULL OR p.scheduled_at < a.effective_to) "
+        "WHERE r.result_status = 'measured' AND r.raw_reading IS NOT NULL "
+        "AND p.task_state != 'superseded' "
+        "ORDER BY p.measurement_definition_id, p.meter_id, a.effective_from, "
+        "p.scheduled_at, p.planned_reading_id"
+    )
+    previous_values: dict[tuple[str, str, str], Decimal] = {}
+    for definition_id, meter_id, effective_from, _, _, raw_value in reading_rows:
+        key = (str(definition_id), str(meter_id), str(effective_from))
+        value = check_value(key, raw_value, label="過去実測値")
+        if value is None:
+            continue
+        previous = previous_values.get(key)
+        rollover = assignments[key][0]
+        if previous is not None and value < previous and rollover is None:
+            assignments[key][1].append("ロールオーバー未設定で過去実測値が減少しています")
+        previous_values[key] = value
+
+    boundary_rows = conn.execute(
+        "SELECT b.measurement_definition_id, b.old_meter_id, "
+        "b.old_assignment_effective_from, b.new_meter_id, "
+        "b.new_assignment_effective_from, b.previous_measured_reading, "
+        "b.old_final_reading, b.new_initial_reading "
+        "FROM replacement_boundaries AS b"
+    )
+    for (
+        definition_id,
+        old_meter,
+        old_start,
+        new_meter,
+        new_start,
+        previous,
+        old_final,
+        new_initial,
+    ) in boundary_rows:
+        old_key = (str(definition_id), str(old_meter), str(old_start))
+        new_key = (str(definition_id), str(new_meter), str(new_start))
+        previous_value = check_value(old_key, previous, label="交換境界の前回値")
+        final_value = check_value(old_key, old_final, label="交換境界の旧最終値")
+        check_value(new_key, new_initial, label="交換境界の新初期値")
+        if (
+            previous_value is not None
+            and final_value is not None
+            and final_value < previous_value
+            and assignments[old_key][0] is None
+        ):
+            assignments[old_key][1].append("ロールオーバー未設定で交換境界の値が減少しています")
+
+    created_at = utc_now_str()
+    for (definition_id, meter_id, effective_from), (_, reasons) in assignments.items():
+        if reasons:
+            conn.execute(
+                "INSERT INTO assignment_review_flags "
+                "(measurement_definition_id, meter_id, assignment_effective_from, "
+                "reason, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    definition_id,
+                    meter_id,
+                    effective_from,
+                    "、".join(dict.fromkeys(reasons)),
+                    created_at,
+                ),
+            )
+
+
 MIGRATIONS: dict[int, MigrationStep | str] = {
     2: MigrationStep(
         _migrate_assignment_calculation_settings,
         precheck=_precheck_assignment_calculation_migration,
         rebuilds_tables=True,
-    )
+    ),
+    3: MigrationStep(_migrate_review_flags_and_replacement_values),
 }
 
 SCHEMA_SPECS: dict[int, SchemaSpec] = {
@@ -315,6 +424,25 @@ SCHEMA_SPECS: dict[int, SchemaSpec] = {
         files("meter_reading_mini.db").joinpath("schema_v1.sql").read_text(encoding="utf-8")
     ),
     2: _schema_spec_from_ddl(
+        files("meter_reading_mini.db")
+        .joinpath("schema.sql")
+        .read_text(encoding="utf-8")
+        .replace(
+            "CREATE TABLE assignment_review_flags (\n"
+            "  measurement_definition_id TEXT NOT NULL,\n"
+            "  meter_id TEXT NOT NULL,\n"
+            "  assignment_effective_from TEXT NOT NULL,\n"
+            "  reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),\n"
+            "  created_at TEXT NOT NULL,\n"
+            "  FOREIGN KEY (measurement_definition_id, meter_id, assignment_effective_from)\n"
+            "    REFERENCES meter_assignments("
+            "measurement_definition_id, meter_id, effective_from),\n"
+            "  PRIMARY KEY (measurement_definition_id, meter_id, assignment_effective_from)\n"
+            ");\n\n",
+            "",
+        )
+    ),
+    3: _schema_spec_from_ddl(
         files("meter_reading_mini.db").joinpath("schema.sql").read_text(encoding="utf-8")
     ),
 }

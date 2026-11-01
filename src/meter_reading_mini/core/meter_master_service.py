@@ -112,6 +112,10 @@ class MeterMasterService:
             location = self._repository.get_meter_location(location_id)
             if location is None:
                 raise MeterValidationError([f"場所が見つかりません: {location_id}"])
+            if location.has_name_conflict or not location.location_name.strip():
+                raise MeterValidationError(
+                    [f"場所名が不一致です。場所名を統一してから登録してください: {location_id}"]
+                )
             new_location_name = None
         else:
             assert request.new_location_name is not None

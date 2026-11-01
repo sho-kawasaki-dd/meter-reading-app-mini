@@ -500,6 +500,12 @@ def resolve_meter_reading_submission(
     )
 
 
+class ReplacementDefinitionReadingSubmission(BaseApiModel):
+    measurement_definition_id: str = Field(min_length=1)
+    old_final_reading: DecimalAsString | None = None
+    new_initial_reading: DecimalAsString | None = None
+
+
 class MeterReplacementSubmission(BaseApiModel):
     """Android から返却されるメーター交換イベント。"""
 
@@ -524,6 +530,10 @@ class MeterReplacementSubmission(BaseApiModel):
     new_initial_reading: DecimalAsString | None = Field(
         default=None,
         description="Optional initial reading captured from the new meter.",
+    )
+    definition_readings: list[ReplacementDefinitionReadingSubmission] = Field(
+        default_factory=lambda: list[ReplacementDefinitionReadingSubmission](),
+        description="Replacement readings keyed by measurement definition.",
     )
     updated_by: str = Field(
         min_length=1, description="User or device identifier that last updated the event."

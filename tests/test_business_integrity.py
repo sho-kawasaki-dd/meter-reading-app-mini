@@ -39,7 +39,10 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
 )
 from meter_reading_mini.db.backup import copy_database
 from meter_reading_mini.db.connection import connect, connect_memory, connect_readonly, transaction
-from meter_reading_mini.db.integrity import check_business_integrity
+from meter_reading_mini.db.integrity import (
+    check_business_integrity,
+    list_business_integrity_warnings,
+)
 from meter_reading_mini.db.migrations import create_schema
 from meter_reading_mini.db.repositories import SQLiteRepository
 
@@ -147,6 +150,32 @@ def test_backup_business_check_accepts_real_history_without_writing(
     assert hashlib.sha256(backup_path.read_bytes()).digest() == original_hash
 
 
+def test_legacy_location_name_conflict_is_a_warning_not_a_restore_blocker(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="second-meter",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="別メーター",
+            category=Category.WATER,
+        )
+    )
+    conn.execute(
+        "UPDATE physical_meters SET location_name = '旧名称' WHERE meter_id = ?",
+        (METER_ID,),
+    )
+
+    assert check_business_integrity(conn) == []
+    assert any(
+        "場所 test-location に異なる場所名" in warning
+        for warning in list_business_integrity_warnings(conn)
+    )
+
+
 @pytest.mark.parametrize(
     ("table", "column"),
     [
@@ -232,7 +261,8 @@ def test_assignment_multiplier_rejects_invalid_values(
             ),
             "力率データ",
         ),
-        (("UPDATE replacement_boundaries SET old_final_reading = '121'",), "交換イベントと一致"),
+        (("UPDATE replacement_boundaries SET old_final_reading = '1001'",), "ロールオーバー値"),
+        (("UPDATE replacement_events SET old_final_reading = '121'",), "重複保存"),
         (
             (
                 "UPDATE replacement_boundaries "
@@ -386,12 +416,12 @@ def test_corrupt_backup_is_rejected_after_readonly_inspection(
     copy_database(conn, backup_path)
     copy = connect(backup_path)
     try:
-        copy.execute("UPDATE replacement_boundaries SET old_final_reading = '121'")
+        copy.execute("UPDATE replacement_events SET old_final_reading = '121'")
     finally:
         copy.close()
     readonly = connect_readonly(backup_path)
     try:
-        assert any("交換イベントと一致" in reason for reason in check_business_integrity(readonly))
+        assert any("重複保存" in reason for reason in check_business_integrity(readonly))
     finally:
         readonly.close()
 

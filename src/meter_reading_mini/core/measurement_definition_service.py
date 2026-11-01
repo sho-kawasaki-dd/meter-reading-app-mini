@@ -112,6 +112,7 @@ class MeasurementDefinitionService:
             if current is None:
                 raise ValidationError(f"測定定義が見つかりません: {normalized_id}")
             self._reject_immutable_changes(current, normalized)
+            self._validate_precision_change(normalized_id, normalized.decimal_places)
             self._repository.update_measurement_definition(normalized_id, normalized)
             updated = self._repository.get_measurement_definition(normalized_id)
             if updated is None:
@@ -182,6 +183,23 @@ class MeasurementDefinitionService:
         for requested, existing, label in immutable_changes:
             if requested is not None and requested != existing:
                 raise ValidationError(f"作成後に{label}は変更できません。")
+
+    def _validate_precision_change(
+        self, measurement_definition_id: str, decimal_places: int | None
+    ) -> None:
+        if decimal_places is None:
+            return
+        for assignment in self._assignment_repository.list_meter_assignments(
+            measurement_definition_id
+        ):
+            rollover = assignment.rollover_value
+            if rollover is None:
+                continue
+            fractional = format(rollover, "f").partition(".")[2].rstrip("0")
+            if len(fractional) > decimal_places:
+                raise ValidationError(
+                    "小数桁数を減らす場合、既存のロールオーバー値を表せないため変更できません。"
+                )
 
 
 def _normalize_create_request(

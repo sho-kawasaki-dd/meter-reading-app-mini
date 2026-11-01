@@ -22,12 +22,19 @@ from meter_reading_mini.core.contract_models import (
     ResultStatus,
 )
 from meter_reading_mini.core.errors import SupersededPlannedReadingError, ValidationError
+from meter_reading_mini.core.meter_master_service import MeterMasterService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    AssignmentCalculationTerms,
     ManualReadingInput,
     MeterMasterCreateRequest,
 )
+from meter_reading_mini.core.meter_replacement_service import (
+    MeterReplacementInput,
+    MeterReplacementService,
+)
 from meter_reading_mini.core.previous_reading import PreviousReadingSource
 from meter_reading_mini.core.reading_preview import ReadingPreviewService
+from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
 
 NOW = datetime(2026, 2, 5, tzinfo=UTC)
@@ -39,7 +46,13 @@ def _at(hour: int) -> datetime:
 
 def _preview(repository: SQLiteRepository) -> ReadingPreviewService:
     return ReadingPreviewService(
-        repository, repository, repository, repository, repository, now_provider=lambda: NOW
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        now_provider=lambda: NOW,
     )
 
 
@@ -145,6 +158,74 @@ def test_save_revalidates_current_state_after_preview(
     with pytest.raises(ValidationError):
         writer.save_manual_reading(reading, staff_id=STAFF_ID)
     assert tuple(conn.iterdump()) == before
+
+
+def test_preview_rejects_correction_that_makes_a_following_reading_negative(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, multiplier=Decimal("1"))
+    create_plan(repository, "previous", _at(3))
+    create_plan(repository, "target", _at(4))
+    create_plan(repository, "following", _at(5))
+    writer.save_manual_reading(_input("previous", "100", 3), staff_id=STAFF_ID)
+    writer.save_manual_reading(_input("target", "110", 4), staff_id=STAFF_ID)
+    writer.save_manual_reading(_input("following", "130", 5), staff_id=STAFF_ID)
+    changes = conn.total_changes
+
+    preview = _preview(repository).preview_manual_reading(_input("target", "140", 4))
+
+    assert not preview.can_save
+    assert preview.error is not None and "ロールオーバー" in preview.error
+    assert conn.total_changes == changes
+
+
+def test_preview_rejects_correction_that_makes_a_later_replacement_boundary_negative(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, multiplier=Decimal("1"))
+    create_plan(repository, "source", _at(4))
+    writer.save_manual_reading(_input("source", "100", 4), staff_id=STAFF_ID)
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="replacement-meter",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="交換先",
+            category=Category.WATER,
+        )
+    )
+    replacement = MeterReplacementService(
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        MeterMasterService(repository, transaction_factory=lambda: transaction(conn)),
+        writer,
+        transaction_factory=lambda: transaction(conn),
+        now_provider=lambda: NOW,
+    )
+    replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id=METER_ID,
+            replaced_at=_at(5),
+            old_final_reading=Decimal("120"),
+            new_initial_reading=Decimal("5"),
+            staff_id=STAFF_ID,
+            new_meter_id="replacement-meter",
+            new_terms={DEFINITION_ID: AssignmentCalculationTerms(Decimal("1"), None)},
+        )
+    )
+
+    preview = _preview(repository).preview_manual_reading(_input("source", "130", 4))
+
+    assert not preview.can_save
+    assert preview.error is not None and "ロールオーバー" in preview.error
 
 
 @pytest.mark.parametrize("value", ["-1", "-0"])

@@ -231,6 +231,35 @@ def test_preview_and_correction_preserve_audit_and_use_each_period(
     ).fetchone() == ("240",)
 
 
+def test_assignment_correction_clears_legacy_review_flag(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _setup_replacement(conn, repository)
+    service = _service(conn, repository)
+    request = _request(repository, METER_ID, "10", "1000")
+    conn.execute(
+        "INSERT INTO assignment_review_flags "
+        "(measurement_definition_id, meter_id, assignment_effective_from, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            DEFINITION_ID,
+            METER_ID,
+            request.effective_from.strftime("%Y-%m-%d %H:%M:%S"),
+            "旧条件の確認",
+            "2026-02-05 00:00:00",
+        ),
+    )
+
+    preview = service.preview_correction(request)
+    assert preview.can_apply
+    assert service.list_review_flags()
+
+    service.correct_assignment(request)
+
+    assert service.list_review_flags() == []
+
+
 def test_correction_of_a_middle_period_with_a_later_replacement(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:

@@ -139,6 +139,16 @@ class MeterAssignmentRecord:
     multiplier: Decimal
     rollover_value: Decimal | None
     effective_to: datetime | None = None
+    needs_review: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentReviewFlagRecord:
+    measurement_definition_id: str
+    meter_id: str
+    assignment_effective_from: datetime
+    reason: str
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +190,11 @@ class MeterMasterRecord:
 class MeterLocationRecord:
     location_id: str
     location_name: str
+    location_names: tuple[str, ...] = ()
+
+    @property
+    def has_name_conflict(self) -> bool:
+        return len(self.location_names) > 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,6 +508,14 @@ class ReplacementUpsertRequest:
     new_initial_reading: Decimal | None
     updated_by: str
     note: str | None
+    definition_readings: tuple[ReplacementDefinitionReading, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementDefinitionReading:
+    measurement_definition_id: str
+    old_final_reading: Decimal | None
+    new_initial_reading: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,6 +825,10 @@ class MeterAssignmentRepository(AssignmentCalculationLookupRepository, Protocol)
 
 
 class AssignmentCalculationSettingsRepository(MeterAssignmentRepository, Protocol):
+    def list_assignment_review_flags(self) -> list[AssignmentReviewFlagRecord]: ...
+
+    def clear_assignment_review_flag(self, assignment: MeterAssignmentRecord) -> None: ...
+
     def list_assignment_measured_readings(
         self, assignment: MeterAssignmentRecord
     ) -> list[AssignmentMeasuredReadingRecord]: ...
@@ -1123,6 +1150,7 @@ __all__ = [
     "AssignmentCalculationSettingsRepository",
     "AssignmentCalculationTerms",
     "AssignmentMeasuredReadingRecord",
+    "AssignmentReviewFlagRecord",
     "CalculatedUsageUpdate",
     "DailySchedule",
     "EveryTwoMonthsSchedule",
@@ -1192,6 +1220,7 @@ __all__ = [
     "ReplacementEventUpsertRepository",
     "ReplacementEventRecord",
     "ReplacementAffectedSlot",
+    "ReplacementDefinitionReading",
     "ReplacementUpsertRequest",
     "ScheduleItem",
     "ScheduleSettings",

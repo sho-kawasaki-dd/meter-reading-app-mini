@@ -40,6 +40,11 @@ def resolve_planned_assignment(
             "予定枠に対応するメーター割当がありません: "
             f"{planned.planned_reading_id}/{planned.meter_id}"
         )
+    if assignment.needs_review:
+        raise ValidationError(
+            "割当条件の確認が必要です。先に条件を訂正してください: "
+            f"{planned.measurement_definition_id}/{assignment.meter_id}"
+        )
     return assignment
 
 
@@ -96,14 +101,14 @@ def resolve_planned_calculation_context(
                 f"交換境界と予定枠の割当が一致しません: {planned.planned_reading_id}"
             )
         if boundary.new_initial_reading is not None:
-            validate_assignment_reading(boundary.new_initial_reading, definition, assignment)
+            validate_persisted_assignment_reading(boundary.new_initial_reading, assignment)
     if previous is not None:
         if previous.scheduled_at is None:
             raise ValidationError(f"前回実測の予定日時がありません: {previous.planned_reading_id}")
         if previous.scheduled_at < assignment.effective_from:
             previous = None
         else:
-            validate_assignment_reading(previous.raw_reading, definition, assignment)
+            validate_persisted_assignment_reading(previous.raw_reading, assignment)
     return assignment, CalculationContext(previous=previous, boundary=boundary)
 
 
@@ -129,6 +134,16 @@ def validate_assignment_reading(
     )
 
 
+def validate_persisted_assignment_reading(
+    value: Decimal, assignment: MeterAssignmentRecord
+) -> None:
+    validate_reading_value(
+        value,
+        decimal_places=None,
+        rollover_value=None if assignment.needs_review else assignment.rollover_value,
+    )
+
+
 def calculate_boundary_usage(
     definition: MeasurementDefinitionRecord,
     boundary: ReplacementBoundaryCalculationRecord,
@@ -139,7 +154,7 @@ def calculate_boundary_usage(
 ) -> ReplacementBoundaryCalculationUpdate:
     old_assignment, new_assignment = resolve_boundary_assignments(assignment_repository, boundary)
     if boundary.new_initial_reading is not None:
-        validate_assignment_reading(boundary.new_initial_reading, definition, new_assignment)
+        validate_persisted_assignment_reading(boundary.new_initial_reading, new_assignment)
     previous = historical_repository.get_latest_measured_reading(
         boundary.measurement_definition_id,
         boundary.old_meter_id,
@@ -155,8 +170,8 @@ def calculate_boundary_usage(
             raise ValidationError("交換境界と旧メーター割当が一致しません。")
         previous = None
         if previous_boundary.new_initial_reading is not None:
-            validate_assignment_reading(
-                previous_boundary.new_initial_reading, definition, old_assignment
+            validate_persisted_assignment_reading(
+                previous_boundary.new_initial_reading, old_assignment
             )
     elif previous is not None:
         if previous.scheduled_at is None:
@@ -164,10 +179,10 @@ def calculate_boundary_usage(
         if previous.scheduled_at < old_assignment.effective_from:
             previous = None
         else:
-            validate_assignment_reading(previous.raw_reading, definition, old_assignment)
+            validate_persisted_assignment_reading(previous.raw_reading, old_assignment)
     usage_delta = None
     if boundary.old_final_reading is not None:
-        validate_assignment_reading(boundary.old_final_reading, definition, old_assignment)
+        validate_persisted_assignment_reading(boundary.old_final_reading, old_assignment)
         result = calculation_service.calculate_measured_reading(
             definition_with_assignment_conditions(definition, old_assignment),
             boundary.old_final_reading,

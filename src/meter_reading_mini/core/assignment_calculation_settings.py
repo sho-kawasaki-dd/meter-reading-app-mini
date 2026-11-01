@@ -13,7 +13,7 @@ from meter_reading_mini.core.assignment_calculation import (
     calculate_boundary_usage,
     definition_with_assignment_conditions,
     resolve_planned_calculation_context,
-    validate_assignment_reading,
+    validate_persisted_assignment_reading,
 )
 from meter_reading_mini.core.contract_models import ValueSchema
 from meter_reading_mini.core.errors import InactiveMasterError, ValidationError
@@ -21,6 +21,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     AssignmentCalculationCorrectionRecord,
     AssignmentCalculationLookupRepository,
     AssignmentCalculationSettingsRepository,
+    AssignmentReviewFlagRecord,
     CalculatedUsageUpdate,
     HistoricalMeasuredReadingLookupRepository,
     MeasurementDefinitionLookupRepository,
@@ -149,6 +150,9 @@ class AssignmentCalculationSettingsService:
     def list_assignments(self, measurement_definition_id: str) -> list[MeterAssignmentRecord]:
         return self._assignments.list_meter_assignments(measurement_definition_id)
 
+    def list_review_flags(self) -> list[AssignmentReviewFlagRecord]:
+        return self._assignments.list_assignment_review_flags()
+
     def list_corrections(
         self, measurement_definition_id: str, meter_id: str, effective_from: datetime
     ) -> list[AssignmentCalculationCorrectionRecord]:
@@ -174,7 +178,10 @@ class AssignmentCalculationSettingsService:
         if definition is None:
             raise ValidationError(f"測定定義が見つかりません: {current.measurement_definition_id}")
         proposed = replace(
-            current, multiplier=request.multiplier, rollover_value=request.rollover_value
+            current,
+            multiplier=request.multiplier,
+            rollover_value=request.rollover_value,
+            needs_review=False,
         )
         lookup = _ProposedAssignmentLookup(self._assignments, proposed)
         reading_impacts: list[AssignmentReadingImpact] = []
@@ -197,7 +204,7 @@ class AssignmentCalculationSettingsService:
                 )
                 if assignment != proposed:
                     raise ValidationError("予定枠と訂正対象の割当が一致しません。")
-                validate_assignment_reading(reading.raw_reading, definition, assignment)
+                validate_persisted_assignment_reading(reading.raw_reading, assignment)
                 result = self._calculation.calculate_measured_reading(
                     definition_with_assignment_conditions(definition, assignment),
                     reading.raw_reading,
@@ -272,6 +279,7 @@ class AssignmentCalculationSettingsService:
             )
             self._assignments.update_assignment_calculation(preview.proposed)
             self._assignments.save_assignment_calculation_correction(correction)
+            self._assignments.clear_assignment_review_flag(preview.current)
             for impact in preview.readings:
                 self._readings.save_calculated_usage(
                     CalculatedUsageUpdate(

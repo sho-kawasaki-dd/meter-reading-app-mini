@@ -14,6 +14,7 @@ from meter_reading_mini.core.assignment_calculation import (
     resolve_planned_assignment,
     resolve_planned_calculation_context,
     validate_assignment_reading,
+    validate_persisted_assignment_reading,
 )
 from meter_reading_mini.core.contract_models import ResultStatus
 from meter_reading_mini.core.errors import (
@@ -207,7 +208,7 @@ class ReadingWriteOrchestrationService:
             return self.upsert_reading(request)
 
     def recalculate_after_replacement(self, request: ReplacementUpsertRequest) -> None:
-        """交換確定後に境界と遅延到着済みの新メーター実測値を再計算する。"""
+        """交換確定後に後続交換境界と実測値を時系列順に再計算する。"""
 
         boundaries = self._boundary_maintenance_repository.list_replacement_boundaries_for_event(
             request.replacement_event_id
@@ -215,35 +216,7 @@ class ReadingWriteOrchestrationService:
         for boundary in boundaries:
             definition = self._get_measurement_definition(boundary.measurement_definition_id)
             self._refresh_boundary(definition, boundary)
-            measured_readings = (
-                self._historical_reading_repository.list_measured_readings_on_or_after(
-                    boundary.measurement_definition_id,
-                    boundary.new_meter_id,
-                    from_scheduled_at=boundary.replaced_at,
-                )
-            )
-            for measured_reading in measured_readings:
-                planned = self._get_planned_reading(measured_reading.planned_reading_id)
-                assignment = resolve_planned_assignment(self._assignment_repository, planned)
-                validate_assignment_reading(measured_reading.raw_reading, definition, assignment)
-                scoped_definition = definition_with_assignment_conditions(definition, assignment)
-                previous, replacement_boundary = self._get_calculation_context(
-                    planned,
-                    excluding_planned_reading_id=measured_reading.planned_reading_id,
-                )
-                result = self._calculation_service.calculate_measured_reading(
-                    scoped_definition,
-                    measured_reading.raw_reading,
-                    previous,
-                    replacement_boundary,
-                )
-                self._persistence_repository.save_calculated_usage(
-                    CalculatedUsageUpdate(
-                        planned_reading_id=measured_reading.planned_reading_id,
-                        last_reading=result.last_reading,
-                        usage_delta=result.usage_delta,
-                    )
-                )
+            self._recalculate_downstream_from_boundary(definition, boundary)
 
     def _get_calculation_context(
         self,
@@ -279,9 +252,7 @@ class ReadingWriteOrchestrationService:
         for measured_reading in following:
             current_planned = self._get_planned_reading(measured_reading.planned_reading_id)
             assignment = resolve_planned_assignment(self._assignment_repository, current_planned)
-            validate_assignment_reading(
-                measured_reading.raw_reading, measurement_definition, assignment
-            )
+            validate_persisted_assignment_reading(measured_reading.raw_reading, assignment)
             scoped_definition = definition_with_assignment_conditions(
                 measurement_definition, assignment
             )
@@ -316,6 +287,90 @@ class ReadingWriteOrchestrationService:
         )
         for boundary in boundaries:
             self._refresh_boundary(measurement_definition, boundary)
+            self._recalculate_downstream_from_boundary(measurement_definition, boundary)
+
+    def _recalculate_downstream_from_boundary(
+        self,
+        measurement_definition: MeasurementDefinitionRecord,
+        boundary: ReplacementBoundaryCalculationRecord,
+    ) -> None:
+        meter_id = boundary.new_meter_id
+        cursor = boundary.replaced_at
+        seen_event_ids = {boundary.replacement_event_id}
+        boundary_repository = self._boundary_maintenance_repository
+        while True:
+            later_boundaries = sorted(
+                (
+                    item
+                    for item in boundary_repository.list_replacement_boundaries_for_old_meter(
+                        measurement_definition.measurement_definition_id,
+                        meter_id,
+                    )
+                    if item.replaced_at > cursor
+                ),
+                key=lambda item: (item.replaced_at, item.replacement_event_id),
+            )
+            next_boundary = later_boundaries[0] if later_boundaries else None
+            self._recalculate_meter_readings(
+                measurement_definition,
+                meter_id,
+                from_scheduled_at=cursor,
+                before_scheduled_at=(
+                    next_boundary.replaced_at if next_boundary is not None else None
+                ),
+            )
+            if next_boundary is None:
+                return
+            if next_boundary.replacement_event_id in seen_event_ids:
+                raise ValidationError("後続交換境界に循環があります。")
+            seen_event_ids.add(next_boundary.replacement_event_id)
+            self._refresh_boundary(measurement_definition, next_boundary)
+            meter_id = next_boundary.new_meter_id
+            cursor = next_boundary.replaced_at
+
+    def _recalculate_meter_readings(
+        self,
+        measurement_definition: MeasurementDefinitionRecord,
+        meter_id: str,
+        *,
+        from_scheduled_at: datetime,
+        before_scheduled_at: datetime | None,
+    ) -> None:
+        measured_readings = self._historical_reading_repository.list_measured_readings_on_or_after(
+            measurement_definition.measurement_definition_id,
+            meter_id,
+            from_scheduled_at=from_scheduled_at,
+        )
+        for measured_reading in measured_readings:
+            planned = self._get_planned_reading(measured_reading.planned_reading_id)
+            if planned.scheduled_at is None:
+                raise ValidationError(
+                    f"後続実測値の予定日時がありません: {measured_reading.planned_reading_id}"
+                )
+            if before_scheduled_at is not None and planned.scheduled_at >= before_scheduled_at:
+                break
+            assignment = resolve_planned_assignment(self._assignment_repository, planned)
+            validate_persisted_assignment_reading(measured_reading.raw_reading, assignment)
+            scoped_definition = definition_with_assignment_conditions(
+                measurement_definition, assignment
+            )
+            previous, replacement_boundary = self._get_calculation_context(
+                planned,
+                excluding_planned_reading_id=measured_reading.planned_reading_id,
+            )
+            result = self._calculation_service.calculate_measured_reading(
+                scoped_definition,
+                measured_reading.raw_reading,
+                previous,
+                replacement_boundary,
+            )
+            self._persistence_repository.save_calculated_usage(
+                CalculatedUsageUpdate(
+                    planned_reading_id=measured_reading.planned_reading_id,
+                    last_reading=result.last_reading,
+                    usage_delta=result.usage_delta,
+                )
+            )
 
     def _refresh_boundary(
         self,

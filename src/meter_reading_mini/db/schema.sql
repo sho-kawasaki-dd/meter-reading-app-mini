@@ -83,6 +83,17 @@ CREATE TABLE meter_assignments (
   PRIMARY KEY (measurement_definition_id, meter_id, effective_from)
 );
 
+CREATE TABLE assignment_review_flags (
+  measurement_definition_id TEXT NOT NULL,
+  meter_id TEXT NOT NULL,
+  assignment_effective_from TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (measurement_definition_id, meter_id, assignment_effective_from)
+    REFERENCES meter_assignments(measurement_definition_id, meter_id, effective_from),
+  PRIMARY KEY (measurement_definition_id, meter_id, assignment_effective_from)
+);
+
 CREATE TABLE assignment_calculation_corrections (
   correction_id TEXT PRIMARY KEY,
   measurement_definition_id TEXT NOT NULL,

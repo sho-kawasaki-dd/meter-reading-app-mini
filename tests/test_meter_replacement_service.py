@@ -24,6 +24,8 @@ from reading_service_helpers import (
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
+    MeterReadingSyncRequest,
+    MeterReplacementSubmission,
     Purpose,
     ReadingCycle,
     ResultStatus,
@@ -42,6 +44,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeterMasterCreateInput,
     MeterMasterCreateRequest,
     PlannedReadingTaskState,
+    ReplacementDefinitionReading,
     ReplacementUpsertRequest,
 )
 from meter_reading_mini.core.meter_replacement_service import (
@@ -243,6 +246,25 @@ def test_replacement_retains_nonmeasured_audit_and_correction_updates_both_sides
     assert check_business_integrity(conn) == []
 
 
+def test_auto_closed_slot_creates_an_auto_closed_replacement_successor(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, _, service = _setup(conn, repository)
+    conn.execute(
+        "UPDATE planned_readings SET task_state = 'auto_closed', "
+        "close_reason = 'cutoff_elapsed' WHERE planned_reading_id = 'open'"
+    )
+
+    service.register_replacement(_request())
+
+    old = repository.get_planned_reading("open")
+    assert old is not None and old.superseded_by_planned_reading_id is not None
+    successor = repository.get_planned_reading(old.superseded_by_planned_reading_id)
+    assert successor is not None
+    assert successor.task_state is PlannedReadingTaskState.AUTO_CLOSED
+
+
 def test_registration_can_create_a_meter_in_the_same_transaction(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:
@@ -285,6 +307,199 @@ def test_definition_lookup_returns_current_assignment_calculation_terms(
         Decimal("50"),
     )
     assert new_repository.list_measurement_definitions()[0] == new
+
+
+def test_replacement_values_are_saved_independently_per_definition(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, _, service = _setup(conn, repository)
+    repository.create_measurement_definition(
+        MeasurementDefinitionCreateRequest(
+            measurement_definition_id="second-definition",
+            location_id=LOCATION_ID,
+            display_name="別測定",
+            category=Category.WATER,
+            unit="m3",
+            value_schema=ValueSchema.DECIMAL_STRING,
+            multiplier=Decimal("3"),
+            decimal_places=2,
+            warning_threshold=None,
+            rollover_value=Decimal("100"),
+            calculation_method=CalculationMethod.DELTA,
+            reading_cycle=ReadingCycle.DAILY_1X,
+            purpose=Purpose.OPERATIONAL,
+            generation_start_date=date(2026, 2, 1),
+            initial_schedule_json=None,
+            initial_meter_id=METER_ID,
+        )
+    )
+    request = replace(
+        _request(),
+        old_final_reading=None,
+        new_initial_reading=None,
+        definition_readings=(
+            ReplacementDefinitionReading(DEFINITION_ID, Decimal("120"), Decimal("5")),
+            ReplacementDefinitionReading("second-definition", Decimal("35"), Decimal("2")),
+        ),
+    )
+
+    service.register_replacement(request)
+
+    assert conn.execute(
+        "SELECT measurement_definition_id, old_final_reading, new_initial_reading "
+        "FROM replacement_boundaries ORDER BY measurement_definition_id"
+    ).fetchall() == [
+        ("second-definition", "35", "2"),
+        (DEFINITION_ID, "120", "5"),
+    ]
+    assert conn.execute(
+        "SELECT old_final_reading, new_initial_reading FROM replacement_events"
+    ).fetchone() == (None, None)
+
+
+def test_mobile_sync_saves_replacement_readings_per_definition(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, sync, _ = _setup(conn, repository)
+    repository.create_measurement_definition(
+        MeasurementDefinitionCreateRequest(
+            measurement_definition_id="second-definition",
+            location_id=LOCATION_ID,
+            display_name="別測定",
+            category=Category.WATER,
+            unit="m3",
+            value_schema=ValueSchema.DECIMAL_STRING,
+            multiplier=Decimal("3"),
+            decimal_places=2,
+            warning_threshold=None,
+            rollover_value=Decimal("100"),
+            calculation_method=CalculationMethod.DELTA,
+            reading_cycle=ReadingCycle.DAILY_1X,
+            purpose=Purpose.OPERATIONAL,
+            generation_start_date=date(2026, 2, 1),
+            initial_schedule_json=None,
+            initial_meter_id=METER_ID,
+        )
+    )
+    submission = MeterReplacementSubmission.model_validate(
+        {
+            "replacement_event_id": "mobile-replacement",
+            "location_id": LOCATION_ID,
+            "old_meter_id": METER_ID,
+            "new_meter_id": "new-meter",
+            "replaced_at": _at(5),
+            "client_updated_at": _at(5),
+            "definition_readings": [
+                {
+                    "measurement_definition_id": DEFINITION_ID,
+                    "old_final_reading": "120",
+                    "new_initial_reading": "5",
+                },
+                {
+                    "measurement_definition_id": "second-definition",
+                    "old_final_reading": "35",
+                    "new_initial_reading": "2",
+                },
+            ],
+            "updated_by": "mobile",
+        }
+    )
+
+    response = sync.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[submission]),
+        confirmation_context(),
+    )
+
+    assert response.accepted_replacement_items == 1
+    assert conn.execute(
+        "SELECT measurement_definition_id, old_final_reading, new_initial_reading "
+        "FROM replacement_boundaries ORDER BY measurement_definition_id"
+    ).fetchall() == [
+        ("second-definition", "35", "2"),
+        (DEFINITION_ID, "120", "5"),
+    ]
+    assert conn.execute(
+        "SELECT old_final_reading, new_initial_reading FROM replacement_events"
+    ).fetchone() == (None, None)
+
+
+def test_correction_recalculates_a_later_replacement_without_intermediate_readings(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _, first_service = _setup(conn, repository)
+    first = first_service.register_replacement(_request())
+    _meter(repository, "third-meter")
+    second_service = _service(conn, repository, writer, event_id="second-replacement")
+    second = second_service.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="new-meter",
+            replaced_at=_at(8),
+            old_final_reading=Decimal("9"),
+            new_initial_reading=Decimal("1"),
+            staff_id=STAFF_ID,
+            new_meter_id="third-meter",
+        )
+    )
+    assert conn.execute(
+        "SELECT old_meter_usage_delta FROM replacement_boundaries WHERE replacement_event_id = ?",
+        (second.replacement_event_id,),
+    ).fetchone() == ("80",)
+
+    first_service.correct_replacement(
+        MeterReplacementCorrectionInput(
+            first.replacement_event_id,
+            Decimal("120"),
+            Decimal("6"),
+            STAFF_ID,
+        )
+    )
+
+    assert conn.execute(
+        "SELECT old_meter_usage_delta FROM replacement_boundaries WHERE replacement_event_id = ?",
+        (second.replacement_event_id,),
+    ).fetchone() == ("60",)
+
+
+def test_correction_rolls_back_when_a_later_boundary_becomes_invalid(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _, first_service = _setup(conn, repository)
+    first = first_service.register_replacement(_request())
+    _meter(repository, "third-meter")
+    second_service = _service(conn, repository, writer, event_id="second-replacement")
+    second = second_service.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="new-meter",
+            replaced_at=_at(8),
+            old_final_reading=Decimal("9"),
+            new_initial_reading=Decimal("1"),
+            staff_id=STAFF_ID,
+            new_meter_id="third-meter",
+        )
+    )
+    conn.execute("UPDATE meter_assignments SET rollover_value = NULL WHERE meter_id = 'new-meter'")
+    before = _database_state(conn)
+
+    with pytest.raises(ValidationError, match="ロールオーバー"):
+        first_service.correct_replacement(
+            MeterReplacementCorrectionInput(
+                first.replacement_event_id,
+                Decimal("120"),
+                Decimal("10"),
+                STAFF_ID,
+                "後続境界エラー",
+            )
+        )
+
+    assert _database_state(conn) == before
+    assert conn.execute(
+        "SELECT old_meter_usage_delta FROM replacement_boundaries WHERE replacement_event_id = ?",
+        (second.replacement_event_id,),
+    ).fetchone() == ("80",)
 
 
 def test_registration_rechecks_and_rejects_bad_inputs_without_writes(

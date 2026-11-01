@@ -15,7 +15,10 @@ from meter_reading_mini.core.errors import (
 from meter_reading_mini.db import migrations
 from meter_reading_mini.db.backup import check_sqlite_integrity, copy_database
 from meter_reading_mini.db.connection import connect_memory, connect_readonly
-from meter_reading_mini.db.integrity import check_business_integrity
+from meter_reading_mini.db.integrity import (
+    check_business_integrity,
+    list_business_integrity_warnings,
+)
 from meter_reading_mini.db.migrations import (
     SCHEMA_SPECS,
     SCHEMA_VERSION,
@@ -357,8 +360,8 @@ def test_v1_migration_initializes_assignment_conditions_without_recalculating(
 
     conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "test")
     try:
-        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
-        assert inspect_schema(conn, 2) == []
+        assert conn.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+        assert inspect_schema(conn, SCHEMA_VERSION) == []
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute(
             "SELECT meter_id, multiplier, rollover_value FROM meter_assignments ORDER BY meter_id"
@@ -367,12 +370,74 @@ def test_v1_migration_initializes_assignment_conditions_without_recalculating(
             "SELECT old_assignment_effective_from, new_assignment_effective_from, "
             "old_meter_usage_delta FROM replacement_boundaries"
         ).fetchone() == ("2026-02-01 00:00:00", "2026-02-04 04:00:00", "200")
+        assert conn.execute(
+            "SELECT old_final_reading, new_initial_reading FROM replacement_events"
+        ).fetchone() == (None, None)
         assert conn.execute("SELECT * FROM reading_transactions").fetchone() == old_reading
         assert conn.execute(
             "SELECT COUNT(*) FROM assignment_calculation_corrections"
         ).fetchone() == (0,)
         assert check_business_integrity(conn) == []
         assert (tmp_path / "backups" / "pre-migrate_v1_test.db").is_file()
+    finally:
+        conn.close()
+
+
+def test_v1_migration_flags_historical_values_conflicting_with_copied_terms(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v1-review.db"
+    _create_database(path, schema_sql=_schema_v1_sql(), version=1)
+    with closing(sqlite3.connect(path, autocommit=True)) as original:
+        _insert_v1_assignment_history(original)
+        original.execute(
+            "UPDATE measurement_definitions SET rollover_value = '50', decimal_places = 0"
+        )
+
+    conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "review")
+    try:
+        flags = conn.execute(
+            "SELECT measurement_definition_id, meter_id, reason FROM assignment_review_flags"
+        ).fetchall()
+        assert len(flags) == 1
+        assert flags[0][1:] == (
+            "old-meter",
+            "過去実測値が現在のロールオーバー値以上です、"
+            "交換境界の前回値が現在のロールオーバー値以上です、"
+            "交換境界の旧最終値が現在のロールオーバー値以上です",
+        )
+        assert check_business_integrity(conn) == []
+        assert len(list_business_integrity_warnings(conn)) == 1
+    finally:
+        conn.close()
+
+
+def test_v1_migration_keeps_historical_precision_without_review_flag(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v1-precision.db"
+    _create_database(path, schema_sql=_schema_v1_sql(), version=1)
+    with closing(sqlite3.connect(path, autocommit=True)) as original:
+        _insert_v1_assignment_history(original)
+        original.execute(
+            "UPDATE measurement_definitions SET decimal_places = 0, rollover_value = '1000'"
+        )
+        original.execute(
+            "UPDATE reading_transactions SET raw_reading = '100.25', usage_delta = '202.5'"
+        )
+        original.execute("UPDATE replacement_boundaries SET previous_measured_reading = '100.25'")
+        original.execute("UPDATE replacement_boundaries SET old_meter_usage_delta = '197.5'")
+
+    conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "precision")
+    try:
+        assert conn.execute("SELECT raw_reading FROM reading_transactions").fetchone() == (
+            "100.25",
+        )
+        assert conn.execute(
+            "SELECT previous_measured_reading FROM replacement_boundaries"
+        ).fetchone() == ("100.25",)
+        assert conn.execute("SELECT COUNT(*) FROM assignment_review_flags").fetchone() == (0,)
+        assert check_business_integrity(conn) == []
     finally:
         conn.close()
 

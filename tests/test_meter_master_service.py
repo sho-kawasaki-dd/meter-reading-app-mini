@@ -12,6 +12,7 @@ from reading_service_helpers import (
     DEFINITION_ID,
     LOCATION_ID,
     METER_ID,
+    STAFF_ID,
     TEST_NOW,
     build_services,
     create_plan,
@@ -22,6 +23,7 @@ from meter_reading_mini.core.contract_models import (
     Category,
     Purpose,
     ReadingCycle,
+    ResultStatus,
     ValueSchema,
 )
 from meter_reading_mini.core.errors import (
@@ -40,6 +42,7 @@ from meter_reading_mini.core.meter_master_service import (
     MeterValidationError,
 )
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    ManualReadingInput,
     MeasurementDefinitionCreateInput,
     MeasurementDefinitionCreateRequest,
     MeasurementDefinitionUpdateRequest,
@@ -301,6 +304,39 @@ def test_meter_validation_and_nested_registration_roll_back(
     assert repository.get_meter_master("new-meter") is None
 
 
+def test_inconsistent_legacy_location_names_can_be_listed_and_repaired(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = MeterMasterService(
+        repository, transaction_factory=partial(transaction, conn), id_provider=lambda: "unused"
+    )
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="second-meter",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="別メーター",
+            category=Category.WATER,
+        )
+    )
+    conn.execute(
+        "UPDATE physical_meters SET location_name = '別名' WHERE meter_id = ?",
+        (METER_ID,),
+    )
+
+    location = next(item for item in service.list_locations() if item.location_id == LOCATION_ID)
+    assert location.has_name_conflict
+    assert set(location.location_names) == {"試験場所", "別名"}
+
+    service.rename_location(LOCATION_ID, "統一名称")
+
+    repaired = repository.get_meter_location(LOCATION_ID)
+    assert repaired is not None and not repaired.has_name_conflict
+    assert repaired.location_names == ("統一名称",)
+
+
 def test_measurement_definition_service_persists_initial_schedule_and_assignment_atomically(
     file_database_repository: tuple,
 ) -> None:
@@ -417,6 +453,54 @@ def test_measurement_definition_management_lists_current_assignment_and_threshol
     assert inactive.measurement_definition_id not in active_ids
     assert all_ids == active_ids | {inactive.measurement_definition_id}
     assert service.get_measurement_definition(active.measurement_definition_id) == active
+
+
+def test_decimal_places_change_preserves_historical_reading_and_rejects_unrepresentable_rollover(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository)
+    service = _definition_service(conn, repository)
+    before_at = datetime(2026, 2, 4, 4, tzinfo=UTC)
+    after_at = datetime(2026, 2, 4, 5, tzinfo=UTC)
+    create_plan(repository, "precision-before", before_at)
+    create_plan(repository, "precision-after", after_at)
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "precision-before", ResultStatus.MEASURED, before_at, Decimal("1.23"), None
+        ),
+        staff_id=STAFF_ID,
+    )
+    conn.execute(
+        "UPDATE meter_assignments SET rollover_value = '1000.25' "
+        "WHERE measurement_definition_id = ?",
+        (DEFINITION_ID,),
+    )
+    update = MeasurementDefinitionUpdateRequest(
+        display_name="精度変更",
+        category=Category.WATER,
+        unit="m3",
+        decimal_places=0,
+        warning_threshold=None,
+        purpose=Purpose.OPERATIONAL,
+    )
+    with pytest.raises(ValidationError, match="ロールオーバー値"):
+        service.update_measurement_definition(DEFINITION_ID, update)
+
+    conn.execute(
+        "UPDATE meter_assignments SET rollover_value = '1000' WHERE measurement_definition_id = ?",
+        (DEFINITION_ID,),
+    )
+    service.update_measurement_definition(DEFINITION_ID, update)
+    writer.save_manual_reading(
+        ManualReadingInput("precision-after", ResultStatus.MEASURED, after_at, Decimal("2"), None),
+        staff_id=STAFF_ID,
+    )
+
+    assert conn.execute(
+        "SELECT raw_reading, last_reading, usage_delta FROM reading_transactions "
+        "WHERE planned_reading_id = 'precision-after'"
+    ).fetchone() == ("2", "1.23", "0.77")
 
 
 def test_measurement_definition_rejects_overlapping_current_assignments(
