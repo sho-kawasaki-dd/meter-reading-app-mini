@@ -211,11 +211,11 @@ class PowerFactorReading(BaseApiModel):
     @model_validator(mode="after")
     def validate_percent_and_phase(self) -> PowerFactorReading:
         if self.percent > Decimal("100"):
-            raise ValueError("power_factor percent must be less than or equal to 100.")
+            raise ValueError("力率は 100% 以下で指定してください。")
         if self.percent == Decimal("100") and self.phase is not PowerFactorPhase.UNITY:
-            raise ValueError("power_factor phase must be unity when percent is 100.")
+            raise ValueError("力率が 100% のときは位相を力率1にしてください。")
         if self.percent < Decimal("100") and self.phase is PowerFactorPhase.UNITY:
-            raise ValueError("power_factor phase can be unity only when percent is 100.")
+            raise ValueError("力率が 100% 未満のときは進みか遅れを選択してください。")
         return self
 
 

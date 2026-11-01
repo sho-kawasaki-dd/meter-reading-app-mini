@@ -47,6 +47,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     StaffRepository,
     UpsertOutcome,
 )
+from meter_reading_mini.core.reading_preview import ManualReadingPreview, ReadingPreviewService
 from meter_reading_mini.core.reading_signature import calculate_meter_reading_signature
 from meter_reading_mini.core.timeutil import parse_utc, utc_now, utc_now_str
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
@@ -149,6 +150,7 @@ class ReadingWriteOrchestrationService:
         reading: ManualReadingInput,
         *,
         staff_id: str,
+        expected_preview: ManualReadingPreview | None = None,
     ) -> UpsertOutcome:
         """確認済み入力を現在の DB 状態で再検証し、担当者で署名して確定する。"""
 
@@ -162,6 +164,20 @@ class ReadingWriteOrchestrationService:
             updated_by = staff.display_name.strip()
             if not updated_by:
                 raise InactiveMasterError("担当者名が空の担当者は指定できません。")
+
+            if expected_preview is not None:
+                current_preview = ReadingPreviewService(
+                    self._planned_reading_repository,
+                    self._measurement_definition_repository,
+                    self._assignment_repository,
+                    self._historical_reading_repository,
+                    self._boundary_repository,
+                    self._boundary_maintenance_repository,
+                    now_provider=self._now_provider,
+                    calculation_service=self._calculation_service,
+                ).preview_manual_reading(reading)
+                if current_preview != expected_preview or not current_preview.can_save:
+                    raise ValidationError("検針の状況が変わりました。再度プレビューしてください。")
 
             planned_reading = self._get_planned_reading(reading.planned_reading_id)
             if planned_reading.task_state is PlannedReadingTaskState.SUPERSEDED:

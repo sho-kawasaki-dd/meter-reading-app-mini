@@ -550,6 +550,27 @@ def test_replacement_reports_negative_boundary_and_invalid_conditions(
         )
 
 
+def test_preview_rollover_uses_each_definition_reading(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, _, service = _setup(conn, repository)
+    request = replace(
+        _request(),
+        old_final_reading=None,
+        new_initial_reading=None,
+        definition_readings=(
+            ReplacementDefinitionReading(DEFINITION_ID, Decimal("90"), Decimal("5")),
+        ),
+    )
+
+    preview = service.preview_replacement(request)
+
+    assert preview.can_register
+    assert preview.definitions[0].old_usage_delta == Decimal("9900")
+    assert preview.definitions[0].rollover_applied
+
+
 @pytest.mark.parametrize("problem", ["inactive", "other-location", "assigned", "missing"])
 def test_unusable_replacement_meter_is_rejected_without_writes(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository], problem: str

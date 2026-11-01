@@ -9,6 +9,8 @@ from pydantic import ValidationError as PydanticValidationError
 from meter_reading_mini.core.contract_models import (
     MeterReadingSubmission,
     ResolvedMeterReadingSubmission,
+    ResultStatus,
+    ValueSchema,
     resolve_meter_reading_submission,
 )
 from meter_reading_mini.core.errors import ValidationError
@@ -18,6 +20,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeterAssignmentRecord,
 )
 from meter_reading_mini.core.mobile_reading import validate_note
+from meter_reading_mini.core.reading_values import validate_reading_value
 from meter_reading_mini.core.timezone_settings import normalize_to_utc
 
 
@@ -30,6 +33,16 @@ def resolve_manual_reading(
 ) -> ResolvedMeterReadingSubmission:
     if normalize_to_utc(reading.recorded_at) > normalize_to_utc(now):
         raise ValidationError("未来の記録日時は指定できません。")
+    if (
+        reading.result_status is ResultStatus.MEASURED
+        and definition.value_schema is ValueSchema.DECIMAL_STRING
+        and reading.raw_reading is not None
+    ):
+        validate_reading_value(
+            reading.raw_reading,
+            decimal_places=definition.decimal_places,
+            rollover_value=assignment.rollover_value,
+        )
     try:
         submission = MeterReadingSubmission(
             planned_reading_id=reading.planned_reading_id,
@@ -49,5 +62,9 @@ def resolve_manual_reading(
         )
     except PydanticValidationError as exc:
         issues = exc.errors(include_url=False)
-        message = "; ".join(issue["msg"] for issue in issues) if issues else str(exc)
+        message = (
+            "; ".join(issue["msg"].removeprefix("Value error, ") for issue in issues)
+            if issues
+            else str(exc)
+        )
         raise ValidationError(message) from exc

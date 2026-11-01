@@ -124,9 +124,9 @@ class ReadingPreviewService:
                 )
                 virtual_history = _VirtualHistoricalReadings(
                     self._historical_repository,
-                    {
-                        planned.planned_reading_id: resolved.raw_reading,
-                    },
+                    planned,
+                    resolved.recorded_at,
+                    resolved.raw_reading,
                 )
                 self._validate_downstream(
                     planned,
@@ -140,7 +140,9 @@ class ReadingPreviewService:
         else:
             virtual_history = _VirtualHistoricalReadings(
                 self._historical_repository,
-                {planned.planned_reading_id: None},
+                planned,
+                resolved.recorded_at,
+                None,
             )
             try:
                 self._validate_downstream(planned, definition, virtual_history)
@@ -258,10 +260,14 @@ class _VirtualHistoricalReadings:
     def __init__(
         self,
         repository: HistoricalMeasuredReadingLookupRepository,
-        overrides: dict[str, Decimal | None],
+        target: PlannedReadingRecord,
+        recorded_at: datetime,
+        raw_reading: Decimal | None,
     ) -> None:
         self._repository = repository
-        self._overrides = overrides
+        self._target = target
+        self._recorded_at = recorded_at
+        self._overrides = {target.planned_reading_id: raw_reading}
 
     def record(self, planned_reading_id: str, raw_reading: Decimal | None) -> None:
         self._overrides[planned_reading_id] = raw_reading
@@ -291,7 +297,8 @@ class _VirtualHistoricalReadings:
         while latest is not None and latest.planned_reading_id in self._overrides:
             raw = self._overrides[latest.planned_reading_id]
             if raw is not None:
-                return replace(latest, raw_reading=raw)
+                latest = replace(latest, raw_reading=raw)
+                break
             if latest.scheduled_at is None:
                 raise ValidationError(
                     f"後続実測値の予定日時がありません: {latest.planned_reading_id}"
@@ -303,6 +310,40 @@ class _VirtualHistoricalReadings:
                 before_planned_reading_id=latest.planned_reading_id,
                 excluding_planned_reading_id=excluding_planned_reading_id,
             )
+        target = self._target
+        raw = self._overrides[target.planned_reading_id]
+        scheduled_at = target.scheduled_at
+        if scheduled_at is None:
+            raise ValidationError(f"予定枠の予定日時がありません: {target.planned_reading_id}")
+        is_before = scheduled_at < before_scheduled_at or (
+            scheduled_at == before_scheduled_at
+            and before_planned_reading_id is not None
+            and target.planned_reading_id < before_planned_reading_id
+        )
+        # 未保存の追加実測も、後続計算の直前値候補として扱う。
+        if (
+            raw is not None
+            and target.measurement_definition_id == measurement_definition_id
+            and target.meter_id == meter_id
+            and target.planned_reading_id != excluding_planned_reading_id
+            and is_before
+        ):
+            if latest is not None and latest.scheduled_at is None:
+                raise ValidationError(
+                    f"前回実測の予定日時がありません: {latest.planned_reading_id}"
+                )
+            if latest is None or (
+                latest.scheduled_at is not None
+                and (scheduled_at, target.planned_reading_id)
+                >= (latest.scheduled_at, latest.planned_reading_id)
+            ):
+                return HistoricalMeasuredReadingRecord(
+                    planned_reading_id=target.planned_reading_id,
+                    raw_reading=raw,
+                    recorded_at=self._recorded_at,
+                    meter_id=target.meter_id,
+                    scheduled_at=scheduled_at,
+                )
         return latest
 
     def list_following_measured_readings(
