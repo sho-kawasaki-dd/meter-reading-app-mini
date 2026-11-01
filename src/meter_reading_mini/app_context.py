@@ -11,12 +11,17 @@ from functools import partial
 from meter_reading_mini.core.assignment_calculation_settings import (
     AssignmentCalculationSettingsService,
 )
+from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
+from meter_reading_mini.core.meter_master_service import MeterMasterService
 from meter_reading_mini.core.planned_reading_maintenance import PlannedReadingMaintenanceService
 from meter_reading_mini.core.reading_overview import ReadingOverviewQueryService
 from meter_reading_mini.core.schedule_settings import (
     CutoffSettingsService,
+    MeasurementDefinitionScheduleService,
     ReleaseOffsetSettingsService,
+    ScheduleSettingsService,
 )
+from meter_reading_mini.core.staff_service import StaffService
 from meter_reading_mini.core.startup_preparation import StartupPreparationService
 from meter_reading_mini.core.timeutil import utc_now
 from meter_reading_mini.core.timezone_settings import TimezoneSettingsService, normalize_to_utc
@@ -35,6 +40,12 @@ class AppContext:
     planned_reading_maintenance: PlannedReadingMaintenanceService
     reading_overview: ReadingOverviewQueryService
     assignment_calculation_settings: AssignmentCalculationSettingsService
+    meter_master: MeterMasterService
+    measurement_definitions: MeasurementDefinitionService
+    staff: StaffService
+    schedule_defaults: ScheduleSettingsService
+    measurement_schedules: MeasurementDefinitionScheduleService
+    release_offsets: ReleaseOffsetSettingsService
     timezone_settings: TimezoneSettingsService
     cutoff_settings: CutoffSettingsService
     current_datetime: Callable[[], datetime]
@@ -59,6 +70,7 @@ def create_app_context(
         recomposition_repository=repository,
         transaction_factory=transaction_factory,
         current_business_date_provider=business_date,
+        clock=clock,
     )
     generator = PlannedReadingGeneratorService(
         repository,
@@ -102,6 +114,27 @@ def create_app_context(
             repository, business_date_provider=business_date
         ),
         assignment_calculation_settings=assignment_settings,
+        meter_master=MeterMasterService(repository, transaction_factory=transaction_factory),
+        measurement_definitions=MeasurementDefinitionService(
+            repository, repository, repository, transaction_factory=transaction_factory
+        ),
+        staff=StaffService(repository, transaction_factory=transaction_factory),
+        schedule_defaults=ScheduleSettingsService(
+            repository,
+            recomposition_repository=repository,
+            transaction_factory=transaction_factory,
+            current_business_date_provider=business_date,
+            clock=clock,
+        ),
+        measurement_schedules=MeasurementDefinitionScheduleService(
+            repository,
+            schedule_defaults_repository=repository,
+            recomposition_repository=repository,
+            transaction_factory=transaction_factory,
+            current_business_date_provider=business_date,
+            clock=clock,
+        ),
+        release_offsets=release_offsets,
         timezone_settings=timezone_settings,
         cutoff_settings=cutoff_settings,
         current_datetime=current_datetime,

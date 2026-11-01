@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, time
+from pathlib import Path
 
 from PySide6.QtCore import QDate, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
@@ -42,12 +43,15 @@ from meter_reading_mini.core.reading_overview import (
     filter_reading_overview,
     summarize_reading_overview,
 )
+from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
+from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.error_handling import run_guarded
 from meter_reading_mini.ui.models.reading_overview_model import (
     CATEGORY_LABELS,
     TASK_STATE_LABELS,
     ReadingOverviewTableModel,
 )
+from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 
 _CYCLE_TABS: tuple[tuple[str, frozenset[ReadingCycle]], ...] = (
     ("すべて", frozenset()),
@@ -94,9 +98,11 @@ def _python_date(value: QDate) -> date:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, services: AppContext) -> None:
+    def __init__(self, services: AppContext, *, display_settings_path: Path | None = None) -> None:
         super().__init__()
         self._services = services
+        self._display_settings_path = display_settings_path
+        self._staff_memory = StaffSelectionMemory()
         self._all_readings: tuple[ReadingOverviewRecord, ...] = ()
         self._review_assignments: tuple[_ReviewAssignment, ...] = ()
         self._view_loaded = False
@@ -199,7 +205,7 @@ class MainWindow(QMainWindow):
         self.review_text.setObjectName("assignmentReviewReasons")
         self.review_text.setReadOnly(True)
         self.review_text.setMaximumHeight(90)
-        self.review_correction_button = QPushButton("計算条件の訂正について")
+        self.review_correction_button = QPushButton("計算条件の訂正")
         review_layout.addWidget(self.review_text)
         review_layout.addWidget(self.review_correction_button, alignment=Qt.AlignmentFlag.AlignLeft)
         self.review_group.hide()
@@ -229,15 +235,11 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.refresh_action.triggered.connect(self.refresh_planned_readings)
         self.manual_reading_action.triggered.connect(self._on_manual_reading)
-        self.master_action.triggered.connect(
-            lambda: self._guard(lambda: self._show_unavailable("マスタ管理"))
-        )
+        self.master_action.triggered.connect(lambda: self._guard(self._open_master))
         self.replacement_action.triggered.connect(
             lambda: self._guard(lambda: self._show_unavailable("メーター交換"))
         )
-        self.settings_action.triggered.connect(
-            lambda: self._guard(lambda: self._show_unavailable("設定"))
-        )
+        self.settings_action.triggered.connect(lambda: self._guard(self._open_settings))
         self.review_correction_button.clicked.connect(
             lambda: self._guard(self._show_review_guidance)
         )
@@ -504,12 +506,32 @@ class MainWindow(QMainWindow):
         self._show_unavailable("PC 直接入力・訂正")
 
     def _show_review_guidance(self) -> None:
-        QMessageBox.information(
-            self,
-            "計算条件の確認待ち",
-            "マスタ管理の「計算条件の訂正」で対象期間と理由を確認して修正してください。\n"
-            "訂正画面は今後の開発で実装予定です。修正が完了するまで対象期間は入力できません。",
+        reviews = self._load_review_assignments()
+        self._review_assignments = reviews
+        self._show_review_assignments()
+        self._update_selection()
+        if not reviews:
+            raise ValidationError("計算条件の確認待ちはありません。")
+        reading = self._selected_reading()
+        selected = next(
+            (review for review in reviews if reading is not None and review.contains(reading)),
+            reviews[0],
         )
+        self._open_master(selected.flag)
+
+    def _open_master(self, flag: AssignmentReviewFlagRecord | None = None) -> None:
+        dialog = MasterDialog(self._services, self._staff_memory, self)
+        dialog.saved.connect(self.notify_dialog_saved)
+        if flag is not None:
+            dialog.show_assignment_correction(flag)
+        dialog.exec()
+
+    def _open_settings(self) -> None:
+        if self._display_settings_path is None:
+            raise ValidationError("表示設定の保存先が設定されていません。")
+        dialog = SettingsDialog(self._services, self._display_settings_path, self)
+        dialog.saved.connect(self.notify_dialog_saved)
+        dialog.exec()
 
     def _show_unavailable(self, feature: str) -> None:
         QMessageBox.information(

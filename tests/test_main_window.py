@@ -4,9 +4,10 @@ import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QTime
 from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import QMessageBox, QToolBar
 from pytestqt.qtbot import QtBot
@@ -37,6 +38,8 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingCreateRequest,
 )
 from meter_reading_mini.db.repositories import SQLiteRepository
+from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
+from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.main_window import MainWindow, _ReviewAssignment
 
 DAY = date(2026, 2, 4)
@@ -289,7 +292,7 @@ def test_combined_filters_and_successor_navigation(window: MainWindow, qtbot: Qt
 def test_review_warning_blocks_only_affected_assignments_and_clears_after_correction(
     overview_data: OverviewData,
     qtbot: QtBot,
-    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _insert_review_flag(overview_data)
     window = MainWindow(overview_data.services)
@@ -303,9 +306,18 @@ def test_review_warning_blocks_only_affected_assignments_and_clears_after_correc
     assert "計算条件の確認待ち" in window.selection_details.text()
     _select(window, "power-factor-slot")
     assert window.manual_reading_action.isEnabled()
+    opened: list[str] = []
+
+    def inspect_dialog(dialog: MasterDialog) -> int:
+        assert dialog.tabs.currentWidget() is dialog.correction_tab
+        assert dialog.correction_page.definition_combo.currentData() == DEFINITION_ID
+        assert "旧倍率が実測値と矛盾" in dialog.correction_page.review_reason.text()
+        opened.append("opened")
+        return 0
+
+    monkeypatch.setattr(MasterDialog, "exec", inspect_dialog)
     qtbot.mouseClick(window.review_correction_button, Qt.MouseButton.LeftButton)
-    assert "マスタ管理" in messages[-1][2]
-    assert "今後の開発で実装予定" in messages[-1][2]
+    assert opened == ["opened"]
 
     _select(window, "plan-4")
     overview_data.connection.execute("DELETE FROM assignment_review_flags")
@@ -328,6 +340,109 @@ def test_review_flag_added_after_selection_is_rechecked_before_opening(
     assert window.review_group.isVisible()
     assert not window.manual_reading_action.isEnabled()
     assert window.table_model.rowCount() == 7
+
+
+def test_master_action_opens_dialog_and_refreshes_after_save(
+    overview_data: OverviewData, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refresh = overview_data.services.planned_reading_maintenance.refresh
+    calls: list[str] = []
+
+    def tracked_refresh() -> None:
+        calls.append("refresh")
+        refresh()
+
+    def interact(dialog: MasterDialog) -> int:
+        assert dialog.parentWidget() is window
+        dialog.staff_page.name_edit.setText("画面から追加")
+        dialog.staff_page.save_button.click()
+        return 0
+
+    monkeypatch.setattr(
+        overview_data.services.planned_reading_maintenance, "refresh", tracked_refresh
+    )
+    monkeypatch.setattr(MasterDialog, "exec", interact)
+    window.master_action.trigger()
+    assert calls == ["refresh"]
+    assert any(
+        item.display_name == "画面から追加" for item in overview_data.services.staff.list_staff()
+    )
+
+
+def test_review_guidance_correction_clears_flag_and_unblocks_input(
+    overview_data: OverviewData, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _insert_review_flag(overview_data)
+    window = MainWindow(overview_data.services)
+    qtbot.addWidget(window)
+    window.show()
+    _select(window, "plan-4")
+    assert not window.manual_reading_action.isEnabled()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+
+    def correct(dialog: MasterDialog) -> int:
+        page = dialog.correction_page
+        assert page.definition_combo.currentData() == DEFINITION_ID
+        page.staff_combo.setCurrentIndex(page.staff_combo.findData(STAFF_ID))
+        page.reason_edit.setText("旧条件を確認")
+        page.preview_button.click()
+        assert page.apply_button.isEnabled()
+        page.apply_button.click()
+        return 0
+
+    monkeypatch.setattr(MasterDialog, "exec", correct)
+    qtbot.mouseClick(window.review_correction_button, Qt.MouseButton.LeftButton)
+    assert not overview_data.services.assignment_calculation_settings.list_review_flags()
+    assert not window.review_group.isVisible()
+    assert window.manual_reading_action.isEnabled()
+
+
+def test_dialog_save_reports_refresh_failure_without_losing_committed_change(
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_refresh() -> None:
+        raise ValidationError("予定枠の再更新に失敗しました")
+
+    def interact(dialog: MasterDialog) -> int:
+        dialog.staff_page.name_edit.setText("保存された担当者")
+        dialog.staff_page.save_button.click()
+        return 0
+
+    monkeypatch.setattr(overview_data.services.planned_reading_maintenance, "refresh", fail_refresh)
+    monkeypatch.setattr(MasterDialog, "exec", interact)
+    window.master_action.trigger()
+    assert "再更新に失敗" in messages[-1][2]
+    assert window.table_model.rowCount() == 0
+    assert any(
+        staff.display_name == "保存された担当者"
+        for staff in overview_data.services.staff.list_staff()
+    )
+
+
+def test_settings_action_uses_configured_path_and_closes_previous_days(
+    overview_data: OverviewData, tmp_path: Path, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "ui_settings.json"
+    window = MainWindow(overview_data.services, display_settings_path=path)
+    qtbot.addWidget(window)
+    overview_data.clock.value = datetime(2026, 2, 4, 22, 0, tzinfo=UTC)
+
+    def interact(dialog: SettingsDialog) -> int:
+        assert dialog.parentWidget() is window
+        assert dialog._display_settings_path == path
+        dialog.cutoff_edit.setTime(QTime(6, 30))
+        dialog.cutoff_save_button.click()
+        return 0
+
+    monkeypatch.setattr(SettingsDialog, "exec", interact)
+    window.settings_action.trigger()
+    assert overview_data.services.cutoff_settings.get_cutoff_time().strftime("%H:%M") == "06:30"
+    assert overview_data.connection.execute(
+        "SELECT task_state FROM planned_readings WHERE planned_reading_id = 'plan-4'"
+    ).fetchone() == ("auto_closed",)
 
 
 def test_review_assignment_uses_half_open_period(overview_data: OverviewData) -> None:
