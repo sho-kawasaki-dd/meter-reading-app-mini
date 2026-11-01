@@ -19,11 +19,13 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionCreateRequest,
     MeterMasterCreateRequest,
 )
+from meter_reading_mini.core.planned_reading_maintenance import PlannedReadingMaintenanceService
 from meter_reading_mini.core.schedule_settings import ReleaseOffsetSettingsService
 from meter_reading_mini.core.startup_preparation import StartupPreparationService
 from meter_reading_mini.core.work_package_download import (
     PlannedReadingGeneratorService,
     PlannedReadingLifecycleService,
+    WorkPackageDownloadServiceError,
 )
 from meter_reading_mini.db.bootstrap_seeds import bootstrap_default_settings
 from meter_reading_mini.db.connection import transaction
@@ -161,6 +163,168 @@ def test_startup_preparation_failure_rolls_back_seed_and_completed_chunks(
     assert repository.get_setting("startup.probe") is None
     assert conn.execute("SELECT COUNT(*) FROM planned_readings").fetchone() == (0,)
     assert not conn.in_transaction
+
+
+def test_startup_rolls_back_when_bootstrap_fails_after_a_write(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+
+    def failing_bootstrap() -> None:
+        repository.upsert_setting("startup.probe", "partial")
+        raise RuntimeError("bootstrap failed")
+
+    startup, _ = _build_startup_service(
+        conn,
+        repository,
+        bootstrapper=failing_bootstrap,
+        current_datetime=datetime(2026, 2, 6, 8, 0, tzinfo=_TOKYO),
+    )
+    with pytest.raises(RuntimeError, match="bootstrap failed"):
+        startup.prepare()
+    assert repository.get_setting("startup.probe") is None
+    assert not conn.in_transaction
+
+
+def test_maintenance_refresh_generates_and_closes_in_one_transaction(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _create_definition(conn, repository)
+    _, generator = _build_startup_service(
+        conn,
+        repository,
+        bootstrapper=lambda: None,
+        current_datetime=datetime(2026, 2, 6, 8, 0, tzinfo=_TOKYO),
+    )
+    lifecycle = PlannedReadingLifecycleService(
+        repository,
+        current_datetime_provider=lambda: datetime(2026, 2, 6, 8, 0, tzinfo=_TOKYO),
+        cutoff_time_provider=lambda: time(7),
+    )
+    service = PlannedReadingMaintenanceService(
+        generator,
+        lifecycle,
+        transaction_factory=lambda: transaction(conn),
+        business_date_provider=lambda: date(2026, 2, 6),
+    )
+
+    service.refresh()
+    service.refresh()
+
+    assert conn.execute(
+        "SELECT business_date, task_state FROM planned_readings ORDER BY business_date"
+    ).fetchall() == [("2026-02-05", "auto_closed"), ("2026-02-06", "open")]
+
+
+@pytest.mark.parametrize("startup", [False, True])
+def test_lifecycle_failure_rolls_back_generation_and_startup_seed(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    monkeypatch: pytest.MonkeyPatch,
+    startup: bool,
+) -> None:
+    conn, repository = file_database_repository
+    _create_definition(conn, repository)
+    startup_service, generator = _build_startup_service(
+        conn,
+        repository,
+        bootstrapper=lambda: repository.upsert_setting("startup.probe", "partial"),
+        current_datetime=datetime(2026, 2, 6, 8, 0, tzinfo=_TOKYO),
+    )
+    lifecycle = startup_service._planned_reading_lifecycle_service
+    reconcile = lifecycle.reconcile_before_download
+
+    def close_then_fail() -> int:
+        reconcile()
+        raise RuntimeError("closing failed")
+
+    monkeypatch.setattr(lifecycle, "reconcile_before_download", close_then_fail)
+    maintenance = PlannedReadingMaintenanceService(
+        generator,
+        lifecycle,
+        transaction_factory=lambda: transaction(conn),
+        business_date_provider=lambda: date(2026, 2, 6),
+    )
+    with pytest.raises(RuntimeError, match="closing failed"):
+        startup_service.prepare() if startup else maintenance.refresh()
+
+    assert repository.get_setting("startup.probe") is None
+    assert conn.execute("SELECT COUNT(*) FROM planned_readings").fetchone() == (0,)
+    assert not conn.in_transaction
+
+
+def test_incomplete_generation_is_an_error_and_rolls_back(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, repository = file_database_repository
+    _create_definition(conn, repository)
+    startup, _ = _build_startup_service(
+        conn,
+        repository,
+        bootstrapper=lambda: repository.upsert_setting("startup.probe", "partial"),
+        current_datetime=datetime(2026, 2, 6, 8, 0, tzinfo=_TOKYO),
+    )
+    insert = repository.create_planned_readings_if_missing
+
+    def insert_only_one(requests):
+        return insert(requests[:1])
+
+    monkeypatch.setattr(repository, "create_planned_readings_if_missing", insert_only_one)
+    with pytest.raises(WorkPackageDownloadServiceError, match="予定枠の補完を完了できません"):
+        startup.prepare()
+
+    assert repository.get_setting("startup.probe") is None
+    assert conn.execute("SELECT COUNT(*) FROM planned_readings").fetchone() == (0,)
+    assert not conn.in_transaction
+
+
+def test_maintenance_commit_failure_rolls_back_generated_slots(tmp_path: Path) -> None:
+    class CommitFailingConnection(sqlite3.Connection):
+        fail_commit = False
+
+        def execute(self, sql: str, parameters=()):
+            if self.fail_commit and sql.strip().upper() == "COMMIT":
+                raise sqlite3.OperationalError("simulated commit failure")
+            return super().execute(sql, parameters)
+
+    conn = sqlite3.connect(
+        tmp_path / "maintenance-commit-failure.db",
+        autocommit=True,
+        factory=CommitFailingConnection,
+    )
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        create_schema(conn)
+        repository = SQLiteRepository(conn, clock=lambda: _FIXED_CLOCK)
+        with transaction(conn):
+            bootstrap_default_settings(conn, clock=lambda: _FIXED_CLOCK)
+        _create_definition(conn, repository)
+        _, generator = _build_startup_service(
+            conn,
+            repository,
+            bootstrapper=lambda: None,
+            current_datetime=datetime(2026, 2, 6, 8, 0, tzinfo=_TOKYO),
+        )
+        lifecycle = PlannedReadingLifecycleService(
+            repository,
+            current_datetime_provider=lambda: datetime(2026, 2, 6, 8, 0, tzinfo=_TOKYO),
+            cutoff_time_provider=lambda: time(7),
+        )
+        service = PlannedReadingMaintenanceService(
+            generator,
+            lifecycle,
+            transaction_factory=lambda: transaction(conn),
+            business_date_provider=lambda: date(2026, 2, 6),
+        )
+        conn.fail_commit = True
+        with pytest.raises(sqlite3.OperationalError, match="simulated commit failure"):
+            service.refresh()
+        assert conn.execute("SELECT COUNT(*) FROM planned_readings").fetchone() == (0,)
+        assert not conn.in_transaction
+    finally:
+        conn.close()
 
 
 def test_startup_preparation_commit_failure_rolls_back_all_seed_rows(

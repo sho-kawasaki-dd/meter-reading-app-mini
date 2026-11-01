@@ -29,6 +29,7 @@ from meter_reading_mini.core.timezone_settings import (
     build_current_datetime_provider,
     build_scheduled_at,
     normalize_to_utc,
+    wall_datetime_to_utc,
 )
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
@@ -43,6 +44,46 @@ def test_normalize_to_utc_converts_an_aware_datetime() -> None:
 def test_normalize_to_utc_rejects_a_naive_datetime() -> None:
     with pytest.raises(InvalidTimezoneError):
         normalize_to_utc(datetime(2026, 4, 1, 8, 0))
+
+
+def test_wall_datetime_to_utc_uses_business_timezone_and_second_precision() -> None:
+    assert wall_datetime_to_utc(
+        datetime(2026, 4, 1, 8, 0, 3, 250000),
+        DEFAULT_APP_TIMEZONE,
+        now=datetime(2026, 4, 1, 0, 0, tzinfo=UTC),
+    ) == datetime(2026, 3, 31, 23, 0, 3, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("wall_time", "message"),
+    [
+        (datetime(2026, 3, 8, 2, 30), "存在しません"),
+        (datetime(2026, 11, 1, 1, 30), "重複しています"),
+    ],
+)
+def test_wall_datetime_to_utc_rejects_dst_gaps_and_overlaps(
+    wall_time: datetime, message: str
+) -> None:
+    with pytest.raises(InvalidTimezoneError, match=message):
+        wall_datetime_to_utc(
+            wall_time,
+            ZoneInfo("America/New_York"),
+            now=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+
+
+def test_wall_datetime_to_utc_rejects_future_even_within_same_second() -> None:
+    now = datetime(2026, 4, 1, tzinfo=UTC)
+    assert wall_datetime_to_utc(datetime(2026, 4, 1), ZoneInfo("UTC"), now=now) == now
+    with pytest.raises(InvalidTimezoneError, match="未来"):
+        wall_datetime_to_utc(datetime(2026, 4, 1, 0, 0, 0, 1), ZoneInfo("UTC"), now=now)
+
+
+def test_wall_datetime_to_utc_requires_naive_wall_time_and_aware_clock() -> None:
+    with pytest.raises(InvalidTimezoneError, match="壁時計"):
+        wall_datetime_to_utc(datetime(2026, 4, 1, tzinfo=UTC), ZoneInfo("UTC"))
+    with pytest.raises(InvalidTimezoneError, match="タイムゾーン付き"):
+        wall_datetime_to_utc(datetime(2026, 4, 1), ZoneInfo("UTC"), now=datetime(2026, 4, 2))
 
 
 def test_build_scheduled_at_uses_the_configured_business_timezone() -> None:

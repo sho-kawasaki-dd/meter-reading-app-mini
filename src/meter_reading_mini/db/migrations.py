@@ -4,18 +4,22 @@ import re
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from importlib.resources import files
 from pathlib import Path
 
+from meter_reading_mini.core.contract_models import SIGNED_DECIMAL_STRING_PATTERN
 from meter_reading_mini.core.errors import (
     MigrationError,
     SchemaTooNewError,
     UnsupportedSchemaError,
 )
+from meter_reading_mini.core.timeutil import parse_utc
 from meter_reading_mini.db.backup import copy_database
 from meter_reading_mini.db.connection import connect, transaction
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MIN_SUPPORTED_SCHEMA_VERSION = 1
 
 
@@ -175,10 +179,142 @@ def _schema_spec_from_ddl(ddl: str) -> SchemaSpec:
         conn.close()
 
 
-MIGRATIONS: dict[int, MigrationStep | str] = {}
+def _precheck_assignment_calculation_migration(conn: sqlite3.Connection) -> list[str]:
+    reasons: list[str] = []
+    assignments: dict[str, list[tuple[datetime, datetime | None, str]]] = {}
+    for table, rowid, parent, _ in conn.execute("PRAGMA foreign_key_check"):
+        reasons.append(f"外部キーが不正です: {table}/{rowid}/{parent}")
+    rows = conn.execute(
+        "SELECT a.measurement_definition_id, a.meter_id, a.effective_from, a.effective_to, "
+        "d.multiplier, d.rollover_value FROM meter_assignments AS a "
+        "JOIN measurement_definitions AS d "
+        "ON d.measurement_definition_id = a.measurement_definition_id"
+    ).fetchall()
+    for definition_id, meter_id, effective_from, effective_to, multiplier, rollover in rows:
+        label = f"{definition_id}/{meter_id}/{effective_from}"
+        try:
+            start = parse_utc(str(effective_from))
+            end = parse_utc(str(effective_to)) if effective_to is not None else None
+        except ValueError:
+            reasons.append(f"割当日時が不正です: {label}")
+            continue
+        if end is not None and end <= start:
+            reasons.append(f"割当期間が不正です: {label}")
+        else:
+            assignments.setdefault(str(definition_id), []).append((start, end, str(meter_id)))
+        for value, name in ((multiplier, "倍率"), (rollover, "ロールオーバー値")):
+            if value is None and name == "ロールオーバー値":
+                continue
+            if not isinstance(value, str) or not SIGNED_DECIMAL_STRING_PATTERN.fullmatch(value):
+                reasons.append(f"{name}が不正です: {label}")
+                continue
+            text = value
+            try:
+                number = Decimal(text)
+            except InvalidOperation:
+                reasons.append(f"{name}が不正です: {label}")
+                continue
+            if not number.is_finite() or number <= 0 or format(number, "f") != text:
+                reasons.append(f"{name}が不正です: {label}")
+
+    for definition_id, periods in assignments.items():
+        periods.sort(key=lambda period: (period[0], period[2]))
+        previous = periods[0]
+        for current in periods[1:]:
+            if previous[1] is None or current[0] < previous[1]:
+                reasons.append(
+                    f"割当期間が重複しています: {definition_id}/{previous[2]}/{current[2]}"
+                )
+            if previous[1] is not None and (current[1] is None or current[1] > previous[1]):
+                previous = current
+
+    boundaries = conn.execute(
+        "SELECT b.replacement_event_id, b.measurement_definition_id, "
+        "(SELECT COUNT(*) FROM meter_assignments AS a "
+        " WHERE a.measurement_definition_id = b.measurement_definition_id "
+        " AND a.meter_id = b.old_meter_id AND a.effective_to = b.replaced_at "
+        " AND a.effective_from < b.replaced_at), "
+        "(SELECT COUNT(*) FROM meter_assignments AS a "
+        " WHERE a.measurement_definition_id = b.measurement_definition_id "
+        " AND a.meter_id = b.new_meter_id AND a.effective_from = b.replaced_at) "
+        "FROM replacement_boundaries AS b"
+    ).fetchall()
+    for event_id, definition_id, old_count, new_count in boundaries:
+        if old_count != 1 or new_count != 1:
+            reasons.append(f"交換境界と割当を一意に対応付けられません: {event_id}/{definition_id}")
+    return reasons
+
+
+def _migrate_assignment_calculation_settings(conn: sqlite3.Connection) -> None:
+    reasons = _precheck_assignment_calculation_migration(conn)
+    if reasons:
+        raise MigrationError("割当計算条件を移行できません: " + "、".join(reasons[:20]))
+
+    def create_temporary_table(name: str) -> None:
+        ddl = next(table.sql for table in SCHEMA_SPECS[2].tables if table.name == name)
+        conn.execute(ddl.replace(f"CREATE TABLE {name}", f"CREATE TABLE {name}_v2", 1))
+
+    create_temporary_table("meter_assignments")
+    conn.execute(
+        "INSERT INTO meter_assignments_v2 "
+        "(measurement_definition_id, meter_id, effective_from, effective_to, "
+        "multiplier, rollover_value) "
+        "SELECT a.measurement_definition_id, a.meter_id, a.effective_from, a.effective_to, "
+        "d.multiplier, d.rollover_value FROM meter_assignments AS a "
+        "JOIN measurement_definitions AS d "
+        "ON d.measurement_definition_id = a.measurement_definition_id"
+    )
+    conn.execute("DROP TABLE meter_assignments")
+    conn.execute("ALTER TABLE meter_assignments_v2 RENAME TO meter_assignments")
+
+    create_temporary_table("replacement_boundaries")
+    conn.execute(
+        "INSERT INTO replacement_boundaries_v2 "
+        "(replacement_event_id, measurement_definition_id, location_id, business_date, "
+        "old_meter_id, new_meter_id, replaced_at, old_assignment_effective_from, "
+        "new_assignment_effective_from, previous_measured_reading, "
+        "previous_measured_planned_reading_id, old_final_reading, old_meter_usage_delta, "
+        "new_initial_reading, created_at, updated_at) "
+        "SELECT b.replacement_event_id, b.measurement_definition_id, b.location_id, "
+        "b.business_date, b.old_meter_id, b.new_meter_id, b.replaced_at, "
+        "(SELECT a.effective_from FROM meter_assignments AS a "
+        " WHERE a.measurement_definition_id = b.measurement_definition_id "
+        " AND a.meter_id = b.old_meter_id AND a.effective_to = b.replaced_at "
+        " AND a.effective_from < b.replaced_at), "
+        "b.replaced_at, b.previous_measured_reading, b.previous_measured_planned_reading_id, "
+        "b.old_final_reading, b.old_meter_usage_delta, b.new_initial_reading, "
+        "b.created_at, b.updated_at FROM replacement_boundaries AS b"
+    )
+    conn.execute("DROP TABLE replacement_boundaries")
+    conn.execute("ALTER TABLE replacement_boundaries_v2 RENAME TO replacement_boundaries")
+
+    correction_table = next(
+        table.sql
+        for table in SCHEMA_SPECS[2].tables
+        if table.name == "assignment_calculation_corrections"
+    )
+    conn.execute(correction_table)
+    correction_index = next(
+        index.sql
+        for index in SCHEMA_SPECS[2].indexes
+        if index.name == "idx_assignment_calculation_corrections_assignment"
+    )
+    conn.execute(correction_index)
+
+
+MIGRATIONS: dict[int, MigrationStep | str] = {
+    2: MigrationStep(
+        _migrate_assignment_calculation_settings,
+        precheck=_precheck_assignment_calculation_migration,
+        rebuilds_tables=True,
+    )
+}
 
 SCHEMA_SPECS: dict[int, SchemaSpec] = {
     1: _schema_spec_from_ddl(
+        files("meter_reading_mini.db").joinpath("schema_v1.sql").read_text(encoding="utf-8")
+    ),
+    2: _schema_spec_from_ddl(
         files("meter_reading_mini.db").joinpath("schema.sql").read_text(encoding="utf-8")
     ),
 }

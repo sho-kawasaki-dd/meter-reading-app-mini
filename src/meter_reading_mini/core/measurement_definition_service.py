@@ -8,10 +8,12 @@ from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from meter_reading_mini.core.contract_models import Purpose
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    MeasurementDefinitionCreateInput,
     MeasurementDefinitionCreateRequest,
     MeasurementDefinitionManagementRepository,
     MeasurementDefinitionRecord,
@@ -40,21 +42,47 @@ class MeasurementDefinitionService:
         meter_repository: MeterMasterWriteRepository,
         *,
         transaction_factory: TransactionFactory,
+        id_provider: Callable[[], str] = lambda: uuid4().hex,
     ) -> None:
         self._repository = repository
         self._assignment_repository = assignment_repository
         self._meter_repository = meter_repository
         self._transaction_factory = transaction_factory
+        self._id_provider = id_provider
 
     def get_measurement_definition(
         self, measurement_definition_id: str
     ) -> MeasurementDefinitionRecord | None:
         return self._repository.get_measurement_definition(measurement_definition_id)
 
+    def list_measurement_definitions(
+        self, *, show_inactive: bool = False
+    ) -> list[MeasurementDefinitionRecord]:
+        return self._repository.list_measurement_definitions(show_inactive=show_inactive)
+
     def create_measurement_definition(
-        self, request: MeasurementDefinitionCreateRequest
+        self, request: MeasurementDefinitionCreateInput
     ) -> MeasurementDefinitionRecord:
-        normalized = _normalize_create_request(request)
+        normalized = _normalize_create_request(
+            MeasurementDefinitionCreateRequest(
+                measurement_definition_id=_required(self._id_provider(), "採番した測定定義 ID"),
+                location_id=request.location_id,
+                display_name=request.display_name,
+                category=request.category,
+                unit=request.unit,
+                value_schema=request.value_schema,
+                multiplier=request.multiplier,
+                decimal_places=request.decimal_places,
+                warning_threshold=request.warning_threshold,
+                rollover_value=request.rollover_value,
+                calculation_method=request.calculation_method,
+                reading_cycle=request.reading_cycle,
+                purpose=request.purpose,
+                generation_start_date=request.generation_start_date,
+                initial_schedule_json=request.initial_schedule_json,
+                initial_meter_id=request.initial_meter_id,
+            )
+        )
         with self._transaction_factory():
             if (
                 self._repository.get_measurement_definition(normalized.measurement_definition_id)
@@ -190,10 +218,7 @@ def _normalize_create_request(
 def _normalize_update_request(
     request: MeasurementDefinitionUpdateRequest,
 ) -> MeasurementDefinitionUpdateRequest:
-    if not request.multiplier.is_finite() or request.multiplier <= 0:
-        raise ValidationError("倍率は有限の正数で指定してください。")
     _validate_optional_decimal(request.warning_threshold, "警告閾値", allow_zero=True)
-    _validate_optional_decimal(request.rollover_value, "ロールオーバー値", allow_zero=False)
     _validate_decimal_places(request.decimal_places)
     try:
         purpose = Purpose(request.purpose)

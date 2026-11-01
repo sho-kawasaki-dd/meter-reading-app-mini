@@ -427,13 +427,12 @@ def test_master_assignment_settings_and_query_repositories(
     updated_meter = sqlite_repository.update_meter_master(
         new_meter_id,
         MeterMasterUpdateRequest(
-            location_name="架空の試験棟二号",
             meter_name="更新後の水量計",
             category=Category.WATER,
             meter_serial="TEST-003",
         ),
     )
-    assert updated_meter.location_name == "架空の試験棟二号"
+    assert updated_meter.location_name == "架空の試験棟"
 
     definition_id = "definition-test-003"
     sqlite_repository.create_measurement_definition(
@@ -476,10 +475,8 @@ def test_master_assignment_settings_and_query_repositories(
             display_name="更新後の流量",
             category=Category.WATER,
             unit="m3",
-            multiplier=Decimal("1.25"),
             decimal_places=3,
             warning_threshold=Decimal("500"),
-            rollover_value=Decimal("1000"),
             purpose="audit",
         ),
     )
@@ -939,13 +936,13 @@ def test_master_use_protection_and_staff_constraints(
     assert completed.task_state.value == "completed"
     sqlite_repository.set_meter_master_active(meter_id, False)
 
-    staff = sqlite_repository.create_staff(StaffCreateRequest("1", "試験担当"))
+    staff = sqlite_repository.create_staff(StaffCreateRequest("試験担当"))
     assert staff.staff_id == "1"
     assert sqlite_repository.get_staff("1") == staff
     with pytest.raises(ValidationError, match="整数"):
         sqlite_repository.get_staff("staff-1")
     with pytest.raises(ValidationError, match="制約"):
-        sqlite_repository.create_staff(StaffCreateRequest("2", "試験担当"))
+        sqlite_repository.create_staff(StaffCreateRequest("試験担当"))
     assert memory_conn.execute("SELECT COUNT(*) FROM staff WHERE name = '試験担当'").fetchone() == (
         1,
     )

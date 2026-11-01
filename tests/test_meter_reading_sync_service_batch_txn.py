@@ -39,6 +39,7 @@ def _build_sync_with_connection(
         repository,
         repository,
         replacement_reflection_repository=repository,
+        assignment_repository=repository,
     )
 
 

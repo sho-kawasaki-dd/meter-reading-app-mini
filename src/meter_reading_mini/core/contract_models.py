@@ -81,7 +81,10 @@ def _serialize_decimal_as_string(value: Decimal) -> str:
 
 
 def _parse_non_negative_decimal_as_string(value: object) -> Decimal:
-    return _parse_decimal_as_string(value, pattern=NON_NEGATIVE_DECIMAL_STRING_PATTERN)
+    parsed = _parse_decimal_as_string(value, pattern=NON_NEGATIVE_DECIMAL_STRING_PATTERN)
+    if parsed.is_signed():
+        raise ValueError("Decimal は符号のない 0 以上の値で指定してください。")
+    return parsed
 
 
 def _parse_signed_decimal_as_string(value: object) -> Decimal:

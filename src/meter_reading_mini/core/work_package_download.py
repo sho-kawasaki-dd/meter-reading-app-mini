@@ -28,6 +28,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingGenerationRepository,
     PlannedReadingLifecycleRepository,
     PlannedReadingTaskQueryRepository,
+    PlannedReadingTaskState,
     ReleaseDateCalculator,
     ScheduleSettings,
     WeeklySchedule,
@@ -118,7 +119,9 @@ class PlannedReadingGeneratorService:
                     chunk_end,
                 )
                 existing_keys = {
-                    (slot.business_date, slot.reading_session) for slot in existing_slots
+                    (slot.business_date, slot.reading_session)
+                    for slot in existing_slots
+                    if slot.task_state is not PlannedReadingTaskState.SUPERSEDED
                 }
                 current_business_date = definition_start
                 while current_business_date <= chunk_end:
@@ -165,9 +168,15 @@ class PlannedReadingGeneratorService:
                         )
                     current_business_date += timedelta(days=1)
             if planned_reading_requests:
-                total_generated += self._repository.create_planned_readings_if_missing(
+                generated = self._repository.create_planned_readings_if_missing(
                     planned_reading_requests
                 )
+                if generated != len(planned_reading_requests):
+                    raise WorkPackageDownloadServiceError(
+                        "予定枠の補完を完了できません: "
+                        f"要求 {len(planned_reading_requests)} 件、生成 {generated} 件"
+                    )
+                total_generated += generated
             chunk_start = chunk_end + timedelta(days=1)
 
         logger.info(

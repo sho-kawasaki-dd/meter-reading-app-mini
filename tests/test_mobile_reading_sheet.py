@@ -9,6 +9,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
+from conftest import SheetBrowser
+from playwright.sync_api import expect
 from reading_service_helpers import (
     DEFINITION_ID,
     LOCATION_ID,
@@ -21,6 +23,10 @@ from reading_service_helpers import (
     sync_request,
 )
 
+from meter_reading_mini.core.assignment_calculation_settings import (
+    AssignmentCalculationCorrectionInput,
+    AssignmentCalculationSettingsService,
+)
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -82,6 +88,280 @@ def _extract_data(html: str) -> dict[str, Any]:
     return json.loads(text)
 
 
+def test_generated_sheet_round_trip_uses_each_assignment_and_revalidates_current_conditions(
+    sheet_browser: SheetBrowser,
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, sync_service = build_services(
+        conn, repository, multiplier=Decimal("10"), rollover_value=Decimal("1000")
+    )
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="new-period-meter",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="新メーター",
+            category=Category.WATER,
+        )
+    )
+    previous_at = datetime(2026, 2, 4, 2, tzinfo=UTC)
+    old_at = datetime(2026, 2, 4, 4, tzinfo=UTC)
+    new_at = datetime(2026, 2, 4, 6, tzinfo=UTC)
+    create_plan(repository, "old-previous", previous_at)
+    create_plan(repository, "old-input", old_at)
+    create_plan(repository, "new-source", new_at)
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "old-previous", ResultStatus.MEASURED, previous_at, Decimal("100"), None
+        ),
+        staff_id="1",
+    )
+    replacement = MeterReplacementSubmission.model_validate(
+        {
+            "replacement_event_id": "period-change",
+            "location_id": LOCATION_ID,
+            "old_meter_id": METER_ID,
+            "new_meter_id": "new-period-meter",
+            "replaced_at": "2026-02-04T05:00:00+00:00",
+            "client_updated_at": "2026-02-04T05:01:00+00:00",
+            "old_final_reading": "120",
+            "new_initial_reading": "5",
+            "updated_by": "試験担当",
+        }
+    )
+    response = sync_service.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[replacement]),
+        confirmation_context(),
+    )
+    assert response.accepted_replacement_items == 1
+    source = repository.get_planned_reading("new-source")
+    assert source is not None and source.superseded_by_planned_reading_id is not None
+    successor = source.superseded_by_planned_reading_id
+    conn.execute(
+        "UPDATE meter_assignments SET multiplier = '20', rollover_value = '50' WHERE meter_id = ?",
+        ("new-period-meter",),
+    )
+    html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
+    data = _extract_data(html)
+    slots = {item["planned_reading_id"]: item for item in data["slots"]}
+    assert (slots["old-input"]["multiplier"], slots["old-input"]["rollover_value"]) == (
+        "10",
+        "1000",
+    )
+    assert (slots[successor]["multiplier"], slots[successor]["rollover_value"]) == ("20", "50")
+
+    page = sheet_browser.open_html(html)
+    page.locator('.tab[data-tab="all"]').click()
+    old_card = page.locator('.card[data-slot-id="old-input"]')
+    new_card = page.locator(f'.card[data-slot-id="{successor}"]')
+    old_card.locator(".raw").fill("1000")
+    expect(old_card).to_have_attribute("data-confirmed", "false")
+    expect(old_card).to_contain_text("ロールオーバー値 1000 未満")
+    old_card.locator(".raw").fill("120")
+    old_card.locator(".confirm").click()
+    expect(old_card).to_have_attribute("data-previous", "100")
+    expect(old_card).to_have_attribute("data-usage", "200")
+    new_card.locator(".raw").fill("50")
+    expect(new_card).to_have_attribute("data-confirmed", "false")
+    expect(new_card).to_contain_text("ロールオーバー値 50 未満")
+    new_card.locator(".raw").fill("8")
+    new_card.locator(".confirm").click()
+    expect(new_card).to_have_attribute("data-previous", "5")
+    expect(new_card).to_have_attribute("data-usage", "60")
+    page.evaluate(
+        """() => Object.defineProperty(navigator, "clipboard", {
+          configurable: true, value: { writeText: () => Promise.reject(new Error("unavailable")) }
+        })"""
+    )
+    page.locator("#result-copy").click()
+    expect(page.locator("#result-export-text")).to_be_visible()
+    result = parse_mobile_reading_result(page.locator("#result-export-text").input_value())
+    assert {entry.planned_reading_id for entry in result.entries} == {"old-input", successor}
+
+    settings = AssignmentCalculationSettingsService(
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        transaction_factory=partial(transaction, conn),
+    )
+    assignment = next(
+        item
+        for item in settings.list_assignments(DEFINITION_ID)
+        if item.meter_id == "new-period-meter"
+    )
+    request = AssignmentCalculationCorrectionInput(
+        DEFINITION_ID,
+        "new-period-meter",
+        assignment.effective_from,
+        Decimal("25"),
+        Decimal("7"),
+        "1",
+        "現場取込前に設定を訂正",
+    )
+    settings.correct_assignment(request)
+    synced = sync_service.sync(
+        result.to_sync_request(),
+        result.to_confirmation_context(staff_id="1", staff_name="試験担当"),
+    )
+    assert synced.accepted_reading_items == 1
+    assert [item.planned_reading_id for item in synced.rejected_reading_items] == [successor]
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        ("old-input",),
+    ).fetchone() == ("100", "200")
+    assert (
+        conn.execute(
+            "SELECT 1 FROM reading_transactions WHERE planned_reading_id = ?", (successor,)
+        ).fetchone()
+        is None
+    )
+
+    settings.correct_assignment(
+        AssignmentCalculationCorrectionInput(
+            DEFINITION_ID,
+            "new-period-meter",
+            assignment.effective_from,
+            Decimal("25"),
+            Decimal("50"),
+            "1",
+            "実測可能な値に再訂正",
+        )
+    )
+    synced = sync_service.sync(
+        result.to_sync_request(),
+        result.to_confirmation_context(staff_id="1", staff_name="試験担当"),
+    )
+    assert synced.accepted_reading_items == 1
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        (successor,),
+    ).fetchone() == ("5", "75")
+
+
+def test_sheet_accepts_unlimited_decimal_places_and_round_trips_to_db(
+    sheet_browser: SheetBrowser,
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, sync_service = build_services(conn, repository, decimal_places=None)
+    create_plan(repository, "fractional", datetime(2026, 2, 4, 4, tzinfo=UTC))
+    html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
+    page = sheet_browser.open_html(html)
+    target = page.locator('.card[data-slot-id="fractional"]')
+    target.locator(".raw").fill("1.23456789")
+    target.locator(".confirm").click()
+    expect(target).to_have_attribute("data-confirmed", "true")
+    page.evaluate(
+        """() => Object.defineProperty(navigator, "clipboard", {
+          configurable: true, value: { writeText: () => Promise.reject(new Error("unavailable")) }
+        })"""
+    )
+    page.locator("#result-copy").click()
+    result = parse_mobile_reading_result(page.locator("#result-export-text").input_value())
+    response = sync_service.sync(
+        result.to_sync_request(),
+        result.to_confirmation_context(staff_id="1", staff_name="試験担当"),
+    )
+    assert response.accepted_reading_items == 1
+    assert conn.execute(
+        "SELECT raw_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        ("fractional",),
+    ).fetchone() == ("1.23456789", "0")
+
+
+def test_sheet_does_not_carry_values_between_assignments_of_reused_meter(
+    sheet_browser: SheetBrowser,
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, sync_service = build_services(
+        conn, repository, multiplier=Decimal("10"), rollover_value=Decimal("1000")
+    )
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="intermediate-meter",
+            location_id=LOCATION_ID,
+            location_name="試験場所",
+            meter_name="中間メーター",
+            category=Category.WATER,
+        )
+    )
+    create_plan(repository, "first-period", datetime(2026, 2, 4, 4, tzinfo=UTC))
+    create_plan(repository, "return-source", datetime(2026, 2, 4, 7, tzinfo=UTC))
+    for event_id, old, new, hour, old_final, initial in (
+        ("first-change", METER_ID, "intermediate-meter", 5, "120", "5"),
+        ("return-change", "intermediate-meter", METER_ID, 6, "7", "2"),
+    ):
+        replaced_at = datetime(2026, 2, 4, hour, tzinfo=UTC)
+        replacement = MeterReplacementSubmission.model_validate(
+            {
+                "replacement_event_id": event_id,
+                "location_id": LOCATION_ID,
+                "old_meter_id": old,
+                "new_meter_id": new,
+                "replaced_at": replaced_at,
+                "client_updated_at": replaced_at,
+                "old_final_reading": old_final,
+                "new_initial_reading": initial,
+                "updated_by": "試験担当",
+            }
+        )
+        response = sync_service.sync(
+            MeterReadingSyncRequest(reading_items=[], replacement_items=[replacement]),
+            confirmation_context(),
+        )
+        assert response.accepted_replacement_items == 1
+    original = repository.get_planned_reading("return-source")
+    assert original is not None and original.superseded_by_planned_reading_id is not None
+    intermediate = repository.get_planned_reading(original.superseded_by_planned_reading_id)
+    assert intermediate is not None and intermediate.superseded_by_planned_reading_id is not None
+    returned = intermediate.superseded_by_planned_reading_id
+    conn.execute(
+        "UPDATE meter_assignments SET multiplier = '30', rollover_value = '100' "
+        "WHERE meter_id = ? AND effective_from = '2026-02-04 06:00:00'",
+        (METER_ID,),
+    )
+    html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
+    slots = {item["planned_reading_id"]: item for item in _extract_data(html)["slots"]}
+    assert slots["first-period"]["meter_id"] == slots[returned]["meter_id"] == METER_ID
+    assert (
+        slots["first-period"]["assignment_effective_from"]
+        != slots[returned]["assignment_effective_from"]
+    )
+    page = sheet_browser.open_html(html)
+    page.locator('.tab[data-tab="all"]').click()
+    first = page.locator('.card[data-slot-id="first-period"]')
+    last = page.locator(f'.card[data-slot-id="{returned}"]')
+    first.locator(".raw").fill("100")
+    first.locator(".confirm").click()
+    last.locator(".raw").fill("8")
+    last.locator(".confirm").click()
+    expect(last).to_have_attribute("data-previous", "2")
+    expect(last).to_have_attribute("data-usage", "180")
+    page.evaluate(
+        """() => Object.defineProperty(navigator, "clipboard", {
+          configurable: true, value: { writeText: () => Promise.reject(new Error("unavailable")) }
+        })"""
+    )
+    page.locator("#result-copy").click()
+    result = parse_mobile_reading_result(page.locator("#result-export-text").input_value())
+    response = sync_service.sync(
+        result.to_sync_request(),
+        result.to_confirmation_context(staff_id="1", staff_name="試験担当"),
+    )
+    assert response.accepted_reading_items == 2
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        (returned,),
+    ).fetchone() == ("2", "180")
+
+
 def _build_sheet_service(
     conn: sqlite3.Connection,
     repository: SQLiteRepository,
@@ -110,6 +390,7 @@ def _build_sheet_service(
         task_repository=repository,
         master_repository=repository,
         historical_reading_repository=repository,
+        assignment_repository=repository,
         boundary_repository=repository,
         transaction_factory=transaction_factory,
         timezone_provider=lambda: JST,
@@ -198,6 +479,9 @@ def test_create_sheet_embeds_auto_closed_slot_and_inactive_masters(
             "planned_reading_id": slot_id,
             "measurement_definition_id": DEFINITION_ID,
             "meter_id": METER_ID,
+            "assignment_effective_from": "2026-01-31 15:00:00",
+            "multiplier": "1",
+            "rollover_value": None,
             "reading_session": "08:00",
             "scheduled_at": "2026-02-02 23:00:00",
             "reading_cycle": "daily_1x",
@@ -232,10 +516,8 @@ def test_create_sheet_embeds_auto_closed_slot_and_inactive_masters(
             "category": "water",
             "unit": "m3",
             "value_schema": "decimal_string",
-            "multiplier": "1",
             "decimal_places": 2,
             "warning_threshold": None,
-            "rollover_value": None,
             "calculation_method": "delta",
         }
     ]
@@ -261,8 +543,13 @@ def test_sheet_excludes_completed_and_superseded_slots_and_their_masters(
         confirmation_context(),
     )
     conn.execute(
-        "UPDATE planned_readings SET task_state = 'superseded' WHERE planned_reading_id = ?",
+        "UPDATE planned_readings SET task_state = 'superseded', "
+        "close_reason = 'definition_deactivated' WHERE planned_reading_id = ?",
         (_slot_id("def-superseded", "2026-02-03", "0800"),),
+    )
+    conn.execute(
+        "UPDATE measurement_definitions SET is_active = 0 WHERE measurement_definition_id = ?",
+        ("def-superseded",),
     )
 
     data = _extract_data(service.create_sheet(date(2026, 2, 3)).html)

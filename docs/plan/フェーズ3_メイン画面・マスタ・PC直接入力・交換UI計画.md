@@ -156,64 +156,64 @@ PR-3a の前半で計算条件の保存・移行・共通解決を実装し、�
 
 ### 5.1 PR-3a `feature/phase3-core-services`: core / db の追加(UI なし)
 
-- [ ] 割当期間ごとの計算条件と訂正履歴のスキーマ・契約・移行を実装する(D12・D13)。
+- [x] 割当期間ごとの計算条件と訂正履歴のスキーマ・契約・移行を実装する(D12・D13)。
   - `meter_assignments` に倍率・ロールオーバー値を保持し、交換境界と旧・新割当の対応を追跡できるようにする。
   - 計算条件訂正履歴に対象割当・変更前後の値・担当者・訂正日時・理由を保存する。Decimal は有限の plain decimal 文字列、時刻は UTC の既存形式に統一する。
   - `db/schema.sql`・`db/migrations.py` の移行ステップ・`SCHEMA_VERSION`・版別検査定義と、Repository Protocol / 入出力レコードを同時に更新する。
   - 現行値による既存割当の初期化と、移行・版更新・検査の原子性をファイル DB で検証する。過去条件を復元できない前提と訂正手順を記載し、既存結果・使用量を移行で変更しない。
-- [ ] 割当計算条件の共通解決・検証を実装する(D12)。
+- [x] 割当計算条件の共通解決・検証を実装する(D12)。
   - 通常枠は `scheduled_at` とメーター、旧最終読値は旧割当、新初期読値は新割当から解決する。条件の欠落・重複を業務エラーにする。
   - 初期割当登録・PC 直接入力・スマホ取込・交換境界・後続再計算で使用し、測定定義の現在値を過去計算へ流用する経路をなくす。
   - 通常の測定定義更新要求から倍率・ロールオーバー値の直接変更を分離し、初期割当登録では条件も同じトランザクションで保存する。
-- [ ] `AssignmentCalculationSettingsService` を実装する(D13)。
+- [x] `AssignmentCalculationSettingsService` を実装する(D13)。
   - 割当と条件・訂正履歴の取得、DB を変更しない訂正プレビュー、担当者・理由付きの期間全体訂正を公開する。
   - 3.3 の再検証と再計算を行い、条件・履歴・結果・境界を同一トランザクションで確定する。保存済み結果の監査情報を保持する。
   - 3.2 の数値例、旧・新各期間の訂正、後続交換のある履歴、ロールオーバー変更・解除による拒否、再計算途中・COMMIT 失敗時の全体ロールバックを検証する。
-- [ ] シート出力と既存往復経路へ割当条件を反映する(D12)。
+- [x] シート出力と既存往復経路へ割当条件を反映する(D12)。
   - 単一シートに同じ測定定義の交換前後の枠が混在しても、各枠の倍率・ロールオーバー値を HTML の入力検証・参考使用量へ正しく渡す。
   - シートデータ契約・JavaScript・下書きの照合を整合させる。MR1 / 結果 JSON のパーサ互換性を維持し、既存下書きとの条件不一致を自動上書き・自動マージしない。
   - JavaScript → Python → DB の往復で、新旧条件が混ざらないことと、条件訂正後の PC 側再検証を確認する。
-- [ ] バックアップ／復元の業務整合性検査へ割当条件・訂正履歴・境界との対応を追加する。
+- [x] バックアップ／復元の業務整合性検査へ割当条件・訂正履歴・境界との対応を追加する。
   - 既存の移行・バックアップ／復元テストを更新する。復元 UI の新設は Phase 5 のままとする。
-- [ ] 補完と自動クローズを `PlannedReadingMaintenanceService.refresh()` にまとめる。
+- [x] 補完と自動クローズを `PlannedReadingMaintenanceService.refresh()` にまとめる。
   - 現在業務日まで補完し、自動クローズまでを 1 トランザクションで行う。
   - `StartupPreparationService` は既定値投入を含むトランザクションを所有し、開始しない共通処理を使う(D15)。`refresh()` をネスト呼出ししない。
   - 未完了の補完を成功として返さない。
   - 起動時の既定値投入後・補完中・自動クローズ中・COMMIT で失敗しても全体がロールバックすることをテストする。
-- [ ] 測定定義の取得項目拡張と管理用一覧取得を追加する。
+- [x] 測定定義の取得項目拡張と管理用一覧取得を追加する。
   - `MeasurementDefinitionRecord` と `SQLiteRepository.get_measurement_definition()` に `warning_threshold` と現在割当中の `meter_id` を含める。
   - `MeasurementDefinitionManagementRepository` と `MeasurementDefinitionService` に `list_measurement_definitions(*, show_inactive: bool = False)` を追加する。
-- [ ] 壁時計日時の検証・UTC 変換補助を [timezone_settings.py](../../src/meter_reading_mini/core/timezone_settings.py) に追加する(P2)。
+- [x] 壁時計日時の検証・UTC 変換補助を [timezone_settings.py](../../src/meter_reading_mini/core/timezone_settings.py) に追加する(P2)。
   - 業務タイムゾーンの壁時計日時を受け取り、サマータイムの存在しない時刻・重複する時刻、および未来日時を業務エラーとして拒否した上で UTC 秒単位へ変換する。
   - DST 境界を含む単体テストを追加する。
-- [ ] 一覧用の読取 Repository を追加する。
+- [x] 一覧用の読取 Repository を追加する。
   - 業務日を指定し、全状態の枠と結果(`raw_reading` に加え力率の `structured_payload_json` を含む)・マスタ名(`location_name` は `physical_meters` を結合して取得)・`warning_threshold` を返す。論理削除済みのマスタも含める。
   - 並び順は `scheduled_at, planned_reading_id` とする。
   - 廃止理由・後継枠へのリンク・旧非実測結果も取得し、枠状態と結果状態を分離する。
-- [ ] `ReadingOverviewQueryService` を作る。
+- [x] `ReadingOverviewQueryService` を作る。
   - 周期・状態・カテゴリ・場所・キーワードの絞り込みを純関数にする。
   - 絞り込み後の状態ごとの件数と警告件数を返す。警告は `result_status == 'measured'` かつ `warning_threshold is not None` かつ `usage_delta is not None` かつ `usage_delta > warning_threshold`(Decimal で比較)とする。
   - 未来日は業務エラーにする(D4)。
   - `superseded` は差し替え済み件数に分け、旧非実測結果を完了件数へ混ぜない。
-- [ ] `ReadingPreviewService.preview_manual_reading()` を作る。
+- [x] `ReadingPreviewService.preview_manual_reading()` を作る。
   - 前回値・交換境界の判定は既存の共通化済みロジック([previous_reading.py](../../src/meter_reading_mini/core/previous_reading.py))を使う。
   - 入力検証・計算条件は割当の共通解決を使い、保存経路と同じ条件にする。入力変更・検証失敗時の旧プレビュー無効化と確定時再検証を契約に含める。
   - 次を返す: 前回値・出所・使用量・ロールオーバー発生・閾値超過・負の差分エラー。
   - DB を変更しないことをテストで確認する。
   - 確認するケース: 交換の前後、初期値の有無、`auto_closed` からの復活、訂正。
-- [ ] 自動採番(D5)を入れる。
+- [x] 自動採番(D5)を入れる。
   - メーター・測定定義・担当者の作成要求から ID の入力をなくす。
   - `meter_id`・新しい場所の `location_id`・`measurement_definition_id`・`replacement_event_id` は注入可能な採番関数(既定 `uuid4().hex`)で Service が採番し、既存 ID と重複した場合は業務エラーにする。
   - `staff` は DB の `INTEGER PRIMARY KEY` で正の整数 ID を自動採番して文字列化し、同名担当者の重複登録は業務エラーにする。
   - 既存呼出し・既存テストを新しい作成要求へ更新する。
-- [ ] `MeterMasterService.rename_location(location_id, name)` と `list_locations()` を作る(D6)。1 トランザクションで同じ場所の全メーターへ反映する。
+- [x] `MeterMasterService.rename_location(location_id, name)` と `list_locations()` を作る(D6)。1 トランザクションで同じ場所の全メーターへ反映する。
   - 無効化済みも対象にし、既存場所への追加では Service が場所名を取得する。メーター単体更新要求・Repository の既存経路も整合させ、1 台だけ場所名を変更できないようにする。
   - 通常登録・交換内登録で採番・入力検証・登録処理を共有し、交換内ではトランザクションを開始しない(D15)。両経路の場所名整合性をテストする。
-- [ ] スケジュール・配信オフセットの履歴取得とリセットを追加する(D2)。
+- [x] スケジュール・配信オフセットの履歴取得とリセットを追加する(D2)。
   - `MeasurementDefinitionScheduleService.reset_to_default()` を作る。NULL 履歴を保存し、同じトランザクションで予定枠を再構成する。
   - `ScheduleSettingsService`・`MeasurementDefinitionScheduleService`・`ReleaseOffsetSettingsService` に適用履歴一覧を取得する公開メソッドを追加する。
-- [ ] `CutoffSettingsService.save_cutoff_time` に `transaction_factory` を持たせて 1 トランザクションで保存し、`HH:MM` の形式(分単位)を検証する。`app.py` 等の既存生成箇所も更新する。
-- [ ] `MeterReplacementService.preview_replacement()` と `register_replacement()` を作る(D7・D8)。
+- [x] `CutoffSettingsService.save_cutoff_time` に `transaction_factory` を持たせて 1 トランザクションで保存し、`HH:MM` の形式(分単位)を検証する。`app.py` 等の既存生成箇所も更新する。
+- [x] `MeterReplacementService.preview_replacement()` と `register_replacement()` を作る(D7・D8)。
   - 事前検証:
     - 担当者が有効であること
     - 旧メーターに、交換日時をまたぐ有効な割当(`effective_from < replaced_at` かつ `effective_to IS NULL OR effective_to > replaced_at`)があること
@@ -229,14 +229,14 @@ PR-3a の前半で計算条件の保存・移行・共通解決を実装し、�
   - 確定時も全対象を再検証する。旧割当を閉じ、新条件付きの新割当・境界・後継枠を原子的に保存する。
   - 確認すること: 非実測訂正 → 交換の成功、旧結果の監査情報保持、後継枠が結果なしであること、旧枠への直接入力・スマホ取込拒否、複数定義のうち 1 件に後続割当・交換がある場合の全体拒否。
   - 再計算の途中や COMMIT で失敗したとき、全体がロールバックすることをテストする。
-- [ ] `MeterReplacementService.correct_replacement()` を作る(D9)。
+- [x] `MeterReplacementService.correct_replacement()` を作る(D9)。
   - 有効な担当者を確認し、`replacement_events`(旧最終読値・新初期読値・備考・`updated_by`・`client_updated_at`・`arrival_sequence`)と `replacement_boundaries`(旧最終読値・新初期読値・`updated_at`)の両方を更新する専用の Repository 処理を追加する。`reflect_replacement` は再実行しない。
   - `client_updated_at` は「現在時刻」と「既存値 + 1 秒」の遅い方にする。
   - 同一トランザクションで `recalculate_after_replacement` を実行し、境界の使用量と新メーターの後続実測値の再計算を単体・結合テストで確認する。
   - 読値は対応する旧・新割当の条件で再検証し、後続交換がある場合も各期間の条件を保持する。計算条件の訂正は D13 の専用操作へ分離する。
-- [ ] 交換履歴の一覧(場所別、ローカル時刻で表示)の取得処理を追加する。
-- [ ] `uv run ruff check`・`uv run ruff format --check`・`uv run pyright` を実行する。
-- [ ] `uv run pytest --cov` と `coverage report` で、全体・`core/`・`db/` がそれぞれ 90% 以上であることを確認する。
+- [x] 交換履歴の一覧(場所別、ローカル時刻で表示)の取得処理を追加する。
+- [x] `uv run ruff check`・`uv run ruff format --check`・`uv run pyright` を実行する。
+- [x] `uv run pytest --cov` と `coverage report` で、全体・`core/`・`db/` がそれぞれ 90% 以上であることを確認する。
 
 ### 5.2 PR-3b `feature/phase3-main-window`: 起動と MainWindow
 

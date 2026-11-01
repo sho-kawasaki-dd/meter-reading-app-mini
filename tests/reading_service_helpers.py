@@ -42,7 +42,7 @@ def build_services(
     repository: SQLiteRepository,
     *,
     multiplier: Decimal = Decimal("1"),
-    decimal_places: int = 2,
+    decimal_places: int | None = 2,
     rollover_value: Decimal | None = None,
 ) -> tuple[ReadingWriteOrchestrationService, MeterReadingSyncService]:
     with transaction(conn):
@@ -75,7 +75,7 @@ def build_services(
                 initial_meter_id=METER_ID,
             )
         )
-        repository.create_staff(StaffCreateRequest(STAFF_ID, "試験担当"))
+        repository.create_staff(StaffCreateRequest("試験担当"))
 
     transaction_factory = partial(transaction, conn)
     writer = ReadingWriteOrchestrationService(
@@ -83,11 +83,12 @@ def build_services(
         repository,
         repository,
         planned_reading_repository=repository,
+        assignment_repository=repository,
         boundary_repository=repository,
         boundary_maintenance_repository=repository,
         staff_repository=repository,
         transaction_factory=transaction_factory,
-        now_provider=lambda: TEST_NOW,
+        now_provider=lambda: datetime(2026, 2, 5, 0, 0, tzinfo=UTC),
     )
     sync_service = MeterReadingSyncService(
         conn,
@@ -97,6 +98,7 @@ def build_services(
         repository,
         repository,
         replacement_reflection_repository=repository,
+        assignment_repository=repository,
     )
     return writer, sync_service
 

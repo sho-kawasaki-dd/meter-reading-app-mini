@@ -8,20 +8,24 @@ from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from pydantic import ValidationError as PydanticValidationError
-
-from meter_reading_mini.core.contract_models import (
-    MeterReadingSubmission,
-    resolve_meter_reading_submission,
+from meter_reading_mini.core.assignment_calculation import (
+    calculate_boundary_usage,
+    definition_with_assignment_conditions,
+    resolve_planned_assignment,
+    resolve_planned_calculation_context,
+    validate_assignment_reading,
 )
+from meter_reading_mini.core.contract_models import ResultStatus
 from meter_reading_mini.core.errors import (
     DomainError,
     InactiveMasterError,
     SupersededPlannedReadingError,
     ValidationError,
 )
+from meter_reading_mini.core.manual_reading_validation import resolve_manual_reading
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     PC_DIRECT_DEVICE_ID,
+    AssignmentCalculationLookupRepository,
     CalculatedUsageUpdate,
     HistoricalMeasuredReadingLookupRepository,
     HistoricalMeasuredReadingRecord,
@@ -34,7 +38,6 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReadingPersistenceRepository,
     ReadingUpsertRequest,
     ReplacementBoundaryCalculationRecord,
-    ReplacementBoundaryCalculationUpdate,
     ReplacementBoundaryLookupRepository,
     ReplacementBoundaryMaintenanceRepository,
     ReplacementBoundaryRecord,
@@ -43,8 +46,6 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     StaffRepository,
     UpsertOutcome,
 )
-from meter_reading_mini.core.mobile_reading import validate_note
-from meter_reading_mini.core.previous_reading import resolve_calculation_context
 from meter_reading_mini.core.reading_signature import calculate_meter_reading_signature
 from meter_reading_mini.core.timeutil import parse_utc, utc_now, utc_now_str
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
@@ -68,6 +69,7 @@ class ReadingWriteOrchestrationService:
         persistence_repository: ReadingPersistenceRepository,
         *,
         planned_reading_repository: PlannedReadingLookupRepository,
+        assignment_repository: AssignmentCalculationLookupRepository,
         boundary_repository: ReplacementBoundaryLookupRepository,
         boundary_maintenance_repository: ReplacementBoundaryMaintenanceRepository,
         staff_repository: StaffRepository | None = None,
@@ -79,6 +81,7 @@ class ReadingWriteOrchestrationService:
         self._historical_reading_repository = historical_reading_repository
         self._persistence_repository = persistence_repository
         self._planned_reading_repository = planned_reading_repository
+        self._assignment_repository = assignment_repository
         self._boundary_repository = boundary_repository
         self._boundary_maintenance_repository = boundary_maintenance_repository
         self._staff_repository = staff_repository
@@ -96,13 +99,20 @@ class ReadingWriteOrchestrationService:
         if planned_reading.task_state is PlannedReadingTaskState.SUPERSEDED:
             raise SupersededPlannedReadingError(planned_reading.planned_reading_id)
 
-        scheduled_at = planned_reading.scheduled_at or request.recorded_at
+        assignment = resolve_planned_assignment(self._assignment_repository, planned_reading)
+        if request.result_status is ResultStatus.MEASURED and request.raw_reading is not None:
+            validate_assignment_reading(request.raw_reading, measurement_definition, assignment)
+        scoped_definition = definition_with_assignment_conditions(
+            measurement_definition, assignment
+        )
+        assert planned_reading.scheduled_at is not None
+        scheduled_at = planned_reading.scheduled_at
         previous, boundary = self._get_calculation_context(
             planned_reading,
             excluding_planned_reading_id=request.planned_reading_id,
         )
         calculation = self._calculation_service.calculate(
-            measurement_definition,
+            scoped_definition,
             request,
             previous,
             boundary,
@@ -139,7 +149,7 @@ class ReadingWriteOrchestrationService:
         *,
         staff_id: str,
     ) -> UpsertOutcome:
-        """PC 直接入力を有効な担当者で署名し、独立トランザクションで確定する。"""
+        """確認済み入力を現在の DB 状態で再検証し、担当者で署名して確定する。"""
 
         if self._transaction_factory is None or self._staff_repository is None:
             raise RuntimeError("PC 直接入力にはトランザクションと担当者 Repository が必要です。")
@@ -153,31 +163,17 @@ class ReadingWriteOrchestrationService:
                 raise InactiveMasterError("担当者名が空の担当者は指定できません。")
 
             planned_reading = self._get_planned_reading(reading.planned_reading_id)
+            if planned_reading.task_state is PlannedReadingTaskState.SUPERSEDED:
+                raise SupersededPlannedReadingError(planned_reading.planned_reading_id)
             measurement_definition = self._get_measurement_definition(
                 planned_reading.measurement_definition_id
             )
-            try:
-                submission = MeterReadingSubmission(
-                    planned_reading_id=reading.planned_reading_id,
-                    result_status=reading.result_status,
-                    raw_reading=reading.raw_reading,
-                    structured_payload=reading.structured_payload_json,
-                    recorded_at=reading.recorded_at,
-                    client_updated_at=reading.recorded_at,
-                    note=validate_note(reading.note),
-                )
-                resolved = resolve_meter_reading_submission(
-                    submission,
-                    measurement_definition_id=measurement_definition.measurement_definition_id,
-                    value_schema=measurement_definition.value_schema,
-                    decimal_places=measurement_definition.decimal_places,
-                    rollover_value=measurement_definition.rollover_value,
-                )
-            except PydanticValidationError as exc:
-                raise ValidationError(_format_validation_error(exc)) from exc
+            assignment = resolve_planned_assignment(self._assignment_repository, planned_reading)
+            now = self._now_provider()
+            resolved = resolve_manual_reading(reading, measurement_definition, assignment, now=now)
 
             recorded_at = parse_utc(utc_now_str(resolved.recorded_at))
-            current_client_time = parse_utc(utc_now_str(self._now_provider()))
+            current_client_time = parse_utc(utc_now_str(now))
             existing_client_time = self._persistence_repository.get_reading_client_updated_at(
                 reading.planned_reading_id
             )
@@ -228,12 +224,15 @@ class ReadingWriteOrchestrationService:
             )
             for measured_reading in measured_readings:
                 planned = self._get_planned_reading(measured_reading.planned_reading_id)
+                assignment = resolve_planned_assignment(self._assignment_repository, planned)
+                validate_assignment_reading(measured_reading.raw_reading, definition, assignment)
+                scoped_definition = definition_with_assignment_conditions(definition, assignment)
                 previous, replacement_boundary = self._get_calculation_context(
                     planned,
                     excluding_planned_reading_id=measured_reading.planned_reading_id,
                 )
                 result = self._calculation_service.calculate_measured_reading(
-                    definition,
+                    scoped_definition,
                     measured_reading.raw_reading,
                     previous,
                     replacement_boundary,
@@ -252,16 +251,15 @@ class ReadingWriteOrchestrationService:
         *,
         excluding_planned_reading_id: str,
     ) -> tuple[HistoricalMeasuredReadingRecord | None, ReplacementBoundaryRecord | None]:
-        scheduled_at = planned_reading.scheduled_at
-        if scheduled_at is None:
-            raise ReadingWriteOrchestrationError(
-                f"予定枠の予定日時がありません: {planned_reading.planned_reading_id}"
-            )
-        context = resolve_calculation_context(
+        if excluding_planned_reading_id != planned_reading.planned_reading_id:
+            raise ValidationError("計算対象と除外する予定枠が一致しません。")
+        definition = self._get_measurement_definition(planned_reading.measurement_definition_id)
+        _, context = resolve_planned_calculation_context(
+            self._assignment_repository,
             self._historical_reading_repository,
             self._boundary_repository,
             planned_reading,
-            excluding_planned_reading_id=excluding_planned_reading_id,
+            definition,
         )
         return context.previous, context.boundary
 
@@ -280,12 +278,19 @@ class ReadingWriteOrchestrationService:
         )
         for measured_reading in following:
             current_planned = self._get_planned_reading(measured_reading.planned_reading_id)
+            assignment = resolve_planned_assignment(self._assignment_repository, current_planned)
+            validate_assignment_reading(
+                measured_reading.raw_reading, measurement_definition, assignment
+            )
+            scoped_definition = definition_with_assignment_conditions(
+                measurement_definition, assignment
+            )
             previous, boundary = self._get_calculation_context(
                 current_planned,
                 excluding_planned_reading_id=measured_reading.planned_reading_id,
             )
             result = self._calculation_service.calculate_measured_reading(
-                measurement_definition,
+                scoped_definition,
                 measured_reading.raw_reading,
                 previous,
                 boundary,
@@ -317,28 +322,14 @@ class ReadingWriteOrchestrationService:
         measurement_definition: MeasurementDefinitionRecord,
         boundary: ReplacementBoundaryCalculationRecord,
     ) -> None:
-        previous = self._historical_reading_repository.get_latest_measured_reading(
-            boundary.measurement_definition_id,
-            boundary.old_meter_id,
-            before_scheduled_at=boundary.replaced_at,
-        )
-        usage_delta = None
-        if boundary.old_final_reading is not None:
-            result = self._calculation_service.calculate_measured_reading(
-                measurement_definition,
-                boundary.old_final_reading,
-                previous,
-            )
-            usage_delta = result.usage_delta
         self._boundary_maintenance_repository.update_replacement_boundary_calculation(
-            ReplacementBoundaryCalculationUpdate(
-                replacement_event_id=boundary.replacement_event_id,
-                measurement_definition_id=boundary.measurement_definition_id,
-                previous_measured_reading=previous.raw_reading if previous is not None else None,
-                previous_measured_planned_reading_id=(
-                    previous.planned_reading_id if previous is not None else None
-                ),
-                old_meter_usage_delta=usage_delta,
+            calculate_boundary_usage(
+                measurement_definition,
+                boundary,
+                self._assignment_repository,
+                self._historical_reading_repository,
+                self._boundary_repository,
+                self._calculation_service,
             )
         )
 
@@ -359,13 +350,6 @@ class ReadingWriteOrchestrationService:
         if planned is None:
             raise ReadingWriteOrchestrationError(f"予定枠が見つかりません: {planned_reading_id}")
         return planned
-
-
-def _format_validation_error(exc: PydanticValidationError) -> str:
-    issues = exc.errors(include_url=False)
-    if not issues:
-        return str(exc)
-    return "; ".join(issue["msg"] for issue in issues)
 
 
 __all__ = [

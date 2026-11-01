@@ -151,7 +151,12 @@
 
   var chains = {};
   slots.forEach(function (slot) {
-    var key = slot.base.measurement_definition_id + "\u0000" + slot.base.meter_id;
+    var key =
+      slot.base.measurement_definition_id +
+      "\u0000" +
+      slot.base.meter_id +
+      "\u0000" +
+      slot.base.assignment_effective_from;
     (chains[key] = chains[key] || []).push(slot);
   });
   Object.keys(chains).forEach(function (key) {
@@ -198,15 +203,15 @@
       return false;
     }
     var places = slot.definition.decimal_places;
-    if (decimalPlaces(text) > places) {
+    if (places !== null && decimalPlaces(text) > places) {
       errors.raw = "小数は " + places + " 桁以内で入力してください。";
       return false;
     }
-    if (slot.definition.rollover_value !== null) {
-      var rollover = parseDecimal(slot.definition.rollover_value);
+    if (slot.base.rollover_value !== null) {
+      var rollover = parseDecimal(slot.base.rollover_value);
       if (rollover && compareDecimal(value, rollover) >= 0) {
         errors.raw =
-          "ロールオーバー値 " + slot.definition.rollover_value + " 未満で入力してください。";
+          "ロールオーバー値 " + slot.base.rollover_value + " 未満で入力してください。";
         return false;
       }
     }
@@ -311,7 +316,7 @@
     ) {
       return result;
     }
-    var multiplier = parseDecimal(definition.multiplier);
+    var multiplier = parseDecimal(slot.base.multiplier);
     var last = previous.reading === null ? null : parseDecimal(previous.reading);
     var usage;
     if (last === null) {
@@ -319,7 +324,7 @@
     } else {
       var delta = subtractDecimal(raw, last);
       if (delta.n < ZERO) {
-        if (definition.rollover_value === null) {
+        if (slot.base.rollover_value === null) {
           result.unavailable = "前回値 " + previous.reading + " より今回値が小さいため計算できません。";
           result.warnings.push(
             "今回値が前回値 " +
@@ -330,7 +335,7 @@
           return result;
         }
         var corrected = addDecimal(
-          subtractDecimal(parseDecimal(definition.rollover_value), last),
+          subtractDecimal(parseDecimal(slot.base.rollover_value), last),
           raw
         );
         if (corrected.n < ZERO) {
@@ -341,7 +346,7 @@
           );
           return result;
         }
-        result.notes.push("ロールオーバー値 " + definition.rollover_value + " で補正しました。");
+        result.notes.push("ロールオーバー値 " + slot.base.rollover_value + " で補正しました。");
         delta = corrected;
       }
       usage = multiplyDecimal(delta, multiplier);
@@ -532,7 +537,7 @@
     }
     meterText += " / 単位: " + slot.definition.unit;
     if (slot.definition.value_schema !== PF_SCHEMA) {
-      meterText += " / 倍率: " + slot.definition.multiplier;
+      meterText += " / 倍率: " + slot.base.multiplier;
     }
     card.appendChild(element("p", "card-meta", meterText));
     if (slot.base.task_state === "auto_closed") {
@@ -1331,6 +1336,9 @@
           planned_reading_id: slot.id,
           measurement_definition_id: slot.base.measurement_definition_id,
           meter_id: slot.base.meter_id,
+          assignment_effective_from: slot.base.assignment_effective_from,
+          multiplier: slot.base.multiplier,
+          rollover_value: slot.base.rollover_value,
           initial_last_reading: slot.base.initial_last_reading,
           previous_source: slot.base.previous_source,
           initial_previous_scheduled_at: slot.base.initial_previous_scheduled_at,
@@ -1476,6 +1484,9 @@
       "planned_reading_id",
       "measurement_definition_id",
       "meter_id",
+      "assignment_effective_from",
+      "multiplier",
+      "rollover_value",
       "initial_last_reading",
       "previous_source",
       "initial_previous_scheduled_at",
@@ -1521,6 +1532,9 @@
         entry.planned_reading_id !== source.id ||
         entry.measurement_definition_id !== source.base.measurement_definition_id ||
         entry.meter_id !== source.base.meter_id ||
+        entry.assignment_effective_from !== source.base.assignment_effective_from ||
+        entry.multiplier !== source.base.multiplier ||
+        entry.rollover_value !== source.base.rollover_value ||
         entry.initial_last_reading !== source.base.initial_last_reading ||
         entry.previous_source !== source.base.previous_source ||
         entry.initial_previous_scheduled_at !==

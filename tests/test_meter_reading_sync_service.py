@@ -25,11 +25,13 @@ from meter_reading_mini.core.contract_models import (
     SyncItemIgnoreCode,
     SyncItemRejectCode,
 )
-from meter_reading_mini.core.errors import DomainError
+from meter_reading_mini.core.errors import DomainError, ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
     MeterMasterCreateRequest,
+    ReadingUpsertRequest,
     ReplacementBoundaryCalculationUpdate,
+    ResultSource,
 )
 from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
 from meter_reading_mini.core.timeutil import parse_utc
@@ -38,6 +40,27 @@ from meter_reading_mini.db.connection import transaction
 
 def _scheduled(hour: int) -> datetime:
     return datetime(2026, 2, 4, hour, 0, tzinfo=UTC)
+
+
+def _seed_delayed_reading(repository, planned_id: str, hour: int, raw: str) -> None:
+    """旧版 DB に保存済みの、交換情報より先に到着した結果を再現する。"""
+
+    repository.upsert_reading(
+        ReadingUpsertRequest(
+            planned_reading_id=planned_id,
+            measurement_definition_id=DEFINITION_ID,
+            result_status=ResultStatus.MEASURED,
+            recorded_at=_scheduled(hour),
+            client_updated_at=_scheduled(hour),
+            raw_reading=Decimal(raw),
+            structured_payload_json=None,
+            updated_by="試験担当",
+            signature="旧版の署名",
+            note=None,
+            device_id="pc-direct",
+            result_source=ResultSource.MANUAL,
+        )
+    )
 
 
 def test_sync_service_rejects_business_rule_per_savepoint_and_continues(
@@ -291,26 +314,9 @@ def test_replacement_is_atomic_and_recalculates_delayed_new_meter_results(
         ),
         staff_id="1",
     )
-    writer.save_manual_reading(
-        ManualReadingInput(
-            "plan-new-late",
-            ResultStatus.MEASURED,
-            _scheduled(7),
-            Decimal("7"),
-            None,
-        ),
-        staff_id="1",
-    )
-    writer.save_manual_reading(
-        ManualReadingInput(
-            "plan-new-following",
-            ResultStatus.MEASURED,
-            _scheduled(8),
-            Decimal("9"),
-            None,
-        ),
-        staff_id="1",
-    )
+    with transaction(conn):
+        _seed_delayed_reading(repository, "plan-new-late", 7, "7")
+        _seed_delayed_reading(repository, "plan-new-following", 8, "9")
     replacement = MeterReplacementSubmission.model_validate(
         {
             "replacement_event_id": "replace-event",
@@ -431,16 +437,8 @@ def test_missing_replacement_initial_value_starts_new_meter_usage_at_zero(
         ),
         staff_id="1",
     )
-    writer.save_manual_reading(
-        ManualReadingInput(
-            "plan-new-first-no-initial",
-            ResultStatus.MEASURED,
-            _scheduled(7),
-            Decimal("7"),
-            None,
-        ),
-        staff_id="1",
-    )
+    with transaction(conn):
+        _seed_delayed_reading(repository, "plan-new-first-no-initial", 7, "7")
     replacement = MeterReplacementSubmission.model_validate(
         {
             "replacement_event_id": "replace-no-initial",
@@ -469,6 +467,128 @@ def test_missing_replacement_initial_value_starts_new_meter_usage_at_zero(
         "SELECT previous_measured_reading, old_meter_usage_delta "
         "FROM replacement_boundaries WHERE replacement_event_id = 'replace-no-initial'"
     ).fetchone() == ("90", None)
+
+
+def test_assignment_conditions_are_used_for_both_sides_of_replacement(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, sync = build_services(
+        conn, repository, multiplier=Decimal("10"), rollover_value=Decimal("1000")
+    )
+    with transaction(conn):
+        repository.create_meter_master(
+            MeterMasterCreateRequest(
+                meter_id="assignment-new-meter",
+                location_id=LOCATION_ID,
+                location_name="試験場所",
+                meter_name="新メーター",
+                category=Category.WATER,
+            )
+        )
+    create_plan(repository, "assignment-old", _scheduled(4))
+    create_plan(repository, "assignment-successor-source", _scheduled(6))
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "assignment-old", ResultStatus.MEASURED, _scheduled(4), Decimal("100"), None
+        ),
+        staff_id="1",
+    )
+    replacement = MeterReplacementSubmission.model_validate(
+        {
+            "replacement_event_id": "assignment-event",
+            "location_id": LOCATION_ID,
+            "old_meter_id": METER_ID,
+            "new_meter_id": "assignment-new-meter",
+            "replaced_at": "2026-02-04T05:30:00+00:00",
+            "client_updated_at": "2026-02-04T05:31:00+00:00",
+            "old_final_reading": "120",
+            "new_initial_reading": "5",
+            "updated_by": "試験担当",
+        }
+    )
+    response = sync.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[replacement]),
+        confirmation_context(),
+    )
+    assert response.accepted_replacement_items == 1
+    old_slot = repository.get_planned_reading("assignment-successor-source")
+    assert old_slot is not None
+    successor = old_slot.superseded_by_planned_reading_id
+    assert successor is not None
+    with transaction(conn):
+        conn.execute(
+            "UPDATE meter_assignments SET multiplier = '20', rollover_value = '50' "
+            "WHERE measurement_definition_id = ? AND meter_id = ?",
+            (DEFINITION_ID, "assignment-new-meter"),
+        )
+        conn.execute(
+            "UPDATE measurement_definitions SET multiplier = '99', rollover_value = '1' "
+            "WHERE measurement_definition_id = ?",
+            (DEFINITION_ID,),
+        )
+    writer.save_manual_reading(
+        ManualReadingInput(successor, ResultStatus.MEASURED, _scheduled(6), Decimal("8"), None),
+        staff_id="1",
+    )
+    assert conn.execute(
+        "SELECT old_meter_usage_delta FROM replacement_boundaries WHERE replacement_event_id = ?",
+        ("assignment-event",),
+    ).fetchone() == ("200",)
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        (successor,),
+    ).fetchone() == ("5", "60")
+
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "assignment-old", ResultStatus.MEASURED, _scheduled(4), Decimal("110"), None
+        ),
+        staff_id="1",
+    )
+    assert conn.execute(
+        "SELECT old_meter_usage_delta FROM replacement_boundaries WHERE replacement_event_id = ?",
+        ("assignment-event",),
+    ).fetchone() == ("100",)
+    assert conn.execute(
+        "SELECT usage_delta FROM reading_transactions WHERE planned_reading_id = ?", (successor,)
+    ).fetchone() == ("60",)
+    invalid = sync.sync(sync_request(mobile_submission(successor, "60")), confirmation_context())
+    assert invalid.rejected_reading_items
+    assert conn.execute(
+        "SELECT raw_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        (successor,),
+    ).fetchone() == ("8", "60")
+
+
+def test_unassigned_meter_readings_are_rejected_by_manual_and_mobile(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, sync = build_services(conn, repository)
+    with transaction(conn):
+        repository.create_meter_master(
+            MeterMasterCreateRequest(
+                meter_id="unassigned-meter",
+                location_id=LOCATION_ID,
+                location_name="試験場所",
+                meter_name="未割当メーター",
+                category=Category.WATER,
+            )
+        )
+    create_plan(repository, "unassigned-plan", _scheduled(4), meter_id="unassigned-meter")
+    with pytest.raises(ValidationError, match="対応するメーター割当"):
+        writer.save_manual_reading(
+            ManualReadingInput(
+                "unassigned-plan", ResultStatus.MEASURED, _scheduled(4), Decimal("10"), None
+            ),
+            staff_id="1",
+        )
+    response = sync.sync(
+        sync_request(mobile_submission("unassigned-plan", "10")), confirmation_context()
+    )
+    assert response.rejected_reading_items
+    assert conn.execute("SELECT COUNT(*) FROM reading_transactions").fetchone() == (0,)
 
 
 def test_invalid_replacement_boundary_rolls_back_exchange_side_effects(

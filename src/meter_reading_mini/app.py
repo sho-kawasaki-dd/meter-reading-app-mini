@@ -124,7 +124,9 @@ def _prepare_startup(conn: sqlite3.Connection) -> None:
     planned_reading_lifecycle = PlannedReadingLifecycleService(
         repository,
         current_datetime_provider=build_current_datetime_provider(timezone_provider),
-        cutoff_time_provider=CutoffSettingsService(repository).get_cutoff_time,
+        cutoff_time_provider=CutoffSettingsService(
+            repository, transaction_factory=transaction_factory
+        ).get_cutoff_time,
     )
     StartupPreparationService(
         bootstrapper=lambda: bootstrap_default_settings(conn),

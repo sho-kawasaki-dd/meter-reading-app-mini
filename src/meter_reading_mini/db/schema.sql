@@ -1,4 +1,4 @@
--- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 1)
+-- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 2)
 -- 将来の設備管理アプリ統合時にも備品在庫管理テーブルと衝突しない命名とする
 
 CREATE TABLE staff (
@@ -77,8 +77,32 @@ CREATE TABLE meter_assignments (
   meter_id TEXT NOT NULL REFERENCES physical_meters(meter_id),
   effective_from TEXT NOT NULL,
   effective_to TEXT,
+  multiplier TEXT NOT NULL CHECK (length(multiplier) > 0),
+  rollover_value TEXT CHECK (rollover_value IS NULL OR length(rollover_value) > 0),
+  CHECK (effective_to IS NULL OR effective_from < effective_to),
   PRIMARY KEY (measurement_definition_id, meter_id, effective_from)
 );
+
+CREATE TABLE assignment_calculation_corrections (
+  correction_id TEXT PRIMARY KEY,
+  measurement_definition_id TEXT NOT NULL,
+  meter_id TEXT NOT NULL,
+  assignment_effective_from TEXT NOT NULL,
+  old_multiplier TEXT NOT NULL CHECK (length(old_multiplier) > 0),
+  old_rollover_value TEXT,
+  new_multiplier TEXT NOT NULL CHECK (length(new_multiplier) > 0),
+  new_rollover_value TEXT,
+  staff_id INTEGER NOT NULL REFERENCES staff(id),
+  staff_name TEXT NOT NULL CHECK (length(trim(staff_name)) > 0),
+  corrected_at TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+  FOREIGN KEY (measurement_definition_id, meter_id, assignment_effective_from)
+    REFERENCES meter_assignments(measurement_definition_id, meter_id, effective_from)
+);
+CREATE INDEX idx_assignment_calculation_corrections_assignment
+  ON assignment_calculation_corrections(
+    measurement_definition_id, meter_id, assignment_effective_from, corrected_at
+  );
 
 CREATE TABLE planned_readings (
   planned_reading_id TEXT PRIMARY KEY,
@@ -150,6 +174,8 @@ CREATE TABLE replacement_boundaries (
   old_meter_id TEXT NOT NULL REFERENCES physical_meters(meter_id),
   new_meter_id TEXT NOT NULL REFERENCES physical_meters(meter_id),
   replaced_at TEXT NOT NULL,
+  old_assignment_effective_from TEXT NOT NULL,
+  new_assignment_effective_from TEXT NOT NULL,
   previous_measured_reading TEXT,
   previous_measured_planned_reading_id TEXT,
   old_final_reading TEXT,
@@ -157,6 +183,10 @@ CREATE TABLE replacement_boundaries (
   new_initial_reading TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  FOREIGN KEY (measurement_definition_id, old_meter_id, old_assignment_effective_from)
+    REFERENCES meter_assignments(measurement_definition_id, meter_id, effective_from),
+  FOREIGN KEY (measurement_definition_id, new_meter_id, new_assignment_effective_from)
+    REFERENCES meter_assignments(measurement_definition_id, meter_id, effective_from),
   PRIMARY KEY (replacement_event_id, measurement_definition_id)
 );
 

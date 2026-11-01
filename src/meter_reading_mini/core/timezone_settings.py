@@ -63,6 +63,31 @@ def normalize_to_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def wall_datetime_to_utc(
+    value: datetime,
+    business_timezone: tzinfo,
+    *,
+    now: datetime | None = None,
+) -> datetime:
+    """壁時計日時を検証し、存在・一意性と未来日時を確認して UTC 秒単位にする。"""
+
+    if value.tzinfo is not None:
+        raise InvalidTimezoneError("壁時計日時はタイムゾーンを付けずに指定してください。")
+    candidates: set[datetime] = set()
+    for fold in (0, 1):
+        candidate = value.replace(tzinfo=business_timezone, fold=fold).astimezone(UTC)
+        if candidate.astimezone(business_timezone).replace(tzinfo=None) == value:
+            candidates.add(candidate)
+    if not candidates:
+        raise InvalidTimezoneError("指定した日時は業務タイムゾーンに存在しません。")
+    if len(candidates) != 1:
+        raise InvalidTimezoneError("指定した日時は業務タイムゾーンで重複しています。")
+    result = candidates.pop()
+    if result > normalize_to_utc(now if now is not None else utc_now()):
+        raise InvalidTimezoneError("未来の日時は指定できません。")
+    return result.replace(microsecond=0)
+
+
 def build_scheduled_at(
     business_date: date,
     reading_session: str,
@@ -126,4 +151,5 @@ __all__ = [
     "build_business_date_provider",
     "build_current_datetime_provider",
     "normalize_to_utc",
+    "wall_datetime_to_utc",
 ]

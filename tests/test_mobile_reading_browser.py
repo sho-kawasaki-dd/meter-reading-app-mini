@@ -277,6 +277,17 @@ def test_reading_validation_blocks_confirmation(
     expect(target.locator(".confirm")).to_be_disabled()
 
 
+def test_reading_without_decimal_place_limit_allows_fractional_values(
+    sheet_browser: SheetBrowser,
+) -> None:
+    page = sheet_browser.open_html(simple_sheet_html(definition_overrides={"decimal_places": None}))
+    target = card(page, "slot-1")
+    target.locator(".raw").fill("1.23456789")
+    expect(target.locator(".confirm")).to_be_enabled()
+    target.locator(".confirm").click()
+    expect(target).to_have_attribute("data-confirmed", "true")
+
+
 def test_valid_boundary_values_and_edit_releases_confirmation(
     sheet_browser: SheetBrowser,
 ) -> None:

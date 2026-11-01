@@ -56,13 +56,15 @@ class StaffService:
     def create_staff(self, request: StaffCreateRequest) -> StaffRecord:
         normalized = replace(
             request,
-            staff_id=_normalize_id(request.staff_id),
             display_name=_normalize_name(request.display_name),
         )
         with self._transaction_factory():
-            if self._repository.get_staff(normalized.staff_id) is not None:
+            if any(
+                staff.display_name == normalized.display_name
+                for staff in self._repository.list_staff(include_inactive=True)
+            ):
                 raise StaffValidationError(
-                    f"担当者 ID は既に登録されています: {normalized.staff_id}"
+                    f"担当者名は既に登録されています: {normalized.display_name}"
                 )
             created = self._repository.create_staff(normalized)
         logger.info("担当者を登録しました: %s", created.staff_id)
@@ -74,6 +76,13 @@ class StaffService:
         with self._transaction_factory():
             if self._repository.get_staff(normalized_id) is None:
                 raise StaffNotFoundError(f"担当者が見つかりません: {normalized_id}")
+            if any(
+                staff.staff_id != normalized_id and staff.display_name == normalized.display_name
+                for staff in self._repository.list_staff(include_inactive=True)
+            ):
+                raise StaffValidationError(
+                    f"担当者名は既に登録されています: {normalized.display_name}"
+                )
             updated = self._repository.update_staff(normalized_id, normalized)
         logger.info("担当者を更新しました: %s", normalized_id)
         return updated

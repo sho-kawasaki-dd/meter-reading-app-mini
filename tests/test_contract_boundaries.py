@@ -18,11 +18,17 @@ from meter_reading_mini.core.mobile_reading import ASSET_FILENAMES, read_sheet_a
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "meter_reading_mini"
 CORE_ROOT = PACKAGE_ROOT / "core"
 DB_ROOT = PACKAGE_ROOT / "db"
-CONTRACT_FILES = ("contract_models.py", "errors.py", "meter_reading_sync_repositories.py")
+CONTRACT_FILES = (
+    "contract_models.py",
+    "errors.py",
+    "meter_reading_sync_repositories.py",
+    "reading_values.py",
+)
 CONTRACT_MODULES = {
     "meter_reading_mini.core.contract_models",
     "meter_reading_mini.core.errors",
     "meter_reading_mini.core.meter_reading_sync_repositories",
+    "meter_reading_mini.core.reading_values",
 }
 DATABASE_CORE_IMPORTS = CONTRACT_MODULES | {"meter_reading_mini.core.timeutil"}
 LOCALTIME_LITERAL = re.compile(r"""(?i)(['"])localtime\1""")
