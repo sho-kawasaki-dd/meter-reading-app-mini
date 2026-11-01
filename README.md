@@ -12,7 +12,7 @@ HTML と結果は Quick Share 等で受け渡し、アプリ自身は外部通�
 Phase 0 は完了しています。共通基盤・起動オーケストレーション (`app.py`)・品質ゲート設定・Windows / Ubuntu 用 CI workflow を整備し、GitHub の `main` 保護と必須チェックを設定しています。[本体 PR #1](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/1) で両 OS のチェック成功後に merge し、[失敗系検証 PR #2](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/pull/2) で未成功チェックによる merge ブロックも確認済みです。
 Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロジックを統合し、全品質ゲートが Windows / Ubuntu の必須 CI で成功しました。完了記録と作業計画書の凍結移動も済んでいます。
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
-Phase 3 の実装と Windows での手動通し確認は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。両 OS の必須 CI 成功後の完了記録 PR の merge は未完了です。
+Phase 3 は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。Windows での手動通し確認と両 OS の必須 CI 成功を確認し、完了記録 PR #29 を merge しました。[完了記録](docs/plan/implemented/フェーズ3_メイン画面・マスタ・PC直接入力・交換UI計画.md) に詳細があります。
 Phase 4・5 の機能や配布手順は未実装の計画項目を含みます。各フェーズの状況と実装済み範囲を確認してください。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -356,11 +356,11 @@ uv run python -m meter_reading_mini
 | Phase 0 | 完了 | リポジトリ骨格・共通基盤・品質ゲートの整備 |
 | Phase 1 | 完了 | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
 | Phase 2 | 完了 (2026-10-28) | 単一 HTML 検針シート・途中保存・MR1 / JSON パーサと DB 同期のブラウザ往復テスト |
-| Phase 3 | 実装・手動確認完了 (2026-11-01、両 OS 必須 CI・merge 待ち) | メイン画面・マスタ・設定・PC 直接入力・交換 UI |
+| Phase 3 | 完了 (2026-11-01、両 OS 必須 CI 成功・PR #29 merge 済み) | メイン画面・マスタ・設定・PC 直接入力・交換 UI |
 | Phase 4 | 予定 | スマホ検針ダイアログ・プレビュー・一括確定 |
 | Phase 5 | 予定 | 集計・出力・バックアップ / 復元・インストーラー |
 
-成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。Phase 3 の完了記録 PR は Windows / Ubuntu の必須 CI 成功後に merge します。
+成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。
 Phase 2 は Playwright によるブラウザ検証まで完了しています。Android 実機での検証は未実施で、端末・Chrome の版・起動経路・HTML 移動時の復元可否を Phase 4 以降に確認します。
 
 ## commit / PR / merge 方針
