@@ -252,10 +252,17 @@ class AssignmentCalculationSettingsService:
         )
 
     def correct_assignment(
-        self, request: AssignmentCalculationCorrectionInput
+        self,
+        request: AssignmentCalculationCorrectionInput,
+        *,
+        expected_preview: AssignmentCalculationCorrectionPreview | None = None,
     ) -> AssignmentCalculationCorrectionPreview:
         with self._transaction_factory():
             preview = self.preview_correction(request)
+            if expected_preview is not None and preview != expected_preview:
+                raise ValidationError(
+                    "プレビュー後に対象が変更されました。再度プレビューしてください。"
+                )
             if preview.issues:
                 detail = "、".join(f"{issue.target}: {issue.message}" for issue in preview.issues)
                 raise ValidationError(f"計算条件を訂正できません: {detail}")

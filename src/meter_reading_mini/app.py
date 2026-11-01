@@ -148,7 +148,11 @@ def run_app(
                     )(error)
                     return STARTUP_FAILURE
 
-                window = (main_window_factory or MainWindow)(context)
+                window = (
+                    main_window_factory(context)
+                    if main_window_factory is not None
+                    else MainWindow(context, display_settings_path=resolved_paths.ui_settings_path)
+                )
                 resources.callback(window.close)
                 window.show()
                 return (event_loop_runner or (lambda app: app.exec()))(application)
