@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from functools import partial
 from typing import cast
@@ -33,10 +33,15 @@ from meter_reading_mini.core.contract_models import (
     SyncItemRejectCode,
     ValueSchema,
 )
-from meter_reading_mini.core.errors import InactiveMasterError, ValidationError
+from meter_reading_mini.core.errors import (
+    InactiveMasterError,
+    NegativeUsageDeltaError,
+    ValidationError,
+)
 from meter_reading_mini.core.meter_reading_sync import (
     MeterReadingSyncService,
     ReadingSyncBatchResult,
+    build_reading_upsert_request,
 )
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     CalculatedUsageUpdate,
@@ -49,10 +54,17 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReplacementBoundaryCalculationUpdate,
     ReplacementDefinitionReading,
     ReplacementUpsertRequest,
+    ResultSource,
     UpsertDisposition,
     UpsertOutcome,
 )
-from meter_reading_mini.core.mobile_reading import MobileReadingResult, SheetFilter
+from meter_reading_mini.core.mobile_reading import (
+    RESULT_KIND,
+    MobileReadingResult,
+    SheetFilter,
+    encode_mr1_envelope,
+    parse_mobile_reading_result,
+)
 from meter_reading_mini.core.mobile_reading_import import (
     MobileReadingDisposition,
     MobileReadingImportService,
@@ -60,6 +72,7 @@ from meter_reading_mini.core.mobile_reading_import import (
     MobileReadingPreviewChangedError,
     MobileReadingRejectCode,
     MobileReadingRejectReason,
+    MobileReadingWarningCode,
     describe_mobile_reading_rejection,
 )
 from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
@@ -198,6 +211,189 @@ def _replace_meter(
         services.repository.upsert_replacement(request)
         services.repository.reflect_replacement(request)
         services.writer.recalculate_after_replacement(request)
+
+
+@pytest.mark.parametrize("as_mr1", [False, True])
+def test_parsed_result_warns_on_header_mismatch_and_partially_commits(
+    services: ImportServices, as_mr1: bool
+) -> None:
+    create_plan(services.repository, "valid", _at(8))
+    payload = {
+        "kind": RESULT_KIND,
+        "v": 1,
+        "sheet_id": SHEET_ID,
+        "business_date": "2026-02-03",
+        "generated_at": "2024-01-01 00:00:00",
+        "filter": {"reading_sessions": ["14:00"], "cycle_groups": ["monthly"]},
+        "entries": [
+            {
+                "planned_reading_id": slot,
+                "result_status": "measured",
+                "raw_reading": raw,
+                "recorded_at": "2026-02-04T17:00:00+09:00",
+                "client_updated_at": "2026-02-06T17:00:00+09:00",
+            }
+            for slot, raw in (("missing", "1"), ("valid", "10"))
+        ],
+    }
+    text = encode_mr1_envelope(payload) if as_mr1 else json.dumps(payload, ensure_ascii=False)
+    result = parse_mobile_reading_result(text)
+    before = tuple(services.conn.iterdump())
+
+    preview = services.importer.preview(result)
+
+    assert tuple(services.conn.iterdump()) == before
+    missing, valid = preview.rows
+    assert missing.reason is not None
+    assert missing.reason.code is MobileReadingRejectCode.UNKNOWN_PLANNED_READING
+    assert valid.disposition is MobileReadingDisposition.NEW
+    assert {warning.code for warning in valid.warnings} == {
+        MobileReadingWarningCode.BUSINESS_DATE_MISMATCH,
+        MobileReadingWarningCode.READING_SESSION_MISMATCH,
+        MobileReadingWarningCode.CYCLE_GROUP_MISMATCH,
+    }
+    assert preview.summary.accepted == 1 and preview.summary.rejected == 1
+
+    committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
+
+    assert [(row.row_number, row.planned_reading_id) for row in committed.rows] == [
+        (1, "missing"),
+        (2, "valid"),
+    ]
+    assert committed.summary.confirmed == 1 and committed.summary.rejected == 1
+    stored = services.repository.get_mobile_reading_import_targets(["valid"])[
+        "valid"
+    ].existing_result
+    assert stored is not None
+    assert (stored.raw_reading, stored.device_id, stored.result_source) == (
+        Decimal("10"),
+        SHEET_ID,
+        ResultSource.MOBILE_HTML,
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "disposition", "save_disposition"),
+    [
+        ("110.00", MobileReadingDisposition.DUPLICATE, None),
+        ("115", MobileReadingDisposition.OVERWRITTEN, UpsertDisposition.REPLACED_ON_TIE),
+    ],
+)
+def test_same_second_mobile_result_matches_or_overwrites_existing_pc_result(
+    services: ImportServices,
+    raw: str,
+    disposition: MobileReadingDisposition,
+    save_disposition: UpsertDisposition | None,
+) -> None:
+    for slot, hour in (("previous", 3), ("target", 8), ("later", 14)):
+        create_plan(services.repository, slot, _at(hour))
+    _save_manual(services, "previous", "100", 3)
+    _save_manual(services, "target", "110", 8)
+    before = services.repository.get_mobile_reading_import_targets(["target"])[
+        "target"
+    ].existing_result
+    assert before is not None and before.result_source is ResultSource.MANUAL
+    japan = timezone(timedelta(hours=9))
+    incoming = _entry(
+        "target",
+        raw,
+        8,
+        updated_at=before.client_updated_at.astimezone(japan).replace(microsecond=999999),
+    ).model_copy(
+        update={"recorded_at": before.recorded_at.astimezone(japan).replace(microsecond=123456)}
+    )
+    result = _result(incoming, _entry("later", "120", 14))
+    database_before = tuple(services.conn.iterdump())
+
+    preview = services.importer.preview(result)
+
+    assert tuple(services.conn.iterdump()) == database_before
+    assert [row.disposition for row in preview.rows] == [
+        disposition,
+        MobileReadingDisposition.NEW,
+    ]
+    assert preview.rows[0].target is not None
+    assert preview.rows[0].target.existing_result == before
+
+    committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
+
+    assert committed.rows[0].save_disposition is save_disposition
+    targets = services.repository.get_mobile_reading_import_targets(["target", "later"])
+    after = targets["target"].existing_result
+    later = targets["later"].existing_result
+    assert after is not None and later is not None
+    if disposition is MobileReadingDisposition.DUPLICATE:
+        assert after == before
+        assert committed.summary.duplicate == 1 and committed.summary.confirmed == 1
+    else:
+        assert (after.raw_reading, after.arrival_sequence, after.result_source) == (
+            Decimal("115"),
+            before.arrival_sequence + 1,
+            ResultSource.MOBILE_HTML,
+        )
+        assert (after.recorded_at, after.client_updated_at) == (
+            before.recorded_at,
+            before.client_updated_at,
+        )
+        assert after.device_id == SHEET_ID
+        assert committed.summary.overwritten == 1 and committed.summary.confirmed == 2
+    assert (later.last_reading, later.usage_delta) == (
+        Decimal(raw),
+        Decimal("120") - Decimal(raw),
+    )
+
+
+def test_commit_recalculates_duplicate_without_changing_its_input_or_audit(
+    services: ImportServices,
+) -> None:
+    for slot, hour in (("previous", 3), ("early", 8), ("late", 14)):
+        create_plan(services.repository, slot, _at(hour))
+    _save_manual(services, "previous", "100", 3)
+    late = _entry("late", "120.00", 14, note="既存")
+    _save_mobile(services, late)
+    before = services.repository.get_mobile_reading_import_targets(["late"])["late"].existing_result
+    assert before is not None
+    duplicate = _entry(
+        "late",
+        "120.0",
+        14,
+        updated_at=late.client_updated_at.astimezone(timezone(timedelta(hours=9))).replace(
+            microsecond=999999
+        ),
+        note="既存",
+    )
+    result = _result(duplicate, _entry("early", "110", 8))
+    database_before = tuple(services.conn.iterdump())
+
+    preview = services.importer.preview(result)
+
+    assert tuple(services.conn.iterdump()) == database_before
+    ignored, accepted = preview.rows
+    assert ignored.disposition is MobileReadingDisposition.DUPLICATE
+    assert ignored.input.raw_reading == "120.0"
+    assert ignored.target is not None and ignored.target.existing_result == before
+    assert ignored.final is not None and ignored.final.result is not None
+    assert (ignored.final.result.raw_reading, ignored.final.result.last_reading) == (
+        Decimal("120"),
+        Decimal("110"),
+    )
+    assert ignored.final.result.usage_delta == Decimal("10")
+    assert accepted.disposition is MobileReadingDisposition.NEW
+    assert preview.effects.recalculated_existing_ids == frozenset({"late"})
+    assert preview.summary.recalculated_existing == 1
+
+    committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
+
+    assert [row.save_disposition for row in committed.rows] == [None, UpsertDisposition.INSERTED]
+    assert (committed.summary.confirmed, committed.summary.duplicate) == (1, 1)
+    targets = services.repository.get_mobile_reading_import_targets(["early", "late"])
+    early = targets["early"].existing_result
+    after = targets["late"].existing_result
+    assert early is not None and (early.last_reading, early.usage_delta) == (
+        Decimal("100"),
+        Decimal("10"),
+    )
+    assert after == replace(before, last_reading=Decimal("110"), usage_delta=Decimal("10"))
 
 
 def test_commit_saves_only_accepted_rows_and_reports_original_rows(
@@ -827,6 +1023,15 @@ def test_commit_preserves_payload_order_but_checks_final_recalculated_values(
     _save_manual(services, "previous", "100", 3)
     result = _result(_entry("late", "130", 14), _entry("early", "110", 8))
     preview = services.importer.preview(result)
+    projected = dict(preview.effects.results)
+    assert (projected["early"].last_reading, projected["early"].usage_delta) == (
+        Decimal("100"),
+        Decimal("10"),
+    )
+    assert (projected["late"].last_reading, projected["late"].usage_delta) == (
+        Decimal("110"),
+        Decimal("20"),
+    )
 
     committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
 
@@ -854,6 +1059,7 @@ def test_commit_replacement_initial_and_virtual_previous(
     entries = {"early": _entry("early", "8", 8), "late": _entry("late", "12", 14)}
     result = _result(*(entries[slot] for slot in order))
     preview = services.importer.preview(result)
+    projected = dict(preview.effects.results)
 
     committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
 
@@ -867,6 +1073,14 @@ def test_commit_replacement_initial_and_virtual_previous(
         Decimal("3") if initial is not None else Decimal("0"),
     )
     assert (late.last_reading, late.usage_delta) == (Decimal("8"), Decimal("4"))
+    assert (early.last_reading, early.usage_delta) == (
+        projected["early"].last_reading,
+        projected["early"].usage_delta,
+    )
+    assert (late.last_reading, late.usage_delta) == (
+        projected["late"].last_reading,
+        projected["late"].usage_delta,
+    )
 
 
 @pytest.mark.parametrize("initial", ["5", None])
@@ -893,6 +1107,7 @@ def test_commit_nonmeasured_first_result_recalculates_next_from_boundary(
     )
     preview = services.importer.preview(result)
     assert preview.summary.recalculated_existing == 1
+    projected_late = dict(preview.effects.results)["late"]
 
     committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
 
@@ -905,11 +1120,200 @@ def test_commit_nonmeasured_first_result_recalculates_next_from_boundary(
         Decimal("5") if initial is not None else None,
         Decimal("7") if initial is not None else Decimal("0"),
     )
+    assert (after_late.last_reading, after_late.usage_delta) == (
+        projected_late.last_reading,
+        projected_late.usage_delta,
+    )
     assert (after_late.signature, after_late.updated_by, after_late.arrival_sequence) == (
         before_late.signature,
         before_late.updated_by,
         before_late.arrival_sequence,
     )
+
+
+def test_boundary_rejection_is_discarded_before_next_input_and_partial_commit(
+    services: ImportServices,
+) -> None:
+    for slot, hour in (("old", 3), ("old-bad", 4), ("old-good", 5)):
+        create_plan(services.repository, slot, _at(hour))
+    _save_manual(services, "old", "100", 3)
+    _replace_meter(services, "5")
+    create_plan(services.repository, "new-first", _at(8), meter_id="new-meter")
+    result = _result(
+        _entry("new-first", "8", 8),
+        _entry("old-bad", "130", 4),
+        _entry("old-good", "110", 5),
+    )
+    database_before = tuple(services.conn.iterdump())
+
+    preview = services.importer.preview(result)
+
+    assert tuple(services.conn.iterdump()) == database_before
+    assert [row.disposition for row in preview.rows] == [
+        MobileReadingDisposition.NEW,
+        MobileReadingDisposition.REJECTED,
+        MobileReadingDisposition.NEW,
+    ]
+    rejected = preview.rows[1]
+    assert rejected.reason is not None
+    assert rejected.reason.code is MobileReadingRejectCode.BOUNDARY_RECALCULATION
+    assert rejected.reason.cause is MobileReadingRejectCode.NEGATIVE_USAGE
+    assert (rejected.reason.raw_reading, rejected.reason.last_reading) == (
+        Decimal("120"),
+        Decimal("130"),
+    )
+    assert preview.effects.accepted_reading_ids == frozenset({"new-first", "old-good"})
+    assert preview.effects.recalculated_existing_ids == frozenset()
+    assert preview.summary.recalculated_existing == 0
+    assert preview.summary.recalculated_boundaries == 1
+    boundary = preview.effects.boundary_updates[0]
+    assert (boundary.previous_measured_reading, boundary.old_meter_usage_delta) == (
+        Decimal("110"),
+        Decimal("10"),
+    )
+    projected = dict(preview.effects.results)
+
+    committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
+
+    assert (committed.summary.confirmed, committed.summary.rejected) == (2, 1)
+    assert (committed.summary.recalculated_existing, committed.summary.recalculated_boundaries) == (
+        0,
+        1,
+    )
+    targets = services.repository.get_mobile_reading_import_targets(
+        ["new-first", "old-bad", "old-good"]
+    )
+    assert targets["old-bad"].existing_result is None
+    for slot in ("new-first", "old-good"):
+        stored = targets[slot].existing_result
+        assert stored is not None
+        assert (stored.last_reading, stored.usage_delta) == (
+            projected[slot].last_reading,
+            projected[slot].usage_delta,
+        )
+    stored_boundary = services.repository.list_replacement_boundaries_for_event("replacement")[0]
+    assert (stored_boundary.previous_measured_reading, stored_boundary.old_meter_usage_delta) == (
+        boundary.previous_measured_reading,
+        boundary.old_meter_usage_delta,
+    )
+
+
+def test_reused_meter_preview_matches_save_order_and_boundary_effects(
+    services: ImportServices,
+) -> None:
+    create_plan(services.repository, "old", _at(3))
+    _save_manual(services, "old", "100", 3)
+    _replace_meter(services, "5")
+    create_plan(services.repository, "new", _at(8), meter_id="new-meter")
+    _save_manual(services, "new", "8", 8)
+    return_replacement = ReplacementUpsertRequest(
+        replacement_event_id="return",
+        location_id=LOCATION_ID,
+        old_meter_id="new-meter",
+        new_meter_id=METER_ID,
+        replaced_at=_at(10),
+        client_updated_at=_at(10),
+        old_final_reading=None,
+        new_initial_reading=None,
+        updated_by="試験担当",
+        note=None,
+        definition_readings=(
+            ReplacementDefinitionReading(DEFINITION_ID, Decimal("12"), Decimal("10")),
+        ),
+    )
+    with transaction(services.conn):
+        services.repository.upsert_replacement(return_replacement)
+        services.repository.reflect_replacement(return_replacement)
+        services.writer.recalculate_after_replacement(return_replacement)
+    create_plan(services.repository, "target", _at(12))
+    create_plan(services.repository, "following", _at(14))
+    _save_manual(services, "following", "12", 14)
+    result = _result(_entry("target", "13", 12))
+    request = build_reading_upsert_request(
+        result.entries[0],
+        planned_reading_repository=services.repository,
+        measurement_definition_repository=services.repository,
+        assignment_repository=services.repository,
+        device_id=SHEET_ID,
+        updated_by="試験担当",
+    )
+    services.conn.execute(
+        "UPDATE replacement_boundaries SET old_final_reading = ? WHERE replacement_event_id = ?",
+        ("90", "replacement"),
+    )
+
+    for code, raw, previous in (
+        (MobileReadingRejectCode.BOUNDARY_RECALCULATION, Decimal("90"), Decimal("100")),
+        (MobileReadingRejectCode.DOWNSTREAM_RECALCULATION, Decimal("12"), Decimal("13")),
+    ):
+        database_before = tuple(services.conn.iterdump())
+        preview = services.importer.preview(result)
+        reason = preview.rows[0].reason
+        assert preview.rows[0].disposition is MobileReadingDisposition.REJECTED
+        assert reason is not None and reason.code is code
+        assert reason.cause is MobileReadingRejectCode.NEGATIVE_USAGE
+        assert (reason.raw_reading, reason.last_reading) == (raw, previous)
+        if code is MobileReadingRejectCode.BOUNDARY_RECALCULATION:
+            assert reason.replacement_event_id == "replacement"
+        with pytest.raises(NegativeUsageDeltaError) as failure, transaction(services.conn):
+            services.writer.upsert_reading(request)
+        assert (failure.value.raw_reading, failure.value.last_reading) == (
+            reason.raw_reading,
+            reason.last_reading,
+        )
+        assert tuple(services.conn.iterdump()) == database_before
+        services.conn.execute(
+            "UPDATE replacement_boundaries SET old_final_reading = ? "
+            "WHERE replacement_event_id = ?",
+            ("120", "replacement"),
+        )
+
+    _save_manual(services, "following", "14", 14)
+    before_existing = services.repository.get_mobile_reading_import_targets(["new", "following"])
+    preview = services.importer.preview(result)
+    assert preview.summary.accepted == 1
+    assert preview.effects.recalculated_existing_ids == frozenset({"new", "following"})
+    assert preview.summary.recalculated_existing == 2
+    assert preview.summary.recalculated_boundaries == 2
+    assert {update.replacement_event_id for update in preview.effects.boundary_updates} == {
+        "replacement",
+        "return",
+    }
+
+    committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
+
+    assert committed.summary.confirmed == 1
+    assert (committed.summary.recalculated_existing, committed.summary.recalculated_boundaries) == (
+        2,
+        2,
+    )
+    targets = services.repository.get_mobile_reading_import_targets(["new", "target", "following"])
+    for slot, projected in preview.effects.results:
+        stored = targets[slot].existing_result
+        assert stored is not None
+        assert (stored.last_reading, stored.usage_delta) == (
+            projected.last_reading,
+            projected.usage_delta,
+        )
+        if slot in before_existing:
+            before = before_existing[slot].existing_result
+            assert before is not None
+            assert stored == replace(
+                before, last_reading=projected.last_reading, usage_delta=projected.usage_delta
+            )
+    for expected in preview.effects.boundary_updates:
+        stored = services.repository.list_replacement_boundaries_for_event(
+            expected.replacement_event_id
+        )[0]
+        assert (
+            stored.previous_measured_reading,
+            stored.previous_measured_planned_reading_id,
+            stored.old_meter_usage_delta,
+        ) == (
+            expected.previous_measured_reading,
+            expected.previous_measured_planned_reading_id,
+            expected.old_meter_usage_delta,
+        )
 
 
 def _boundary_setup(services: ImportServices) -> MobileReadingResult:
@@ -1111,6 +1515,16 @@ def test_commit_retains_downstream_rejection_reason_in_japanese(services: Import
     preview = services.importer.preview(result)
     assert preview.rows[1].reason is not None
     assert preview.rows[1].reason.code is MobileReadingRejectCode.DOWNSTREAM_RECALCULATION
+    assert [row.disposition for row in preview.rows] == [
+        MobileReadingDisposition.NEW,
+        MobileReadingDisposition.REJECTED,
+    ]
+    assert preview.rows[0].final is not None and preview.rows[0].final.result is not None
+    assert (
+        preview.rows[0].final.result.last_reading,
+        preview.rows[0].final.result.usage_delta,
+    ) == (Decimal("100"), Decimal("10"))
+    assert preview.effects.accepted_reading_ids == frozenset({"late"})
 
     committed = services.importer.commit(result, preview, staff_id=STAFF_ID)
 
