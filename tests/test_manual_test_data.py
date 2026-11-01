@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,7 @@ def test_create_manual_test_data_builds_representative_database(tmp_path: Path) 
     assert "'open':" in result.stdout
     assert "'auto_closed':" in result.stdout
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM staff").fetchone()[0] == 1
         assert (
             connection.execute(
@@ -59,6 +60,9 @@ def test_create_manual_test_data_builds_representative_database(tmp_path: Path) 
             ).fetchone()[0]
             == 1
         )
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
 
 
 def test_create_manual_test_data_refuses_to_overwrite_existing_database(tmp_path: Path) -> None:
