@@ -439,6 +439,7 @@ def test_invalid_application_instance_fails_without_a_dialog(
 ) -> None:
     environment = os.environ.copy()
     environment["METER_READING_MINI_DATA_DIR"] = str(tmp_path / "temporary-data")
+    environment["PYTHONIOENCODING"] = "utf-8"
     script = f"""
 {setup}
 from meter_reading_mini.app import run_app
@@ -448,7 +449,7 @@ raise SystemExit(run_app({argument}))
         [sys.executable, "-c", script],
         env=environment,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )
