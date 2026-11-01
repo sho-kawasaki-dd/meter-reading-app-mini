@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from meter_reading_mini.core.assignment_calculation import (
@@ -33,6 +33,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
     MeasurementDefinitionLookupRepository,
     MeasurementDefinitionRecord,
+    MeterAssignmentRecord,
     PlannedReadingLookupRepository,
     PlannedReadingRecord,
     PlannedReadingTaskState,
@@ -47,6 +48,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     StaffRepository,
     UpsertOutcome,
 )
+from meter_reading_mini.core.previous_reading import CalculationContext
 from meter_reading_mini.core.reading_preview import ManualReadingPreview, ReadingPreviewService
 from meter_reading_mini.core.reading_signature import calculate_meter_reading_signature
 from meter_reading_mini.core.timeutil import parse_utc, utc_now, utc_now_str
@@ -59,6 +61,17 @@ TransactionFactory = Callable[[], AbstractContextManager[object]]
 
 class ReadingWriteOrchestrationError(DomainError):
     """検針結果書込の業務処理を完了できなかったことを表す。"""
+
+
+@dataclass(frozen=True, slots=True)
+class CalculatedReading:
+    """保存・競合判定の前に検証と使用量計算を済ませた結果。"""
+
+    planned_reading: PlannedReadingRecord
+    definition: MeasurementDefinitionRecord
+    assignment: MeterAssignmentRecord
+    context: CalculationContext
+    request: ReadingUpsertRequest
 
 
 class ReadingWriteOrchestrationService:
@@ -94,6 +107,36 @@ class ReadingWriteOrchestrationService:
     def upsert_reading(self, request: ReadingUpsertRequest) -> UpsertOutcome:
         """署名済み要求を計算・保存し、交換境界と後続実測値を再計算する。"""
 
+        return self._upsert_calculated_reading(self.calculate_reading(request))
+
+    def _upsert_calculated_reading(self, calculated: CalculatedReading) -> UpsertOutcome:
+        planned_reading = calculated.planned_reading
+        measurement_definition = calculated.definition
+        outcome = self._persistence_repository.upsert_reading(calculated.request)
+        if not outcome.accepted:
+            return outcome
+
+        self._refresh_old_meter_boundaries(
+            measurement_definition,
+            planned_reading,
+        )
+        assert planned_reading.scheduled_at is not None
+        self._recalculate_following_measured_readings(
+            measurement_definition,
+            planned_reading,
+            after_scheduled_at=planned_reading.scheduled_at,
+        )
+        logger.debug(
+            "usage_delta for %s: %s (last_reading=%s)",
+            calculated.request.planned_reading_id,
+            calculated.request.usage_delta,
+            calculated.request.last_reading,
+        )
+        return outcome
+
+    def calculate_reading(self, request: ReadingUpsertRequest) -> CalculatedReading:
+        """保存や競合判定より先に、対象枠自身の検証と使用量計算を行う。"""
+
         measurement_definition = self._get_measurement_definition(request.measurement_definition_id)
         planned_reading = self._get_planned_reading(request.planned_reading_id)
         if planned_reading.measurement_definition_id != request.measurement_definition_id:
@@ -108,7 +151,6 @@ class ReadingWriteOrchestrationService:
             measurement_definition, assignment
         )
         assert planned_reading.scheduled_at is not None
-        scheduled_at = planned_reading.scheduled_at
         previous, boundary = self._get_calculation_context(
             planned_reading,
             excluding_planned_reading_id=request.planned_reading_id,
@@ -124,26 +166,13 @@ class ReadingWriteOrchestrationService:
             last_reading=calculation.last_reading,
             usage_delta=calculation.usage_delta,
         )
-        outcome = self._persistence_repository.upsert_reading(calculated_request)
-        if not outcome.accepted:
-            return outcome
-
-        self._refresh_old_meter_boundaries(
-            measurement_definition,
-            planned_reading,
+        return CalculatedReading(
+            planned_reading=planned_reading,
+            definition=measurement_definition,
+            assignment=assignment,
+            context=CalculationContext(previous=previous, boundary=boundary),
+            request=calculated_request,
         )
-        self._recalculate_following_measured_readings(
-            measurement_definition,
-            planned_reading,
-            after_scheduled_at=scheduled_at,
-        )
-        logger.debug(
-            "usage_delta for %s: %s (last_reading=%s)",
-            request.planned_reading_id,
-            calculation.usage_delta,
-            calculation.last_reading,
-        )
-        return outcome
 
     def save_manual_reading(
         self,
@@ -424,6 +453,7 @@ class ReadingWriteOrchestrationService:
 
 
 __all__ = [
+    "CalculatedReading",
     "ReadingWriteOrchestrationError",
     "ReadingWriteOrchestrationService",
 ]

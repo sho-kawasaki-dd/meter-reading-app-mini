@@ -160,6 +160,65 @@ def test_identical_mobile_reimport_is_ignored_without_incrementing_arrival_seque
     ).fetchone() == (1,)
 
 
+def test_duplicate_is_read_only_but_later_accepted_input_recalculates_it(
+    file_database_repository: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, repository = file_database_repository
+    writer, service = build_services(conn, repository)
+    create_plan(repository, "plan-before", _scheduled(4))
+    create_plan(repository, "plan-between", _scheduled(5))
+    create_plan(repository, "plan-after", _scheduled(6))
+    after = mobile_submission(
+        "plan-after",
+        "120.00",
+        recorded_at="2026-02-04T08:00:00.123456+09:00",
+        client_updated_at="2026-02-04T08:05:00.123456+09:00",
+    )
+    initial = service.sync(
+        sync_request(mobile_submission("plan-before", "100"), after),
+        confirmation_context(),
+    )
+    assert initial.accepted_reading_items == 2
+    query = (
+        "SELECT result_status, raw_reading, recorded_at, client_updated_at, device_id, "
+        "updated_by, signature, result_source, arrival_sequence, last_reading, usage_delta "
+        "FROM reading_transactions WHERE planned_reading_id = ?"
+    )
+    before = conn.execute(query, ("plan-after",)).fetchone()
+    assert before is not None
+    changes_before = conn.total_changes
+    equivalent = mobile_submission(
+        "plan-after",
+        "120.0",
+        recorded_at="2026-02-03T23:00:00.999999Z",
+        client_updated_at="2026-02-03T23:05:00.999999Z",
+    )
+
+    def unexpected_recalculation(*args: object, **kwargs: object) -> None:
+        pytest.fail("重複入力では後続値や交換境界を再計算しません")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(writer, "_refresh_old_meter_boundaries", unexpected_recalculation)
+        patch.setattr(writer, "_recalculate_following_measured_readings", unexpected_recalculation)
+        duplicate = service.sync(sync_request(equivalent), confirmation_context())
+
+    assert duplicate.accepted_reading_items == 0
+    assert duplicate.ignored_reading_items[0].code is SyncItemIgnoreCode.DUPLICATE_SUBMISSION
+    assert conn.total_changes == changes_before
+    assert conn.execute(query, ("plan-after",)).fetchone() == before
+
+    inserted = service.sync(
+        sync_request(mobile_submission("plan-between", "110")), confirmation_context()
+    )
+    assert inserted.accepted_reading_items == 1
+    recalculated = conn.execute(query, ("plan-after",)).fetchone()
+    assert recalculated is not None
+    assert recalculated[:9] == before[:9]
+    assert tuple(Decimal(value) for value in before[9:]) == (Decimal("100"), Decimal("20"))
+    assert tuple(Decimal(value) for value in recalculated[9:]) == (Decimal("110"), Decimal("10"))
+
+
 def test_sync_rejects_invalid_staff_or_sheet_before_writing(
     file_database_repository: tuple,
 ) -> None:
@@ -206,6 +265,47 @@ def test_sync_reports_duplicate_and_stale_items_separately(
         "SELECT raw_reading, arrival_sequence FROM reading_transactions "
         "WHERE planned_reading_id = 'plan-stale'"
     ).fetchone() == ("10", 1)
+
+
+def test_stale_input_is_checked_after_own_calculation_but_before_following_recalculation(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    _, service = build_services(conn, repository)
+    create_plan(repository, "plan-before-stale", _scheduled(4))
+    create_plan(repository, "plan-stale-current", _scheduled(5))
+    create_plan(repository, "plan-after-stale", _scheduled(6))
+    initial = service.sync(
+        sync_request(
+            mobile_submission("plan-before-stale", "100"),
+            mobile_submission("plan-stale-current", "110"),
+            mobile_submission("plan-after-stale", "120"),
+        ),
+        confirmation_context(),
+    )
+    assert initial.accepted_reading_items == 3
+    before = conn.execute(
+        "SELECT * FROM reading_transactions ORDER BY planned_reading_id"
+    ).fetchall()
+    changes_before = conn.total_changes
+    stale_invalid = mobile_submission(
+        "plan-stale-current", "90", client_updated_at="2026-02-04T08:04:59+09:00"
+    )
+    rejected = service.sync(sync_request(stale_invalid), confirmation_context())
+    assert rejected.rejected_reading_items[0].code is SyncItemRejectCode.INVALID_READING_SUBMISSION
+    assert not rejected.ignored_reading_items
+
+    stale_with_invalid_following = mobile_submission(
+        "plan-stale-current", "130", client_updated_at="2026-02-04T08:04:59+09:00"
+    )
+    ignored = service.sync(sync_request(stale_with_invalid_following), confirmation_context())
+    assert ignored.ignored_reading_items[0].code is SyncItemIgnoreCode.STALE_CLIENT_UPDATE
+    assert not ignored.rejected_reading_items
+    assert conn.total_changes == changes_before
+    assert (
+        conn.execute("SELECT * FROM reading_transactions ORDER BY planned_reading_id").fetchall()
+        == before
+    )
 
 
 def test_sync_rejects_unknown_slots_and_measurement_value_overflow(

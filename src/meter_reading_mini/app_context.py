@@ -13,7 +13,10 @@ from meter_reading_mini.core.assignment_calculation_settings import (
 )
 from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
 from meter_reading_mini.core.meter_master_service import MeterMasterService
+from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
 from meter_reading_mini.core.meter_replacement_service import MeterReplacementService
+from meter_reading_mini.core.mobile_reading_import import MobileReadingImportService
+from meter_reading_mini.core.mobile_reading_sheet import MobileReadingSheetService
 from meter_reading_mini.core.planned_reading_maintenance import PlannedReadingMaintenanceService
 from meter_reading_mini.core.reading_overview import ReadingOverviewQueryService
 from meter_reading_mini.core.reading_preview import ReadingPreviewService
@@ -49,6 +52,8 @@ class AppContext:
     reading_preview: ReadingPreviewService
     reading_writer: ReadingWriteOrchestrationService
     meter_replacement: MeterReplacementService
+    mobile_reading_sheet: MobileReadingSheetService
+    mobile_reading_import: MobileReadingImportService
     schedule_defaults: ScheduleSettingsService
     measurement_schedules: MeasurementDefinitionScheduleService
     release_offsets: ReleaseOffsetSettingsService
@@ -126,6 +131,16 @@ def create_app_context(
         transaction_factory=transaction_factory,
         now_provider=clock,
     )
+    mobile_sync = MeterReadingSyncService(
+        connection,
+        repository,
+        repository,
+        reading_writer,
+        repository,
+        repository,
+        replacement_reflection_repository=repository,
+        assignment_repository=repository,
+    )
     reading_preview = ReadingPreviewService(
         repository,
         repository,
@@ -165,6 +180,23 @@ def create_app_context(
         reading_preview=reading_preview,
         reading_writer=reading_writer,
         meter_replacement=meter_replacement,
+        mobile_reading_sheet=MobileReadingSheetService(
+            planned_reading_generator=generator,
+            planned_reading_lifecycle_service=lifecycle,
+            task_repository=repository,
+            master_repository=repository,
+            historical_reading_repository=repository,
+            assignment_repository=repository,
+            boundary_repository=repository,
+            transaction_factory=transaction_factory,
+            timezone_provider=timezone_settings.get_timezone,
+            clock=clock,
+        ),
+        mobile_reading_import=MobileReadingImportService(
+            repository,
+            sync_service=mobile_sync,
+            transaction_factory=transaction_factory,
+        ),
         schedule_defaults=ScheduleSettingsService(
             repository,
             recomposition_repository=repository,

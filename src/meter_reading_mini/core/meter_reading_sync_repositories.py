@@ -457,6 +457,56 @@ class ResultSource(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class MobileReadingImportResultRecord:
+    """取込対象の保存済み結果と、比較・監査に必要な情報。"""
+
+    result_status: ResultStatus
+    raw_reading: Decimal | None
+    structured_payload_json: str | None
+    note: str | None
+    recorded_at: datetime
+    client_updated_at: datetime
+    result_source: ResultSource
+    device_id: str
+    updated_by: str
+    signature: str
+    last_reading: Decimal | None
+    usage_delta: Decimal | None
+    arrival_sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class MobileReadingImportTargetRecord:
+    """スマホ結果の照合・説明に必要な予定枠とマスタ。"""
+
+    planned_reading_id: str
+    measurement_definition_id: str
+    meter_id: str
+    location_id: str
+    business_date: date
+    reading_session: ReadingSession
+    scheduled_at: datetime
+    task_state: PlannedReadingTaskState
+    close_reason: PlannedReadingCloseReason | None
+    closed_at: datetime | None
+    superseded_by_planned_reading_id: str | None
+    location_name: str
+    meter_name: str
+    meter_is_active: bool
+    display_name: str
+    category: Category
+    unit: str
+    value_schema: ValueSchema
+    calculation_method: CalculationMethod
+    decimal_places: int | None
+    warning_threshold: Decimal | None
+    reading_cycle: ReadingCycle
+    purpose: Purpose
+    definition_is_active: bool
+    existing_result: MobileReadingImportResultRecord | None
+
+
+@dataclass(frozen=True, slots=True)
 class ReadingUpsertRequest:
     """resolved validation 後の検針結果を保存するための要求オブジェクト。"""
 
@@ -573,6 +623,8 @@ class ReplacementBoundaryCalculationRecord:
     old_assignment_effective_from: datetime
     new_assignment_effective_from: datetime
     old_meter_usage_delta: Decimal | None = None
+    previous_measured_reading: Decimal | None = None
+    previous_measured_planned_reading_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1118,6 +1170,45 @@ class ReplacementBoundaryMaintenanceRepository(Protocol):
     ) -> None: ...
 
 
+class MobileReadingImportRepository(
+    PlannedReadingLookupRepository,
+    MeasurementDefinitionLookupRepository,
+    AssignmentCalculationLookupRepository,
+    HistoricalMeasuredReadingLookupRepository,
+    ReplacementBoundaryLookupRepository,
+    Protocol,
+):
+    """一括取込の対象・履歴・割当・交換境界を読み取る契約。"""
+
+    def get_mobile_reading_import_targets(
+        self, planned_reading_ids: Collection[str]
+    ) -> dict[str, MobileReadingImportTargetRecord]:
+        """存在する予定枠だけを ID に対応付け、不存在の ID は含めない。"""
+        ...
+
+    def list_meter_assignments(
+        self, measurement_definition_id: str
+    ) -> list[MeterAssignmentRecord]: ...
+
+    def list_replacement_boundaries_for_old_meter(
+        self, measurement_definition_id: str, old_meter_id: str
+    ) -> list[ReplacementBoundaryCalculationRecord]: ...
+
+    def list_replacement_boundaries_for_event(
+        self, replacement_event_id: str
+    ) -> list[ReplacementBoundaryCalculationRecord]: ...
+
+    def list_replacement_boundaries_for_new_meter(
+        self,
+        measurement_definition_id: str,
+        new_meter_id: str,
+        *,
+        before_scheduled_at: datetime,
+    ) -> list[ReplacementBoundaryCalculationRecord]:
+        """指定日時以前の候補を新しい順に返し、保存済み実測では絞り込まない。"""
+        ...
+
+
 class MeterReplacementRepository(ReplacementEventUpsertRepository, Protocol):
     def list_assignments_spanning_meter(
         self, meter_id: str, replaced_at: datetime
@@ -1180,6 +1271,9 @@ __all__ = [
     "MeterMasterUsageRecord",
     "MeterMasterWriteRepository",
     "MeterReplacementRepository",
+    "MobileReadingImportRepository",
+    "MobileReadingImportResultRecord",
+    "MobileReadingImportTargetRecord",
     "MonthlySchedule",
     "MonthlyScheduleSelectorType",
     "MonthParity",
@@ -1222,6 +1316,7 @@ __all__ = [
     "ReplacementAffectedSlot",
     "ReplacementDefinitionReading",
     "ReplacementUpsertRequest",
+    "ResultSource",
     "ScheduleItem",
     "ScheduleSettings",
     "ScheduleSettingsRepository",
