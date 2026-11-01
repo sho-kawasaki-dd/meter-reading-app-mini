@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +25,8 @@ def _run_generator(data_dir: Path, *, days_back: int = 7) -> subprocess.Complete
         capture_output=True,
         check=False,
         text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONUTF8": "1"},
     )
 
 
