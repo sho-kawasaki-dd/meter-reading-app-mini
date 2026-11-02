@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -49,7 +50,9 @@ from meter_reading_mini.core.mobile_reading import (
     encode_mr1_envelope,
     parse_mobile_reading_result,
 )
+from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
 from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
+from meter_reading_mini.db.connection import connect_readonly
 from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.ui.dialogs import mobile_reading_dialog
 from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDialog
@@ -117,22 +120,33 @@ def _save_mobile(data: ImportData, *entries: dict[str, object]) -> None:
     assert response.accepted_reading_items == len(entries)
 
 
-@pytest.fixture
-def import_data(memory_conn: sqlite3.Connection, sqlite_repository: SQLiteRepository) -> ImportData:
-    writer, sync = build_services(memory_conn, sqlite_repository)
+def _build_import_data(connection: sqlite3.Connection, repository: SQLiteRepository) -> ImportData:
+    writer, sync = build_services(connection, repository)
     for planned_id, hour in (("previous", 3), ("early", 8), ("late", 14), ("stale", 15)):
-        create_plan(sqlite_repository, planned_id, _at(hour))
+        create_plan(repository, planned_id, _at(hour))
     writer.save_manual_reading(
         ManualReadingInput("previous", ResultStatus.MEASURED, _at(3), Decimal("100"), None),
         staff_id=STAFF_ID,
     )
     return ImportData(
-        memory_conn,
-        sqlite_repository,
+        connection,
+        repository,
         writer,
         sync,
-        create_app_context(memory_conn, clock=lambda: NOW),
+        create_app_context(connection, clock=lambda: NOW),
     )
+
+
+@pytest.fixture
+def import_data(memory_conn: sqlite3.Connection, sqlite_repository: SQLiteRepository) -> ImportData:
+    return _build_import_data(memory_conn, sqlite_repository)
+
+
+@pytest.fixture
+def persistent_import_data(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> ImportData:
+    return _build_import_data(*file_database_repository)
 
 
 @pytest.fixture
@@ -480,6 +494,14 @@ def test_staff_selection_is_shared_and_inactive_staff_cannot_be_selected(
     assert second.staff_combo.currentData() == STAFF_ID
     _preview(second, payload)
     assert second.commit_button.isEnabled()
+
+    fresh_memory = StaffSelectionMemory()
+    fresh = MobileReadingDialog(import_data.services, SheetSaveDirectoryMemory(), fresh_memory)
+    qtbot.addWidget(fresh)
+    _preview(fresh, payload)
+    assert fresh_memory.staff_id is None and fresh.staff_combo.currentData() == ""
+    assert not fresh.commit_button.isEnabled()
+
     import_data.services.staff.deactivate_staff(STAFF_ID)
     second.show()
     assert not second.commit_button.isEnabled()
@@ -884,15 +906,18 @@ def test_replacement_previous_source_is_displayed(
     assert messages.warnings == messages.errors == []
 
 
-def test_generated_html_mr1_and_json_round_trip_through_dialog_and_database(
-    import_data: ImportData,
+@pytest.mark.parametrize("source", ["mr1", "json"])
+def test_generated_html_round_trip_through_dialog_and_database(
+    persistent_import_data: ImportData,
     qtbot: QtBot,
     messages: Messages,
     monkeypatch: pytest.MonkeyPatch,
     sheet_browser: SheetBrowser,
     tmp_path: Path,
+    source: str,
 ) -> None:
-    dialog = _dialog(import_data, qtbot)
+    data = persistent_import_data
+    dialog = _dialog(data, qtbot)
     notifications: list[bool] = []
     dialog.reload_requested.connect(lambda: notifications.append(True))
     sheet_path = tmp_path / "export.html"
@@ -900,12 +925,15 @@ def test_generated_html_mr1_and_json_round_trip_through_dialog_and_database(
     dialog.export_button.click()
     assert sheet_path.exists() and notifications == [True]
 
-    page = sheet_browser.open_html(sheet_path.read_text(encoding="utf-8"), name="opened.html")
-    page.locator('.tab[data-tab="all"]').click()
+    context = sheet_browser.new_context(viewport=(390, 844), mobile=True)
+    page = sheet_browser.open_file(sheet_path, context=context)
+    assert page.url == sheet_path.as_uri()
+    assert page.evaluate("navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches")
+    page.locator('.tab[data-tab="all"]').tap()
     target = page.locator('.card[data-slot-id="early"]')
     target.locator(".raw").fill("110.00")
     target.locator(".note").fill("現場で確認")
-    target.locator(".confirm").click()
+    target.locator(".confirm").tap()
     expect(page.locator("#result-count")).to_contain_text("出力対象: 1 件")
     page.evaluate(
         """() => Object.defineProperty(navigator, "clipboard", {
@@ -913,35 +941,78 @@ def test_generated_html_mr1_and_json_round_trip_through_dialog_and_database(
           value: { writeText: () => Promise.reject(new Error("clipboard unavailable")) }
         })"""
     )
-    page.locator("#result-copy").click()
+    page.locator("#result-copy").tap()
     expect(page.locator("#result-feedback")).to_contain_text("手動でコピー")
     mr1 = page.locator("#result-export-text").input_value()
     parsed = parse_mobile_reading_result(mr1)
     assert len(parsed.entries) == 1 and parsed.entries[0].planned_reading_id == "early"
     with page.expect_download() as download_info:
-        page.locator("#result-download").click()
+        page.locator("#result-download").tap()
     json_path = tmp_path / "result.json"
     download_info.value.save_as(json_path)
+    assert parse_mobile_reading_result(json_path.read_text(encoding="utf-8")) == parsed
 
     _select_staff(dialog)
-    before = tuple(import_data.connection.iterdump())
-    QApplication.clipboard().setText(mr1)
-    dialog.paste_button.click()
+    before = tuple(data.connection.iterdump())
+    if source == "mr1":
+        QApplication.clipboard().setText(mr1)
+        dialog.paste_button.click()
+        assert dialog.result_edit.toPlainText() == mr1
+    else:
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(json_path), ""))
+        dialog.load_json_button.click()
+        assert dialog.result_edit.toPlainText() == json_path.read_text(encoding="utf-8")
     assert dialog.preview_model.rowCount() == 1 and dialog.commit_button.isEnabled()
     assert "110.00" in _cell(dialog, 0, "入力結果")
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(json_path), ""))
-    dialog.load_json_button.click()
-    assert dialog.preview_model.rowCount() == 1 and dialog.commit_button.isEnabled()
-    assert tuple(import_data.connection.iterdump()) == before
+    assert "採用 1 件" in dialog.summary_label.text()
+    assert tuple(data.connection.iterdump()) == before
 
     dialog.commit_button.click()
-    target_record = import_data.repository.get_mobile_reading_import_targets(["early"])["early"]
+    target_record = data.repository.get_mobile_reading_import_targets(["early"])["early"]
     stored = target_record.existing_result
     assert stored is not None and stored.raw_reading == Decimal("110.00")
     assert stored.last_reading == Decimal("100") and stored.usage_delta == Decimal("10")
     assert stored.note == "現場で確認"
     assert stored.device_id == parsed.sheet_id and stored.updated_by == "試験担当"
     assert stored.result_source is ResultSource.MOBILE_HTML and stored.signature
+    assert stored.recorded_at == parsed.entries[0].recorded_at
+    assert stored.client_updated_at == parsed.entries[0].client_updated_at
+    verify_meter_reading_signature(
+        planned_reading_id="early",
+        result_status=ResultStatus.MEASURED,
+        raw_reading=Decimal("110.00"),
+        structured_payload_json=None,
+        recorded_at=parsed.entries[0].recorded_at,
+        device_id=parsed.sheet_id,
+        signature=stored.signature,
+    )
+    assert dialog.preview_model.rowCount() == 0 and not dialog.commit_button.isEnabled()
+    with closing(connect_readonly(tmp_path / "meter-reading.db")) as readonly:
+        row = readonly.execute(
+            "SELECT p.task_state, r.result_status, r.raw_reading, r.last_reading, r.usage_delta, "
+            "r.device_id, r.updated_by, r.result_source, r.signature, r.note "
+            "FROM planned_readings AS p JOIN reading_transactions AS r USING (planned_reading_id) "
+            "WHERE p.planned_reading_id = ?",
+            ("early",),
+        ).fetchone()
+        assert row == (
+            "completed",
+            "measured",
+            "110.00",
+            "100",
+            "10.00",
+            parsed.sheet_id,
+            "試験担当",
+            "mobile_html",
+            stored.signature,
+            "現場で確認",
+        )
+        assert readonly.execute(
+            "SELECT task_state FROM planned_readings WHERE planned_reading_id = ?", ("late",)
+        ).fetchone() == ("open",)
+        assert readonly.execute(
+            "SELECT COUNT(*) FROM reading_transactions WHERE planned_reading_id = ?", ("late",)
+        ).fetchone() == (0,)
     assert notifications == [True, True]
     assert "確定 1 件" in messages.information[-1]
     assert messages.warnings == messages.errors == []
