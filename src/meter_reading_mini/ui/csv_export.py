@@ -19,9 +19,15 @@ def _choose_export_path(
     default_prefix: str,
     extension: str,
     file_filter: str,
+    *,
+    default_path: Path | None = None,
 ) -> Path | None:
     suffix = extension if extension.startswith(".") else f".{extension}"
-    default_name = f"{default_prefix}_{local_timestamp_for_filename()}{suffix}"
+    default_name = (
+        str(default_path)
+        if default_path is not None
+        else f"{default_prefix}_{local_timestamp_for_filename()}{suffix}"
+    )
     selected, _selected_filter = QFileDialog.getSaveFileName(
         parent,
         f"{label}を{suffix[1:].upper()}出力",
@@ -71,8 +77,12 @@ def export_file_with_dialog(
     extension: str,
     file_filter: str,
     export: Callable[[Path], None],
+    *,
+    default_path: Path | None = None,
 ) -> Path | None:
-    path = _choose_export_path(parent, label, default_prefix, extension, file_filter)
+    path = _choose_export_path(
+        parent, label, default_prefix, extension, file_filter, default_path=default_path
+    )
     return _run_export(parent, label, path, extension, export)
 
 

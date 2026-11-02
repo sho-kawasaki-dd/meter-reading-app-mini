@@ -31,12 +31,12 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingTaskState,
     ReadingOverviewRecord,
 )
-from meter_reading_mini.core.previous_reading import PreviousReadingSource
 from meter_reading_mini.core.reading_preview import ManualReadingPreview
 from meter_reading_mini.ui.error_handling import run_guarded
 from meter_reading_mini.ui.models.reading_overview_model import (
     CYCLE_LABELS,
     PHASE_LABELS,
+    PREVIOUS_SOURCE_LABELS,
     RESULT_STATUS_LABELS,
     TASK_STATE_LABELS,
 )
@@ -46,13 +46,6 @@ from meter_reading_mini.ui.widgets.form_helpers import selected_value
 from meter_reading_mini.ui.widgets.master_common import confirm, scroll_area
 from meter_reading_mini.ui.widgets.staff_combo import StaffComboBox
 from meter_reading_mini.ui.widgets.wall_datetime_edit import WallDateTimeEdit
-
-_PREVIOUS_SOURCES = {
-    PreviousReadingSource.MEASURED: "前回実測",
-    PreviousReadingSource.REPLACEMENT_INITIAL: "交換時の新メーター初期値",
-    PreviousReadingSource.REPLACEMENT_NO_INITIAL: "交換時の初期値なし",
-    PreviousReadingSource.NONE: "前回値なし",
-}
 
 
 def _decimal_text(value: Decimal | None) -> str:
@@ -253,7 +246,7 @@ class DirectReadingDialog(QDialog):
             preview = self._services.reading_preview.preview_manual_reading(request)
             lines = [
                 f"前回値: {_decimal_text(preview.previous_reading)} "
-                f"（{_PREVIOUS_SOURCES[preview.previous_source]}）",
+                f"（{PREVIOUS_SOURCE_LABELS[preview.previous_source]}）",
                 f"使用量: {_decimal_text(preview.usage_delta)} {self._reading.unit}",
                 f"ロールオーバー補正: {'あり' if preview.rollover_applied else 'なし'}",
                 f"警告閾値超過: {'あり' if preview.warning_threshold_exceeded else 'なし'}",

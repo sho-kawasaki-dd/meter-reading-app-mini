@@ -46,6 +46,7 @@ from meter_reading_mini.core.reading_overview import (
 from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDialog
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
+from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDialog
 from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.error_handling import run_guarded
 from meter_reading_mini.ui.models.reading_overview_model import (
@@ -53,6 +54,7 @@ from meter_reading_mini.ui.models.reading_overview_model import (
     TASK_STATE_LABELS,
     ReadingOverviewTableModel,
 )
+from meter_reading_mini.ui.sheet_save_directory_memory import SheetSaveDirectoryMemory
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 
 _CYCLE_TABS: tuple[tuple[str, frozenset[ReadingCycle]], ...] = (
@@ -105,6 +107,7 @@ class MainWindow(QMainWindow):
         self._services = services
         self._display_settings_path = display_settings_path
         self._staff_memory = StaffSelectionMemory()
+        self._sheet_save_directory_memory = SheetSaveDirectoryMemory()
         self._all_readings: tuple[ReadingOverviewRecord, ...] = ()
         self._review_assignments: tuple[_ReviewAssignment, ...] = ()
         self._view_loaded = False
@@ -128,6 +131,7 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("mainToolbar")
         self.addToolBar(toolbar)
         self.refresh_action = QAction("予定枠を更新", self)
+        self.mobile_reading_action = QAction("スマホ検針", self)
         self.manual_reading_action = QAction("PC 直接入力・訂正", self)
         self.manual_reading_action.setEnabled(False)
         self.master_action = QAction("マスタ管理", self)
@@ -135,6 +139,7 @@ class MainWindow(QMainWindow):
         self.settings_action = QAction("設定", self)
         for action in (
             self.refresh_action,
+            self.mobile_reading_action,
             self.manual_reading_action,
             self.master_action,
             self.replacement_action,
@@ -237,6 +242,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.refresh_action.triggered.connect(self.refresh_planned_readings)
+        self.mobile_reading_action.triggered.connect(lambda: self._guard(self._open_mobile_reading))
         self.manual_reading_action.triggered.connect(self._on_manual_reading)
         self.master_action.triggered.connect(lambda: self._guard(self._open_master))
         self.replacement_action.triggered.connect(lambda: self._guard(self._open_replacement))
@@ -506,6 +512,13 @@ class MainWindow(QMainWindow):
         succeeded, _ = run_guarded(self, self._open_manual_reading)
         if not succeeded:
             self.manual_reading_action.setEnabled(False)
+
+    def _open_mobile_reading(self) -> None:
+        dialog = MobileReadingDialog(
+            self._services, self._sheet_save_directory_memory, self._staff_memory, self
+        )
+        dialog.reload_requested.connect(self.notify_dialog_saved)
+        dialog.exec()
 
     def _open_manual_reading(self) -> None:
         reading = self._selected_reading()

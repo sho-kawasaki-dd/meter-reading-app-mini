@@ -264,11 +264,15 @@ class SheetBrowser:
         self.external_requests: list[str] = []
         self.page_errors: list[str] = []
 
-    def new_context(self, *, viewport: tuple[int, int] = (360, 640)) -> BrowserContext:
+    def new_context(
+        self, *, viewport: tuple[int, int] = (360, 640), mobile: bool = False
+    ) -> BrowserContext:
         context = self._browser.new_context(
             viewport={"width": viewport[0], "height": viewport[1]},
             locale="ja-JP",
             accept_downloads=True,
+            is_mobile=mobile,
+            has_touch=mobile,
         )
         context.route(_EXTERNAL_URL_PATTERN, self._block_external)
         context.add_init_script(_STORAGE_GUARD_SCRIPT)
@@ -290,6 +294,15 @@ class SheetBrowser:
     ) -> Page:
         path = self._directory / name
         path.write_text(html, encoding="utf-8")
+        return self.open_file(path, context=context, viewport=viewport)
+
+    def open_file(
+        self,
+        path: Path,
+        *,
+        context: BrowserContext | None = None,
+        viewport: tuple[int, int] = (360, 640),
+    ) -> Page:
         page = (context or self.new_context(viewport=viewport)).new_page()
         console_errors: list[str] = []
         page.on("pageerror", lambda error: self.page_errors.append(str(error)))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
@@ -8,19 +9,21 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QDate, Qt, QTime, QTimer
-from PySide6.QtGui import QBrush
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QToolBar
+from PySide6.QtGui import QBrush, QFont
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QToolBar
 from pytestqt.qtbot import QtBot
 from reading_service_helpers import (
     DEFINITION_ID,
     LOCATION_ID,
     METER_ID,
+    SHEET_ID,
     STAFF_ID,
     build_services,
     create_plan,
 )
 
 from meter_reading_mini.app_context import AppContext, create_app_context
+from meter_reading_mini.core import mobile_reading_sheet
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -36,12 +39,19 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionCreateRequest,
     MeterMasterCreateRequest,
     PlannedReadingCreateRequest,
+    PlannedReadingTaskState,
+    ReadingOverviewRecord,
+    ResultSource,
+    StaffCreateRequest,
 )
+from meter_reading_mini.core.mobile_reading import RESULT_KIND, encode_mr1_envelope
 from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDialog
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
+from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDialog
 from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
+from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.main_window import MainWindow, _ReviewAssignment
 
 DAY = date(2026, 2, 4)
@@ -261,10 +271,8 @@ def test_overview_displays_results_states_counts_and_selection(
     assert opened == ["plan-4"]
     toolbar = window.findChild(QToolBar, "mainToolbar")
     assert toolbar is not None
-    assert all(
-        "スマホ" not in action.text() and "ダッシュボード" not in action.text()
-        for action in toolbar.actions()
-    )
+    assert window.mobile_reading_action in toolbar.actions()
+    assert all("ダッシュボード" not in action.text() for action in toolbar.actions())
 
 
 def test_combined_filters_and_successor_navigation(window: MainWindow, qtbot: QtBot) -> None:
@@ -942,3 +950,520 @@ def test_refresh_reports_errors_clears_stale_rows_and_recovers(
     monkeypatch.setattr(service, "refresh", refresh)
     window.refresh_action.trigger()
     assert window.table_model.rowCount() == 7
+
+
+def _mobile_result_payload() -> dict[str, object]:
+    return {
+        "kind": RESULT_KIND,
+        "v": 1,
+        "sheet_id": SHEET_ID,
+        "entries": [
+            {
+                "planned_reading_id": "plan-4",
+                "result_status": "measured",
+                "raw_reading": "140",
+                "recorded_at": _at(4).isoformat(),
+                "client_updated_at": _at(5).isoformat(),
+                "note": "現場で確認",
+            }
+        ],
+    }
+
+
+def _window_reading(window: MainWindow, planned_reading_id: str) -> ReadingOverviewRecord:
+    row = window.table_model.row_for_id(planned_reading_id)
+    assert row is not None
+    reading = window.table_model.reading_at(row)
+    assert reading is not None
+    return reading
+
+
+def test_mobile_action_opens_a_real_modal_dialog_with_shared_context(
+    overview_data: OverviewData, window: MainWindow
+) -> None:
+    observed: list[tuple[MobileReadingDialog, bool, bool]] = []
+
+    def close_dialog() -> None:
+        dialog = window.findChild(MobileReadingDialog)
+        if dialog is not None:
+            is_active_modal = QApplication.activeModalWidget() is dialog and dialog.isModal()
+            observed.append((dialog, dialog.isVisible(), is_active_modal))
+            dialog.accept()
+
+    assert window.mobile_reading_action.text() == "スマホ検針"
+    assert window.mobile_reading_action.isEnabled()
+    QTimer.singleShot(0, close_dialog)
+    window.mobile_reading_action.trigger()
+
+    assert len(observed) == 1
+    dialog, was_visible, was_modal = observed[0]
+    assert was_visible and was_modal
+    assert dialog.parentWidget() is window
+    assert dialog._services is overview_data.services
+    assert dialog._save_directory_memory is window._sheet_save_directory_memory
+    assert dialog.staff_combo._memory is window._staff_memory
+
+
+def test_mobile_commit_updates_main_window_while_the_dialog_is_modal(
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[bool, Decimal | None, Decimal | None, bool]] = []
+
+    def interact() -> None:
+        dialog = window.findChild(MobileReadingDialog)
+        if dialog is None:
+            return
+        try:
+            dialog.tabs.setCurrentIndex(1)
+            dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+            QApplication.clipboard().setText(encode_mr1_envelope(_mobile_result_payload()))
+            dialog.paste_button.click()
+            assert dialog.commit_button.isEnabled()
+            dialog.commit_button.click()
+            reading = _window_reading(window, "plan-4")
+            observed.append(
+                (
+                    QApplication.activeModalWidget() is dialog,
+                    reading.raw_reading,
+                    reading.usage_delta,
+                    dialog.commit_button.isEnabled(),
+                )
+            )
+        finally:
+            dialog.accept()
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    QTimer.singleShot(0, interact)
+    window.mobile_reading_action.trigger()
+
+    assert observed == [(True, Decimal("140"), Decimal("10"), False)]
+    assert len(messages) == 1 and "確定 1 件" in messages[0][2]
+
+
+def test_mobile_action_is_reachable_at_150_percent(
+    overview_data: OverviewData,
+    qtbot: QtBot,
+    restore_app_font: QFont,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apply_display_settings(DisplaySettings(None, 150))
+    window = MainWindow(overview_data.services)
+    qtbot.addWidget(window)
+    window.show()
+    QApplication.processEvents()
+    toolbar = window.findChild(QToolBar, "mainToolbar")
+    assert toolbar is not None
+    button = toolbar.widgetForAction(window.mobile_reading_action)
+    assert button is not None and button.isVisible() and button.isEnabled()
+    center = button.mapToGlobal(button.rect().center())
+    assert toolbar.rect().contains(toolbar.mapFromGlobal(center))
+    assert window.rect().contains(window.mapFromGlobal(center))
+    opened: list[bool] = []
+    monkeypatch.setattr(MobileReadingDialog, "exec", lambda _dialog: opened.append(True) or 0)
+
+    qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+
+    assert opened == [True]
+
+
+def test_mobile_dialog_shares_staff_and_save_directory_during_the_session(
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    other_staff = overview_data.services.staff.create_staff(StaffCreateRequest("別の担当者"))
+    target = tmp_path / "検針シート.html"
+    defaults: list[Path] = []
+    direct_selections: list[object] = []
+    mobile_selections: list[object] = []
+
+    def choose(_parent: object, _caption: str, initial: str, file_filter: str) -> tuple[str, str]:
+        defaults.append(Path(initial))
+        return (str(target), file_filter) if len(defaults) == 1 else ("", file_filter)
+
+    def interact_direct(dialog: DirectReadingDialog) -> int:
+        if not direct_selections:
+            dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+        direct_selections.append(dialog.staff_combo.currentData())
+        return 0
+
+    def interact_mobile(dialog: MobileReadingDialog) -> int:
+        mobile_selections.append(dialog.staff_combo.currentData())
+        if len(mobile_selections) == 1:
+            dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(other_staff.staff_id))
+            dialog.export_button.click()
+        elif len(mobile_selections) == 2:
+            dialog.export_button.click()
+        else:
+            assert dialog.staff_combo.findData(other_staff.staff_id) == -1
+            assert not dialog.commit_button.isEnabled()
+        return 0
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    monkeypatch.setattr(DirectReadingDialog, "exec", interact_direct)
+    monkeypatch.setattr(MobileReadingDialog, "exec", interact_mobile)
+    _select(window, "plan-4")
+    window.manual_reading_action.trigger()
+    window.mobile_reading_action.trigger()
+    window.mobile_reading_action.trigger()
+    window.manual_reading_action.trigger()
+    overview_data.services.staff.deactivate_staff(other_staff.staff_id)
+    window.mobile_reading_action.trigger()
+
+    assert direct_selections == [STAFF_ID, other_staff.staff_id]
+    assert mobile_selections == [STAFF_ID, other_staff.staff_id, ""]
+    assert len(defaults) == 2 and defaults[1] == tmp_path / defaults[0].name
+    assert window._sheet_save_directory_memory.directory == tmp_path
+    assert target.exists()
+    assert [kind for kind, _title, _text in messages] == ["information"]
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "cancel", "empty", "generation_error", "save_error"]
+)
+def test_mobile_sheet_generation_refreshes_main_window_for_every_outcome(
+    outcome: str,
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert _window_reading(window, "plan-4").task_state is PlannedReadingTaskState.OPEN
+    overview_data.clock.value = datetime(2026, 2, 4, 22, tzinfo=UTC)
+    service = overview_data.services.planned_reading_maintenance
+    refresh = service.refresh
+    events: list[str] = []
+    target = (
+        tmp_path / "missing" / "sheet.html" if outcome == "save_error" else tmp_path / "sheet.html"
+    )
+
+    def tracked_refresh() -> None:
+        events.append("refresh")
+        refresh()
+
+    def choose(_parent: object, _caption: str, _initial: str, file_filter: str) -> tuple[str, str]:
+        events.append("choose")
+        return ("", file_filter) if outcome == "cancel" else (str(target), file_filter)
+
+    def fail_render(_data: object) -> str:
+        raise RuntimeError("HTML 生成の試験障害")
+
+    def interact(dialog: MobileReadingDialog) -> int:
+        if outcome == "empty":
+            dialog.cycle_checks["every_two_months"].setChecked(True)
+        dialog.export_button.click()
+        return 0
+
+    monkeypatch.setattr(service, "refresh", tracked_refresh)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    monkeypatch.setattr(MobileReadingDialog, "exec", interact)
+    if outcome == "generation_error":
+        monkeypatch.setattr(mobile_reading_sheet, "render_sheet_html", fail_render)
+
+    window.mobile_reading_action.trigger()
+
+    assert events == (
+        ["refresh"] if outcome in {"empty", "generation_error"} else ["refresh", "choose"]
+    )
+    assert window.date_edit.date() == QDate(2026, 2, 4)
+    assert _window_reading(window, "plan-4").task_state is PlannedReadingTaskState.AUTO_CLOSED
+    assert overview_data.connection.execute(
+        "SELECT task_state FROM planned_readings WHERE planned_reading_id = 'plan-4'"
+    ).fetchone() == ("auto_closed",)
+    if outcome == "success":
+        assert target.exists()
+        assert len(messages) == 1 and messages[0][0] == "information"
+        assert "保存しました" in messages[0][1]
+    elif outcome == "cancel":
+        assert messages == [] and not target.exists()
+    elif outcome == "empty":
+        assert len(messages) == 1 and messages[0][0] == "warning"
+        assert "出力できる検針枠がありません" in messages[0][2]
+    elif outcome == "generation_error":
+        assert len(messages) == 1 and messages[0][0] == "critical"
+        assert "HTML 生成の試験障害" in caplog.text
+    else:
+        assert len(messages) == 1 and messages[0][0] == "warning"
+        assert "保存できませんでした" in messages[0][2]
+        assert not target.exists()
+
+
+@pytest.mark.parametrize("outcome", ["generation_error", "save_error"])
+def test_mobile_export_and_reload_failures_are_both_reported(
+    outcome: str,
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    overview_data.clock.value = datetime(2026, 2, 4, 22, tzinfo=UTC)
+
+    def fail_refresh() -> None:
+        raise ValidationError("一覧の再読込に失敗しました")
+
+    def fail_render(_data: object) -> str:
+        raise RuntimeError("HTML 生成の試験障害")
+
+    def interact(dialog: MobileReadingDialog) -> int:
+        dialog.export_button.click()
+        return 0
+
+    monkeypatch.setattr(overview_data.services.planned_reading_maintenance, "refresh", fail_refresh)
+    monkeypatch.setattr(MobileReadingDialog, "exec", interact)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *_args: (str(tmp_path / "missing" / "sheet.html"), ""),
+    )
+    if outcome == "generation_error":
+        monkeypatch.setattr(mobile_reading_sheet, "render_sheet_html", fail_render)
+
+    window.mobile_reading_action.trigger()
+
+    assert len(messages) == 2
+    assert messages[0][0] == "warning" and "再読込に失敗" in messages[0][2]
+    if outcome == "generation_error":
+        assert messages[1][0] == "critical" and "予期しないエラー" in messages[1][2]
+        assert "HTML 生成の試験障害" in caplog.text
+    else:
+        assert messages[1][0] == "warning" and "保存できませんでした" in messages[1][2]
+    assert all(kind != "information" for kind, _title, _text in messages)
+    assert window.table_model.rowCount() == 0
+    assert "失敗" in window.statusBar().currentMessage()
+    assert overview_data.connection.execute(
+        "SELECT task_state FROM planned_readings WHERE planned_reading_id = 'plan-4'"
+    ).fetchone() == ("auto_closed",)
+
+
+@pytest.mark.parametrize("source", ["clipboard", "json"])
+def test_mobile_commit_refreshes_main_window_and_keeps_audit_data(
+    source: str,
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    overview_data.clock.value = _at(6)
+    overview_data.services.reading_writer.save_manual_reading(
+        ManualReadingInput("plan-5", ResultStatus.MEASURED, _at(5), Decimal("150"), None),
+        staff_id=STAFF_ID,
+    )
+    window.refresh_planned_readings()
+    assert _window_reading(window, "plan-5").usage_delta == Decimal("20")
+    later_before = overview_data.repository.get_mobile_reading_import_targets(["plan-5"])[
+        "plan-5"
+    ].existing_result
+    assert later_before is not None
+    service = overview_data.services.planned_reading_maintenance
+    refresh = service.refresh
+    calls: list[str] = []
+    payload = _mobile_result_payload()
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8-sig")
+
+    def tracked_refresh() -> None:
+        calls.append("refresh")
+        refresh()
+
+    def interact(dialog: MobileReadingDialog) -> int:
+        dialog.tabs.setCurrentIndex(1)
+        dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+        before = tuple(overview_data.connection.iterdump())
+        if source == "clipboard":
+            QApplication.clipboard().setText(encode_mr1_envelope(payload))
+            dialog.paste_button.click()
+        else:
+            dialog.load_json_button.click()
+        assert dialog.preview_model.rowCount() == 1 and dialog.commit_button.isEnabled()
+        assert tuple(overview_data.connection.iterdump()) == before
+        assert _window_reading(window, "plan-4").result_status is None
+        assert _window_reading(window, "plan-5").usage_delta == Decimal("20")
+        assert "後続実測 1 件" in dialog.summary_label.text()
+        dialog.commit_button.click()
+        assert dialog.preview_model.rowCount() == 0 and not dialog.commit_button.isEnabled()
+        return 0
+
+    monkeypatch.setattr(service, "refresh", tracked_refresh)
+    monkeypatch.setattr(MobileReadingDialog, "exec", interact)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(result_path), ""))
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    window.cycle_tabs.setCurrentIndex(1)
+    _select(window, "plan-4")
+
+    window.mobile_reading_action.trigger()
+
+    assert calls == ["refresh"]
+    reading = _window_reading(window, "plan-4")
+    assert reading.task_state is PlannedReadingTaskState.COMPLETED
+    assert reading.result_status is ResultStatus.MEASURED
+    assert reading.raw_reading == Decimal("140")
+    assert reading.last_reading == Decimal("130") and reading.usage_delta == Decimal("10")
+    later = _window_reading(window, "plan-5")
+    assert later.last_reading == Decimal("140") and later.usage_delta == Decimal("10")
+    assert window.cycle_tabs.currentIndex() == 1
+    assert window._selected_reading() == reading
+    existing = overview_data.repository.get_mobile_reading_import_targets(["plan-4"])[
+        "plan-4"
+    ].existing_result
+    assert existing is not None
+    assert existing.device_id == SHEET_ID and existing.updated_by == "試験担当"
+    assert existing.result_source is ResultSource.MOBILE_HTML and existing.signature
+    later_after = overview_data.repository.get_mobile_reading_import_targets(["plan-5"])[
+        "plan-5"
+    ].existing_result
+    assert later_after is not None
+    assert later_after.raw_reading == later_before.raw_reading
+    assert later_after.signature == later_before.signature
+    assert later_after.updated_by == later_before.updated_by
+    assert later_after.arrival_sequence == later_before.arrival_sequence
+    assert len(messages) == 1 and messages[0][0] == "information"
+    assert "確定 1 件" in messages[0][2]
+
+
+def test_mobile_commit_reload_failure_is_reported_without_losing_the_result(
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = overview_data.services.planned_reading_maintenance
+    refresh = service.refresh
+
+    def fail_refresh() -> None:
+        raise ValidationError("一覧の再読込に失敗しました")
+
+    def interact(dialog: MobileReadingDialog) -> int:
+        dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+        dialog.result_edit.setPlainText(json.dumps(_mobile_result_payload()))
+        dialog.preview_button.click()
+        assert dialog.commit_button.isEnabled()
+        dialog.commit_button.click()
+        return 0
+
+    monkeypatch.setattr(service, "refresh", fail_refresh)
+    monkeypatch.setattr(MobileReadingDialog, "exec", interact)
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+
+    window.mobile_reading_action.trigger()
+
+    assert len(messages) == 2
+    assert messages[0][0] == "warning" and "再読込に失敗" in messages[0][2]
+    assert messages[1][0] == "information" and "確定 1 件" in messages[1][2]
+    assert window.table_model.rowCount() == 0
+    assert "失敗" in window.statusBar().currentMessage()
+    existing = overview_data.repository.get_mobile_reading_import_targets(["plan-4"])[
+        "plan-4"
+    ].existing_result
+    assert existing is not None and existing.raw_reading == Decimal("140")
+    assert existing.signature
+
+    monkeypatch.setattr(service, "refresh", refresh)
+    window.refresh_action.trigger()
+    assert _window_reading(window, "plan-4").raw_reading == Decimal("140")
+
+
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_mobile_dialog_open_errors_are_reported_by_main_window(
+    unexpected: bool,
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        if unexpected:
+            raise RuntimeError("担当者読込の予期しない障害")
+        raise ValidationError("担当者を読み込めません")
+
+    opened: list[bool] = []
+    monkeypatch.setattr(overview_data.services.staff, "list_staff", fail)
+    monkeypatch.setattr(MobileReadingDialog, "exec", lambda _dialog: opened.append(True) or 0)
+
+    window.mobile_reading_action.trigger()
+
+    assert opened == [] and len(messages) == 1
+    if unexpected:
+        assert messages[0][0] == "critical" and "予期しないエラー" in messages[0][2]
+        assert "担当者読込の予期しない障害" in caplog.text
+    else:
+        assert messages[0][0] == "warning" and "担当者を読み込めません" in messages[0][2]
+    assert window.table_model.rowCount() == 7
+
+
+@pytest.mark.parametrize("failure", ["load", "parse", "preview", "commit"])
+def test_mobile_import_errors_opened_from_main_window_invalidate_preview(
+    failure: str,
+    overview_data: OverviewData,
+    window: MainWindow,
+    messages: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+    before = tuple(overview_data.connection.iterdump())
+
+    def fail_preview(_result: object) -> None:
+        raise RuntimeError("プレビューの試験障害")
+
+    def fail_commit(*_args: object, **_kwargs: object) -> None:
+        raise ValidationError("確定の試験障害")
+
+    def interact(dialog: MobileReadingDialog) -> int:
+        dialog.staff_combo.setCurrentIndex(dialog.staff_combo.findData(STAFF_ID))
+        dialog.result_edit.setPlainText(json.dumps(_mobile_result_payload()))
+        dialog.preview_button.click()
+        assert dialog.commit_button.isEnabled()
+        if failure == "load":
+            dialog.load_json_button.click()
+        elif failure == "parse":
+            dialog.result_edit.setPlainText("MR1:abc.00000000:END")
+            dialog.preview_button.click()
+        elif failure == "preview":
+            monkeypatch.setattr(
+                overview_data.services.mobile_reading_import, "preview", fail_preview
+            )
+            dialog.preview_button.click()
+        else:
+            monkeypatch.setattr(overview_data.services.mobile_reading_import, "commit", fail_commit)
+            dialog.commit_button.click()
+        assert dialog.preview_model.rowCount() == 0 and not dialog.commit_button.isEnabled()
+        return 0
+
+    monkeypatch.setattr(
+        overview_data.services.planned_reading_maintenance,
+        "refresh",
+        lambda: calls.append("refresh"),
+    )
+    monkeypatch.setattr(MobileReadingDialog, "exec", interact)
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", lambda *_args: (str(tmp_path / "missing.json"), "")
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+
+    window.mobile_reading_action.trigger()
+
+    assert calls == [] and tuple(overview_data.connection.iterdump()) == before
+    assert window.table_model.rowCount() == 7
+    assert len(messages) == 1
+    if failure == "preview":
+        assert messages[0][0] == "critical" and "予期しないエラー" in messages[0][2]
+        assert "プレビューの試験障害" in caplog.text
+    else:
+        assert messages[0][0] == "warning"
+        if failure == "load":
+            assert "読み込めませんでした" in messages[0][2]
+        elif failure == "parse":
+            assert "欠けているか改変されています" in messages[0][2]
+        elif failure == "commit":
+            assert "確定の試験障害" in messages[0][2]
