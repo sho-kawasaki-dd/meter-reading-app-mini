@@ -21,6 +21,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingTaskState,
     ReadingOverviewRecord,
 )
+from meter_reading_mini.core.previous_reading import PreviousReadingSource
 from meter_reading_mini.core.reading_overview import is_reading_warning
 
 CATEGORY_LABELS = {
@@ -37,6 +38,18 @@ CYCLE_LABELS = {
     ReadingCycle.WEEKLY: "週次",
     ReadingCycle.MONTHLY: "月次",
     ReadingCycle.EVERY_TWO_MONTHS: "隔月",
+}
+CYCLE_GROUP_LABELS = {
+    "daily": "日次",
+    ReadingCycle.WEEKLY.value: "週次",
+    ReadingCycle.MONTHLY.value: "月次",
+    ReadingCycle.EVERY_TWO_MONTHS.value: "隔月",
+}
+PREVIOUS_SOURCE_LABELS = {
+    PreviousReadingSource.MEASURED: "前回実測",
+    PreviousReadingSource.REPLACEMENT_INITIAL: "交換時の新メーター初期値",
+    PreviousReadingSource.REPLACEMENT_NO_INITIAL: "交換時の初期値なし",
+    PreviousReadingSource.NONE: "前回値なし",
 }
 TASK_STATE_LABELS = {
     PlannedReadingTaskState.OPEN: "未消化",

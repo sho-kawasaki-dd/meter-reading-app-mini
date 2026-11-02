@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QDate
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QScrollArea, QWidget
 from pytestqt.qtbot import QtBot
 from reading_service_helpers import DEFINITION_ID, build_services
 from test_mobile_reading_sheet import (
@@ -27,6 +27,7 @@ from meter_reading_mini.ui.dialogs import mobile_reading_dialog
 from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.sheet_save_directory_memory import SheetSaveDirectoryMemory
+from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 
 NOW = datetime(2026, 2, 4, 3, 0, tzinfo=UTC)
 
@@ -95,7 +96,7 @@ def messages(monkeypatch: pytest.MonkeyPatch) -> Messages:
 
 
 def _dialog(data: SheetData, qtbot: QtBot) -> MobileReadingDialog:
-    dialog = MobileReadingDialog(data.services, data.memory)
+    dialog = MobileReadingDialog(data.services, data.memory, StaffSelectionMemory())
     qtbot.addWidget(dialog)
     return dialog
 
@@ -522,12 +523,17 @@ def test_sheet_controls_remain_reachable_at_150_percent(
     dialog.tabs.setCurrentIndex(1)
     result_area = dialog.tabs.widget(1)
     assert isinstance(result_area, QScrollArea)
-    result_page = result_area.widget()
-    assert result_page is not None
-    result_label = result_page.findChild(QLabel)
-    assert result_label is not None and "未実装" in result_label.text()
-    result_area.ensureWidgetVisible(result_label, 0, 0)
-    QApplication.processEvents()
-    center = result_label.mapToGlobal(result_label.rect().center())
-    assert result_area.viewport().rect().contains(result_area.viewport().mapFromGlobal(center))
-    assert dialog.rect().contains(dialog.mapFromGlobal(center))
+    for target in (
+        dialog.paste_button,
+        dialog.load_json_button,
+        dialog.preview_button,
+        dialog.result_edit,
+        dialog.preview_table,
+        dialog.staff_combo,
+        dialog.commit_button,
+    ):
+        result_area.ensureWidgetVisible(target, 0, 0)
+        QApplication.processEvents()
+        center = target.mapToGlobal(target.rect().center())
+        assert result_area.viewport().rect().contains(result_area.viewport().mapFromGlobal(center))
+        assert dialog.rect().contains(dialog.mapFromGlobal(center))
