@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
+
+from meter_reading_mini.ui.atomic_write import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -76,15 +76,7 @@ def save_display_settings(path: Path, settings: DisplaySettings) -> None:
         _FONT_FAMILY_KEY: settings.font_family,
         _FONT_SCALE_KEY: settings.font_scale_percent,
     }
-    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
-            file.write("\n")
-        os.replace(temp_path, path)
-    finally:
-        temp_path.unlink(missing_ok=True)
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def capture_base_font() -> QFont:
