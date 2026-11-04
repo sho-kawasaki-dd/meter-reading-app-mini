@@ -13,7 +13,7 @@ Phase 0 は完了しています。共通基盤・起動オーケストレーシ
 Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロジックを統合し、全品質ゲートが Windows / Ubuntu の必須 CI で成功しました。完了記録と作業計画書の凍結移動も済んでいます。
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
 Phase 3 は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。Windows での手動通し確認と両 OS の必須 CI 成功を確認し、完了記録 PR #29 を merge しました。[完了記録](docs/plan/implemented/フェーズ3_メイン画面・マスタ・PC直接入力・交換UI計画.md) に詳細があります。
-Phase 4 は開発中です。メイン画面の「スマホ検針」からシート出力、結果のプレビュー・一括確定を利用できます。Phase 4 全体の品質ゲート・必須 CI と Android 実機確認は未完了です。
+Phase 4 は実装・Windows ローカル品質ゲート・Android 実機確認まで完了し、Windows / Ubuntu の必須 CI 成功確認と完了記録 PR の merge 待ちです。2026-11-04 に moto g66j 5G (Android 16、Chrome 156.0.8078.79) で検針シートを確認し、Chrome 終了後・端末再起動後・HTML 移動後の入力復元と途中経過 JSON による回復を確認しました。MR1 / 結果 JSON の PC 取込と不正入力の拒否も確認済みです。詳細は[開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)と[Phase 4 作業計画](docs/plan/フェーズ4_スマホ検針ダイアログ・差分プレビュー・一括確定計画.md)を参照してください。
 Phase 5 の機能や配布手順は未実装の計画項目を含みます。各フェーズの状況と実装済み範囲を確認してください。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
@@ -118,8 +118,82 @@ uv run python scripts/create_manual_test_data.py
 ```
 
 作成先はコマンド出力に表示されます。表示された環境変数の設定と起動コマンドを使ってください。
-担当者・複数場所のメーター・日次/週次の測定定義・直近の予定枠に加え、実測・計器不良のサンプル結果を作成します。
-予定枠の過去日数は `--days-back 30` のように変更でき、作成先を指定する場合は `--data-dir <フォルダー>` を使います。
+担当者・複数場所のメーター・日次/週次の測定定義・直近の予定枠を作り、過去枠の既定 50% に PC 入力の実測値を登録します。残りは自動クローズ状態で残します。
+実測の割合は `--measured-percent 80` のように 0〜100% で変更でき、予定枠の過去日数は `--days-back 30`、作成先は `--data-dir <フォルダー>` で指定できます。
+
+### 手動確認用データの作成・削除 (PowerShell)
+
+リポジトリルートで次を実行すると、毎回新しい一時フォルダーに確認用 DB を作成し、
+その DB を使ってアプリを起動します。アプリ終了後は保存先の環境変数を元に戻します。
+
+```powershell
+$dataDir = Join-Path ([System.IO.Path]::GetTempPath()) ("meter-reading-phase4-" + [guid]::NewGuid().ToString('N'))
+
+uv run python .\scripts\create_manual_test_data.py `
+    --data-dir "$dataDir" `
+    --days-back 14 `
+    --measured-percent 50
+
+if ($LASTEXITCODE -ne 0) {
+    throw '手動確認用データの生成に失敗しました。'
+}
+
+$previousDataDir = $env:METER_READING_MINI_DATA_DIR
+try {
+    $env:METER_READING_MINI_DATA_DIR = $dataDir
+    Write-Host "確認用データの保存先: $dataDir"
+    uv run python -X faulthandler -m meter_reading_mini
+    $exitCode = $LASTEXITCODE
+    Write-Host "アプリ終了コード: $exitCode"
+    if ($exitCode -ne 0) {
+        throw "アプリが異常終了しました。終了コード: $exitCode"
+    }
+}
+finally {
+    $env:METER_READING_MINI_DATA_DIR = $previousDataDir
+}
+```
+
+終了時の調査用に `faulthandler` を有効にし、正常終了時も含めて終了コードを表示します。
+異常終了した場合は、終了コードと端末に出力された診断情報、および保存先の `logs/app.log` を確認してください。
+ネイティブクラッシュの診断情報は端末に出力され、`logs/app.log` に残らない場合があります。
+
+「スマホ検針」から HTML を同じ一時フォルダーへ出力し、確定担当者には「確認担当」を選びます。
+MR1・結果 JSON・途中経過 JSON は画面操作で作成します。
+
+確認後はアプリを終了し、必要な記録を退避してから、同じ PowerShell で次を実行します。
+別の PowerShell を使う場合は、先に `$dataDir` へ上記で表示された保存先を設定してください。
+削除対象は OS の一時フォルダー直下にある、この手順の命名規則に一致するフォルダーだけに制限します。
+DB・ログ・出力した HTML / JSON など、対象フォルダー内の全ファイルを削除します。
+スマホや別の場所へコピーしたファイルは削除されません。
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($dataDir)) {
+    throw '削除対象の $dataDir を設定してください。'
+}
+
+$target = Get-Item -LiteralPath $dataDir -Force -ErrorAction Stop
+$pathSeparators = [char[]]@(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+)
+$tempRoot = (Get-Item -LiteralPath ([System.IO.Path]::GetTempPath()) -Force -ErrorAction Stop).FullName.TrimEnd($pathSeparators)
+$targetParent = $target.Parent
+if (
+    -not $target.PSIsContainer -or
+    ($target.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
+    $null -eq $targetParent -or
+    $targetParent.FullName.TrimEnd($pathSeparators) -ne $tempRoot -or
+    $target.Name -cnotmatch '^meter-reading-phase4-[0-9a-f]{32}$'
+) {
+    throw '安全のため削除を中止しました。作成時の一時フォルダーを指定してください。'
+}
+
+Write-Host "削除対象: $($target.FullName)"
+Remove-Item -LiteralPath $target.FullName -Recurse -Force -Confirm -ErrorAction Stop
+```
+
+### Linux での起動
 
 Linux では Qt の OS 依存も必要です。Ubuntu 系の準備例:
 
@@ -170,6 +244,36 @@ uv run python -m meter_reading_mini
 入力の変更・再読込開始・解析 / プレビュー / 確定の失敗時は旧プレビューを破棄し、再プレビューまで確定できません。スマホの参考計算だけを信用せず、確定時に PC 側で入力と DB の状態を再検証・再計算します。
 シート生成処理後は保存失敗・キャンセル時も含めて一覧を再読込し、確定後も結果を反映します。再読込に失敗した場合はエラーを通知し、古い一覧を消去します。
 
+#### シート対象・再検針と PC 入力との競合
+
+シートは指定した業務日 1 日分です。現在業務日以前を指定できますが、過去の未完了枠をまとめて収録する方式ではありません。未来日は指定できません。
+
+| 予定枠の状態 | 新しく出力するシートへの収録 |
+| --- | --- |
+| `open` (未消化) | 対象 |
+| `auto_closed` (自動クローズ) | 対象。後日入力を確定すると `completed` になり、必要な後続使用量も再計算 |
+| `completed` (完了) | 対象外 |
+| `superseded` (差し替え済み) | 対象外。旧枠への取込も拒否 |
+
+**予定枠の完了と、実測できたかどうかは別管理です。** 実測だけでなく、見送り・検針不能 (到達不能)・計器不良 (計器故障) の結果を保存した場合も、予定枠は `completed` になります。これらの枠は新規シートには再掲載されません。再検針して実測値が得られた場合は、PC 直接入力・訂正で更新できます。
+
+一方、完了前に出力した HTML からその枠が自動で消えることはなく、PC の変更もスマホへ自動反映されません。そのシートから結果が戻った場合は、完了済みという理由だけでは拒否せず、同じ予定枠の保存済み結果と入力更新時刻 (`client_updated_at`) を比較します。
+
+| スマホ結果の入力更新時刻と PC の保存済み結果との比較 | 取込時の扱い |
+| --- | --- |
+| 古い | 「古い入力」として除外し、保存済みの値・状態を維持 |
+| 新しい | 業務検証を通れば「採用: 上書き」。確定時にスマホの値・状態へ置換 |
+| 同時刻 (UTC 秒単位に正規化後) | 内容が異なれば後着のスマホ結果を採用 |
+| 更新時刻・記録日時・結果状態・測定値・構造化入力・備考がすべて一致 | 重複として扱い、更新しない |
+
+- この判定は、PC で実測値を登録した場合も、検針不能・計器不良を登録した場合も同じです。PC の結果を永久に優先するロックではありません。
+- 例: PC で 10:00 に検針不能を保存した後、スマホの最終更新が 9:50 なら除外します。10:10 に実測値を入力・確認した結果なら、業務検証後に上書きできます (端末の時計が正しい場合)。
+- 比較するのは取込時刻・HTML 出力時刻・記録日時ではなく、入力更新時刻です。スマホでは入力編集や確認操作でも更新されるため、端末の時計ずれに注意してください。
+- PC 直接入力・訂正は業務検証を通れば常に採用し、更新時刻には「PC の現在時刻」と「保存済み更新時刻 + 1 秒」の遅い方を設定します。
+- 取込時の使用量は PC の最新 DB を基に再計算します。プレビュー後に関連 DB 状態が変わった場合は確定を中止し、再プレビューを求めます。古い入力・重複・拒否が混在しても、採用行が 1 件以上あれば採用行のみ確定できます。
+
+仕様の詳細は、[開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)の 5.1「コア計算・データ整合性ルール」と 5.2.1「検針シート HTML の出力」を参照してください。
+
 #### 途中保存と回復
 
 - IndexedDB に `sheet_id` ごとの途中状態を自動保存します。`localStorage` は使用しません。
@@ -181,9 +285,10 @@ uv run python -m meter_reading_mini
 - HTML・結果・途中経過 JSON は業務情報を含むため安全に保管し、不要になったら手動で削除します。
   結果出力・確定後も自動削除しません。
 
-開発計画書にある Android の復元条件は、在庫アプリでの実機確認を基準にしたものです。
-検針アプリ自身の実機確認済み実績ではありません。検針シートでも実機検証を行い、保証範囲を確定します。
-別ブラウザ・プライベートモード・HTML 移動後の自動復元や、ブラウザデータ消去後の回復は保証しません。
+検針アプリ自身の実機確認では、2026-11-04 に moto g66j 5G (Android 16、Chrome 156.0.8078.79) で、
+Quick Share → Files → Chrome の経路を使い、Chrome 終了後・端末再起動後・端末内で HTML を別フォルダーへ移動した後の自動復元と、
+途中経過 JSON による退避・回復を確認しました。この条件以外の端末・ブラウザ・プライベートモードや、
+ブラウザデータ消去後の回復は保証しません。
 アプリ更新によって配布済み HTML やその途中データが自動更新されることもありません。
 
 ### メーター交換と使用量計算
@@ -359,11 +464,11 @@ uv run python -m meter_reading_mini
 | Phase 1 | 完了 | 標準 sqlite3 Repository と既存コア業務ロジックの統合 |
 | Phase 2 | 完了 (2026-10-28) | 単一 HTML 検針シート・途中保存・MR1 / JSON パーサと DB 同期のブラウザ往復テスト |
 | Phase 3 | 完了 (2026-11-01、両 OS 必須 CI 成功・PR #29 merge 済み) | メイン画面・マスタ・設定・PC 直接入力・交換 UI |
-| Phase 4 | 開発中 | スマホ検針ダイアログ・プレビュー・一括確定 |
+| Phase 4 | 実装・実機確認済み (2026-11-04、必須 CI 待ち) | スマホ検針ダイアログ・プレビュー・一括確定 |
 | Phase 5 | 予定 | 集計・出力・バックアップ / 復元・インストーラー |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。
-Phase 2 は Playwright によるブラウザ検証まで完了しています。Android 実機での検証は未実施で、端末・Chrome の版・起動経路・HTML 移動時の復元可否を Phase 4 以降に確認します。
+Phase 2 の完了条件は Playwright によるブラウザ検証までです。Android 実機確認は Phase 4 で実施し、端末・OS・Chrome・起動経路と確認結果を開発計画書に記録しています。
 
 ## commit / PR / merge 方針
 

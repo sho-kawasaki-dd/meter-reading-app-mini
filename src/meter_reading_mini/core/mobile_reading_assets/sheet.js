@@ -1417,19 +1417,50 @@
     resultExportText.select();
   }
 
+  function selectExportText(textarea) {
+    textarea.hidden = false;
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+  }
+
+  async function copyExportText(textarea) {
+    var clipboardError;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(textarea.value);
+        return;
+      } catch (error) {
+        clipboardError = error;
+      }
+    } else {
+      clipboardError = new Error("この環境ではクリップボードを利用できません。");
+    }
+
+    selectExportText(textarea);
+    try {
+      if (typeof document.execCommand === "function" && document.execCommand("copy")) {
+        return;
+      }
+    } catch (error) {
+      clipboardError = new Error(
+        (clipboardError && clipboardError.message ? clipboardError.message : String(clipboardError)) +
+          " 代替コピーにも失敗しました: " +
+          (error && error.message ? error.message : String(error))
+      );
+    }
+    throw clipboardError;
+  }
+
   async function copyResultCode() {
     try {
       var code = resultCode(createResultPayload());
       showResultText(code);
-      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
-        throw new Error("この環境ではクリップボードを利用できません。");
-      }
-      await navigator.clipboard.writeText(code);
+      await copyExportText(resultExportText);
       setResultFeedback("MR1 結果コードをクリップボードにコピーしました。");
     } catch (error) {
       if (resultExportText.value) {
-        resultExportText.focus();
-        resultExportText.select();
+        selectExportText(resultExportText);
       }
       setResultFeedback(
         "コピーできませんでした: " +
@@ -2359,14 +2390,10 @@
   async function copyDraftJson() {
     showDraftJson();
     try {
-      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
-        throw new Error("この環境ではクリップボードを利用できません。");
-      }
-      await navigator.clipboard.writeText(draftExportText.value);
+      await copyExportText(draftExportText);
       setDraftFeedback("途中経過 JSON をクリップボードにコピーしました。");
     } catch (error) {
-      draftExportText.focus();
-      draftExportText.select();
+      selectExportText(draftExportText);
       setDraftFeedback(
         "コピーできませんでした: " +
           (error && error.message ? error.message : String(error)) +

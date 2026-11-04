@@ -187,7 +187,8 @@ def test_browser_mr1_and_json_round_trip_through_sync(
         """() => Object.defineProperty(navigator, "clipboard", {
           configurable: true,
           value: { writeText: () => Promise.reject(new Error("clipboard unavailable")) }
-        })"""
+        });
+        document.execCommand = () => false;"""
     )
     page.locator("#result-copy").click()
     expect(page.locator("#result-feedback")).to_contain_text("コピーできませんでした")

@@ -19,7 +19,6 @@ from meter_reading_mini.core.contract_models import (
     Category,
     Purpose,
     ReadingCycle,
-    ReadingSession,
     ResultStatus,
     ValueSchema,
 )
@@ -35,6 +34,8 @@ from meter_reading_mini.db.migrations import open_database
 
 MAX_DAYS_BACK = 90
 MIN_DAYS_BACK = 3
+MAX_MEASURED_PERCENT = 100
+MIN_MEASURED_PERCENT = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +51,18 @@ def create_manual_test_data(
     data_dir: Path,
     *,
     days_back: int = 14,
+    measured_percent: int = 50,
 ) -> ManualTestDataSummary:
     """新しい DB に手動確認用マスタ・予定枠・一部の結果を作成する。"""
 
     if not MIN_DAYS_BACK <= days_back <= MAX_DAYS_BACK:
         raise ValueError(
             f"days_back は {MIN_DAYS_BACK} から {MAX_DAYS_BACK} の範囲で指定してください。"
+        )
+    if not MIN_MEASURED_PERCENT <= measured_percent <= MAX_MEASURED_PERCENT:
+        raise ValueError(
+            "measured_percent は "
+            f"{MIN_MEASURED_PERCENT} から {MAX_MEASURED_PERCENT} の範囲で指定してください。"
         )
 
     resolved_dir = data_dir.expanduser().resolve()
@@ -122,7 +129,7 @@ def create_manual_test_data(
                     multiplier=Decimal("1"),
                     decimal_places=2,
                     warning_threshold=Decimal("10"),
-                    rollover_value=Decimal("99999"),
+                    rollover_value=Decimal("100000"),
                     calculation_method=CalculationMethod.DELTA,
                     reading_cycle=ReadingCycle.DAILY_1X,
                     purpose=Purpose.OPERATIONAL,
@@ -141,7 +148,7 @@ def create_manual_test_data(
                     multiplier=Decimal("1"),
                     decimal_places=2,
                     warning_threshold=Decimal("5"),
-                    rollover_value=None,
+                    rollover_value=Decimal("1000000"),
                     calculation_method=CalculationMethod.DELTA,
                     reading_cycle=ReadingCycle.DAILY_2X,
                     purpose=Purpose.OPERATIONAL,
@@ -194,11 +201,9 @@ def create_manual_test_data(
         _save_example_readings(
             connection,
             context,
-            definition_ids=tuple(
-                definition.measurement_definition_id for definition in definitions
-            ),
             staff_id=staff.staff_id,
             today=today,
+            measured_percent=measured_percent,
         )
 
         task_states = {
@@ -228,78 +233,59 @@ def _save_example_readings(
     connection: sqlite3.Connection,
     context: AppContext,
     *,
-    definition_ids: tuple[str, ...],
     staff_id: str,
     today: date,
+    measured_percent: int,
 ) -> None:
-    writer = context.reading_writer
-    electricity_definition_id, water_definition_id, *_ = definition_ids
+    slots = connection.execute(
+        "SELECT p.planned_reading_id, p.measurement_definition_id, "
+        "p.business_date, p.reading_session, d.value_schema "
+        "FROM planned_readings AS p "
+        "JOIN measurement_definitions AS d "
+        "ON d.measurement_definition_id = p.measurement_definition_id "
+        "WHERE p.business_date < ? AND p.task_state = 'auto_closed' "
+        "ORDER BY p.business_date, p.reading_session, p.planned_reading_id",
+        (today.isoformat(),),
+    ).fetchall()
+    measured_count = (len(slots) * measured_percent + 50) // 100
+    selected_slots = (
+        [slots[((index + 1) * len(slots) - 1) // measured_count] for index in range(measured_count)]
+        if measured_count
+        else []
+    )
 
-    for days_ago, value in ((3, "1000"), (2, "1012.5")):
-        business_date = today - timedelta(days=days_ago)
-        planned_reading_id = _find_planned_reading(
-            connection,
-            electricity_definition_id,
-            business_date,
-            ReadingSession.SESSION_0800,
-        )
+    writer = context.reading_writer
+    readings_per_definition: dict[str, int] = {}
+    for row in selected_slots:
+        planned_reading_id = str(row[0])
+        definition_id = str(row[1])
+        business_date = date.fromisoformat(str(row[2]))
+        reading_session = time.fromisoformat(str(row[3]))
+        value_schema = ValueSchema(str(row[4]))
+        reading_number = readings_per_definition.get(definition_id, 0)
+        readings_per_definition[definition_id] = reading_number + 1
+        is_power_factor = value_schema is ValueSchema.POWER_FACTOR_PERCENT_PHASE
         writer.save_manual_reading(
             ManualReadingInput(
                 planned_reading_id=planned_reading_id,
                 result_status=ResultStatus.MEASURED,
                 recorded_at=datetime.combine(
                     business_date,
-                    time(9),
+                    reading_session,
                     tzinfo=DEFAULT_APP_TIMEZONE,
                 ),
-                raw_reading=Decimal(value),
-                structured_payload_json=None,
-                note="手動確認用のサンプル実測",
+                raw_reading=(
+                    None
+                    if is_power_factor
+                    else Decimal("1000") + Decimal(reading_number) * Decimal("1.25")
+                ),
+                structured_payload_json=(
+                    {"percent": "95", "phase": "lag"} if is_power_factor else None
+                ),
+                note="手動確認用のサンプル実測 (PC入力)",
             ),
             staff_id=staff_id,
         )
-
-    fault_date = today - timedelta(days=1)
-    water_reading_id = _find_planned_reading(
-        connection,
-        water_definition_id,
-        fault_date,
-        ReadingSession.SESSION_0800,
-    )
-    context.reading_writer.save_manual_reading(
-        ManualReadingInput(
-            planned_reading_id=water_reading_id,
-            result_status=ResultStatus.METER_FAULT,
-            recorded_at=datetime.combine(
-                fault_date,
-                time(9),
-                tzinfo=DEFAULT_APP_TIMEZONE,
-            ),
-            raw_reading=None,
-            structured_payload_json=None,
-            note="手動確認用の計器不良サンプル",
-        ),
-        staff_id=staff_id,
-    )
-
-
-def _find_planned_reading(
-    connection: sqlite3.Connection,
-    definition_id: str,
-    business_date: date,
-    reading_session: ReadingSession,
-) -> str:
-    row = connection.execute(
-        "SELECT planned_reading_id FROM planned_readings "
-        "WHERE measurement_definition_id = ? AND business_date = ? AND reading_session = ?",
-        (definition_id, business_date.isoformat(), reading_session.value),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError(
-            "サンプル結果用の予定枠が見つかりません: "
-            f"{definition_id}, {business_date.isoformat()}, {reading_session.value}"
-        )
-    return str(row[0])
 
 
 def _format_launch_instructions(data_dir: Path) -> str:
@@ -327,21 +313,37 @@ def main() -> None:
         default=14,
         help=f"予定枠を補完する過去日数 ({MIN_DAYS_BACK}〜{MAX_DAYS_BACK}、既定: 14)",
     )
+    parser.add_argument(
+        "--measured-percent",
+        type=int,
+        default=50,
+        help="過去の自動クローズ枠のうち PC 入力の実測にする割合 (0〜100、既定: 50)",
+    )
     args = parser.parse_args()
     if not MIN_DAYS_BACK <= args.days_back <= MAX_DAYS_BACK:
         parser.error(
             f"--days-back は {MIN_DAYS_BACK} から {MAX_DAYS_BACK} の範囲で指定してください。"
         )
+    if not MIN_MEASURED_PERCENT <= args.measured_percent <= MAX_MEASURED_PERCENT:
+        parser.error(
+            "--measured-percent は "
+            f"{MIN_MEASURED_PERCENT} から {MAX_MEASURED_PERCENT} の範囲で指定してください。"
+        )
     data_dir = args.data_dir or Path(tempfile.mkdtemp(prefix="meter-reading-mini-manual-"))
 
     try:
-        summary = create_manual_test_data(data_dir, days_back=args.days_back)
+        summary = create_manual_test_data(
+            data_dir,
+            days_back=args.days_back,
+            measured_percent=args.measured_percent,
+        )
     except FileExistsError as error:
         parser.error(str(error))
 
     print(f"手動確認用 DB を作成しました: {summary.data_dir / 'meter_reading.db'}")
     print(f"測定定義: {summary.definition_count} 件")
     print(f"予定枠: {summary.planned_reading_count} 件")
+    print(f"実測入力割合: {args.measured_percent}%")
     print(f"結果: {summary.saved_result_count} 件")
     print(f"枠状態: {summary.task_states}")
     print("次のコマンドで起動してください:")

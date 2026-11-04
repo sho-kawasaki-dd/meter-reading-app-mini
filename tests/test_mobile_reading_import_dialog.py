@@ -939,7 +939,8 @@ def test_generated_html_round_trip_through_dialog_and_database(
         """() => Object.defineProperty(navigator, "clipboard", {
           configurable: true,
           value: { writeText: () => Promise.reject(new Error("clipboard unavailable")) }
-        })"""
+        });
+        document.execCommand = () => false;"""
     )
     page.locator("#result-copy").tap()
     expect(page.locator("#result-feedback")).to_contain_text("手動でコピー")
