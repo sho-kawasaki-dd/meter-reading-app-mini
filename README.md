@@ -142,15 +142,21 @@ $previousDataDir = $env:METER_READING_MINI_DATA_DIR
 try {
     $env:METER_READING_MINI_DATA_DIR = $dataDir
     Write-Host "確認用データの保存先: $dataDir"
-    uv run python -m meter_reading_mini
-    if ($LASTEXITCODE -ne 0) {
-        throw 'アプリが異常終了しました。'
+    uv run python -X faulthandler -m meter_reading_mini
+    $exitCode = $LASTEXITCODE
+    Write-Host "アプリ終了コード: $exitCode"
+    if ($exitCode -ne 0) {
+        throw "アプリが異常終了しました。終了コード: $exitCode"
     }
 }
 finally {
     $env:METER_READING_MINI_DATA_DIR = $previousDataDir
 }
 ```
+
+終了時の調査用に `faulthandler` を有効にし、正常終了時も含めて終了コードを表示します。
+異常終了した場合は、終了コードと端末に出力された診断情報、および保存先の `logs/app.log` を確認してください。
+ネイティブクラッシュの診断情報は端末に出力され、`logs/app.log` に残らない場合があります。
 
 「スマホ検針」から HTML を同じ一時フォルダーへ出力し、確定担当者には「確認担当」を選びます。
 MR1・結果 JSON・途中経過 JSON は画面操作で作成します。
