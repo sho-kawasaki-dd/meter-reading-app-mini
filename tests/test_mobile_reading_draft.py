@@ -400,11 +400,68 @@ def test_copy_succeeds_with_the_exported_json(sheet_browser: SheetBrowser) -> No
 
 
 @pytest.mark.parametrize(
+    ("button_id", "textarea_id", "feedback_id"),
+    [
+        ("result-copy", "result-export-text", "result-feedback"),
+        ("draft-copy", "draft-export-text", "draft-feedback"),
+    ],
+)
+def test_copy_falls_back_to_exec_command(
+    sheet_browser: SheetBrowser,
+    button_id: str,
+    textarea_id: str,
+    feedback_id: str,
+) -> None:
+    page = open_sheet(sheet_browser)
+    page.locator(SLOT_1_RAW).fill("5.5")
+    page.locator(".confirm").click()
+    wait_saved(page)
+    page.evaluate(
+        """
+        () => {
+          Object.defineProperty(navigator, "clipboard", {
+            configurable: true,
+            value: {
+              writeText: async () => {
+                throw new DOMException("Write permission denied", "NotAllowedError");
+              }
+            }
+          });
+          document.execCommand = command => {
+            const textarea = document.activeElement;
+            window.__fallbackCopy = {
+              command,
+              text: textarea.value,
+              selectionStart: textarea.selectionStart,
+              selectionEnd: textarea.selectionEnd,
+            };
+            return true;
+          };
+        }
+        """
+    )
+
+    page.locator(f"#{button_id}").click()
+
+    expect(page.locator(f"#{feedback_id}")).to_contain_text("コピーしました")
+    copied = page.evaluate("window.__fallbackCopy")
+    exported = page.locator(f"#{textarea_id}").input_value()
+    assert copied == {
+        "command": "copy",
+        "text": exported,
+        "selectionStart": 0,
+        "selectionEnd": len(exported),
+    }
+
+
+@pytest.mark.parametrize(
     "script",
     [
-        "Object.defineProperty(navigator, 'clipboard', {configurable: true, value: undefined});",
+        "Object.defineProperty(navigator, 'clipboard', {configurable: true, value: undefined}); "
+        "document.execCommand = () => false;",
         "Object.defineProperty(navigator, 'clipboard', {configurable: true, value: "
-        "{ writeText: async () => { throw new DOMException('拒否', 'NotAllowedError'); } }});",
+        "{ writeText: async () => { throw new DOMException('拒否', 'NotAllowedError'); } }}); "
+        "document.execCommand = () => false;",
     ],
     ids=["unavailable", "rejected"],
 )
