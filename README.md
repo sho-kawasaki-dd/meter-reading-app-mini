@@ -121,6 +121,68 @@ uv run python scripts/create_manual_test_data.py
 担当者・複数場所のメーター・日次/週次の測定定義・直近の予定枠を作り、過去枠の既定 50% に PC 入力の実測値を登録します。残りは自動クローズ状態で残します。
 実測の割合は `--measured-percent 80` のように 0〜100% で変更でき、予定枠の過去日数は `--days-back 30`、作成先は `--data-dir <フォルダー>` で指定できます。
 
+### 手動確認用データの作成・削除 (PowerShell)
+
+リポジトリルートで次を実行すると、毎回新しい一時フォルダーに確認用 DB を作成し、
+その DB を使ってアプリを起動します。アプリ終了後は保存先の環境変数を元に戻します。
+
+```powershell
+$dataDir = Join-Path ([System.IO.Path]::GetTempPath()) ("meter-reading-phase4-" + [guid]::NewGuid().ToString('N'))
+
+uv run python .\scripts\create_manual_test_data.py `
+    --data-dir "$dataDir" `
+    --days-back 14 `
+    --measured-percent 50
+
+if ($LASTEXITCODE -ne 0) {
+    throw '手動確認用データの生成に失敗しました。'
+}
+
+$previousDataDir = $env:METER_READING_MINI_DATA_DIR
+try {
+    $env:METER_READING_MINI_DATA_DIR = $dataDir
+    Write-Host "確認用データの保存先: $dataDir"
+    uv run python -m meter_reading_mini
+    if ($LASTEXITCODE -ne 0) {
+        throw 'アプリが異常終了しました。'
+    }
+}
+finally {
+    $env:METER_READING_MINI_DATA_DIR = $previousDataDir
+}
+```
+
+「スマホ検針」から HTML を同じ一時フォルダーへ出力し、確定担当者には「確認担当」を選びます。
+MR1・結果 JSON・途中経過 JSON は画面操作で作成します。
+
+確認後はアプリを終了し、必要な記録を退避してから、同じ PowerShell で次を実行します。
+別の PowerShell を使う場合は、先に `$dataDir` へ上記で表示された保存先を設定してください。
+削除対象は OS の一時フォルダー直下にある、この手順の命名規則に一致するフォルダーだけに制限します。
+DB・ログ・出力した HTML / JSON など、対象フォルダー内の全ファイルを削除します。
+スマホや別の場所へコピーしたファイルは削除されません。
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($dataDir)) {
+    throw '削除対象の $dataDir を設定してください。'
+}
+
+$target = Get-Item -LiteralPath $dataDir -Force -ErrorAction Stop
+$tempRoot = (Get-Item -LiteralPath ([System.IO.Path]::GetTempPath()) -Force -ErrorAction Stop).FullName
+if (
+    -not $target.PSIsContainer -or
+    ($target.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
+    $target.Parent.FullName -ne $tempRoot -or
+    $target.Name -cnotmatch '^meter-reading-phase4-[0-9a-f]{32}$'
+) {
+    throw '安全のため削除を中止しました。作成時の一時フォルダーを指定してください。'
+}
+
+Write-Host "削除対象: $($target.FullName)"
+Remove-Item -LiteralPath $target.FullName -Recurse -Force -Confirm -ErrorAction Stop
+```
+
+### Linux での起動
+
 Linux では Qt の OS 依存も必要です。Ubuntu 系の準備例:
 
 ```sh
