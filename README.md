@@ -167,11 +167,17 @@ if ([string]::IsNullOrWhiteSpace($dataDir)) {
 }
 
 $target = Get-Item -LiteralPath $dataDir -Force -ErrorAction Stop
-$tempRoot = (Get-Item -LiteralPath ([System.IO.Path]::GetTempPath()) -Force -ErrorAction Stop).FullName
+$pathSeparators = [char[]]@(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar
+)
+$tempRoot = (Get-Item -LiteralPath ([System.IO.Path]::GetTempPath()) -Force -ErrorAction Stop).FullName.TrimEnd($pathSeparators)
+$targetParent = $target.Parent
 if (
     -not $target.PSIsContainer -or
     ($target.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
-    $target.Parent.FullName -ne $tempRoot -or
+    $null -eq $targetParent -or
+    $targetParent.FullName.TrimEnd($pathSeparators) -ne $tempRoot -or
     $target.Name -cnotmatch '^meter-reading-phase4-[0-9a-f]{32}$'
 ) {
     throw '安全のため削除を中止しました。作成時の一時フォルダーを指定してください。'
