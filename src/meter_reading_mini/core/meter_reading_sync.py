@@ -391,9 +391,10 @@ class MeterReadingSyncService:
                     )
                     outcome = self._replacement_repository.upsert_replacement(replacement_request)
                     if outcome.accepted:
-                        self._replacement_reflection_repository.reflect_replacement(
-                            replacement_request
-                        )
+                        if outcome.disposition is UpsertDisposition.INSERTED:
+                            self._replacement_reflection_repository.reflect_replacement(
+                                replacement_request
+                            )
                         self._reading_repository.recalculate_after_replacement(replacement_request)
             except DomainError as exc:
                 logger.warning(

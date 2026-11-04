@@ -503,6 +503,136 @@ def test_replacement_is_atomic_and_recalculates_delayed_new_meter_results(
     assert repository.get_meter_master(METER_ID).is_active is True
 
 
+def test_replacement_resend_updates_boundary_readings_without_reapplying_exchange(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, service = build_services(
+        conn,
+        repository,
+        multiplier=Decimal("2"),
+        rollover_value=Decimal("100"),
+    )
+    new_meter_id = "replacement-resend-meter"
+    with transaction(conn):
+        repository.create_meter_master(
+            MeterMasterCreateRequest(
+                meter_id=new_meter_id,
+                location_id=LOCATION_ID,
+                location_name="試験場所",
+                meter_name="交換後メーター",
+                category=Category.WATER,
+            )
+        )
+    create_plan(repository, "resend-old-before", _scheduled(4))
+    create_plan(repository, "resend-old-slot", _scheduled(6))
+    create_plan(repository, "resend-new-late", _scheduled(7), meter_id=new_meter_id)
+    create_plan(repository, "resend-new-following", _scheduled(8), meter_id=new_meter_id)
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "resend-old-before",
+            ResultStatus.MEASURED,
+            _scheduled(4),
+            Decimal("90"),
+            None,
+        ),
+        staff_id="1",
+    )
+    with transaction(conn):
+        _seed_delayed_reading(repository, "resend-new-late", 7, "7")
+        _seed_delayed_reading(repository, "resend-new-following", 8, "9")
+
+    original = {
+        "replacement_event_id": "replace-resend",
+        "location_id": LOCATION_ID,
+        "old_meter_id": METER_ID,
+        "new_meter_id": new_meter_id,
+        "replaced_at": "2026-02-04T05:30:00+00:00",
+        "client_updated_at": "2026-02-04T05:31:00+00:00",
+        "old_final_reading": "5",
+        "new_initial_reading": "95",
+        "updated_by": "入力側の担当者",
+        "note": "初回登録",
+    }
+    initial = MeterReplacementSubmission.model_validate(original)
+    first = service.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[initial]),
+        confirmation_context(),
+    )
+    assert first.accepted_replacement_items == 1
+
+    duplicate = service.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[initial]),
+        confirmation_context(),
+    )
+    assert duplicate.accepted_replacement_items == 0
+    assert duplicate.ignored_replacement_items[0].code is SyncItemIgnoreCode.DUPLICATE_SUBMISSION
+    assert conn.execute(
+        "SELECT arrival_sequence, note FROM replacement_events "
+        "WHERE replacement_event_id = 'replace-resend'"
+    ).fetchone() == (1, "初回登録")
+
+    corrected = MeterReplacementSubmission.model_validate(
+        original
+        | {
+            "client_updated_at": "2026-02-04T05:32:00+00:00",
+            "old_final_reading": "6",
+            "new_initial_reading": "97",
+            "note": "読値訂正",
+        }
+    )
+    response = service.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[corrected]),
+        confirmation_context(),
+    )
+    assert response.accepted_replacement_items == 1
+    assert conn.execute(
+        "SELECT location_id, old_meter_id, new_meter_id, replaced_at, client_updated_at, "
+        "note, arrival_sequence FROM replacement_events "
+        "WHERE replacement_event_id = 'replace-resend'"
+    ).fetchone() == (
+        LOCATION_ID,
+        METER_ID,
+        new_meter_id,
+        "2026-02-04 05:30:00",
+        "2026-02-04 05:32:00",
+        "読値訂正",
+        2,
+    )
+    assert conn.execute(
+        "SELECT old_final_reading, new_initial_reading, previous_measured_reading, "
+        "old_meter_usage_delta FROM replacement_boundaries "
+        "WHERE replacement_event_id = 'replace-resend'"
+    ).fetchone() == ("6", "97", "90", "32")
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions "
+        "WHERE planned_reading_id = 'resend-new-late'"
+    ).fetchone() == ("97", "20")
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions "
+        "WHERE planned_reading_id = 'resend-new-following'"
+    ).fetchone() == ("7", "4")
+    assert conn.execute(
+        "SELECT COUNT(*) FROM meter_assignments WHERE measurement_definition_id = ? "
+        "AND meter_id = ?",
+        (DEFINITION_ID, new_meter_id),
+    ).fetchone() == (1,)
+
+    invalid_structure = MeterReplacementSubmission.model_validate(
+        corrected.model_dump(mode="python")
+        | {"client_updated_at": "2026-02-04T05:33:00+00:00", "new_meter_id": "other-meter"}
+    )
+    rejected = service.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[invalid_structure]),
+        confirmation_context(),
+    )
+    assert len(rejected.rejected_replacement_items) == 1
+    assert conn.execute(
+        "SELECT new_meter_id, client_updated_at FROM replacement_events "
+        "WHERE replacement_event_id = 'replace-resend'"
+    ).fetchone() == (new_meter_id, "2026-02-04 05:32:00")
+
+
 def test_missing_replacement_initial_value_starts_new_meter_usage_at_zero(
     file_database_repository: tuple,
 ) -> None:
@@ -832,13 +962,6 @@ def test_unexpected_boundary_update_error_rolls_back_whole_exchange_batch(
         ),
         staff_id="1",
     )
-    original_update = repository.update_replacement_boundary_calculation
-
-    def update_then_fail(update: ReplacementBoundaryCalculationUpdate) -> None:
-        original_update(update)
-        raise RuntimeError("交換境界保存中の予期しない障害")
-
-    monkeypatch.setattr(repository, "update_replacement_boundary_calculation", update_then_fail)
     replacement = MeterReplacementSubmission.model_validate(
         {
             "replacement_event_id": "replace-boundary-failure",
@@ -850,26 +973,49 @@ def test_unexpected_boundary_update_error_rolls_back_whole_exchange_batch(
             "old_final_reading": "100",
             "new_initial_reading": "5",
             "updated_by": "入力側の担当者",
+            "note": "初回",
+        }
+    )
+    initial = service.sync(
+        MeterReadingSyncRequest(reading_items=[], replacement_items=[replacement]),
+        confirmation_context(),
+    )
+    assert initial.accepted_replacement_items == 1
+
+    original_update = repository.update_replacement_boundary_calculation
+
+    def update_then_fail(update: ReplacementBoundaryCalculationUpdate) -> None:
+        original_update(update)
+        raise RuntimeError("交換境界保存中の予期しない障害")
+
+    monkeypatch.setattr(repository, "update_replacement_boundary_calculation", update_then_fail)
+    corrected = MeterReplacementSubmission.model_validate(
+        replacement.model_dump(mode="python")
+        | {
+            "client_updated_at": "2026-02-04T05:32:00+00:00",
+            "old_final_reading": "101",
+            "new_initial_reading": "6",
+            "note": "訂正",
         }
     )
 
     with pytest.raises(RuntimeError, match="交換境界保存中"):
         service.sync(
-            MeterReadingSyncRequest(reading_items=[], replacement_items=[replacement]),
+            MeterReadingSyncRequest(reading_items=[], replacement_items=[corrected]),
             confirmation_context(),
         )
 
     assert conn.execute(
-        "SELECT COUNT(*) FROM replacement_events "
+        "SELECT client_updated_at, note, arrival_sequence FROM replacement_events "
         "WHERE replacement_event_id = 'replace-boundary-failure'"
-    ).fetchone() == (0,)
+    ).fetchone() == ("2026-02-04 05:31:00", "初回", 1)
     assert conn.execute(
-        "SELECT COUNT(*) FROM replacement_boundaries "
-        "WHERE replacement_event_id = 'replace-boundary-failure'"
-    ).fetchone() == (0,)
+        "SELECT old_final_reading, new_initial_reading, old_meter_usage_delta "
+        "FROM replacement_boundaries WHERE replacement_event_id = 'replace-boundary-failure'"
+    ).fetchone() == ("100", "5", "10")
     old_slot = repository.get_planned_reading("plan-boundary-failure-open")
     assert old_slot is not None
-    assert old_slot.task_state.value == "open"
+    assert old_slot.task_state.value == "superseded"
     assignment = repository.get_meter_assignment(DEFINITION_ID, _scheduled(6))
     assert assignment is not None
-    assert assignment.meter_id == METER_ID
+    assert assignment.meter_id == new_meter_id
