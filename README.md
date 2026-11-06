@@ -14,7 +14,7 @@ Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロ�
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
 Phase 3 は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。Windows での手動通し確認と両 OS の必須 CI 成功を確認し、完了記録 PR #29 を merge しました。[完了記録](docs/plan/implemented/フェーズ3_メイン画面・マスタ・PC直接入力・交換UI計画.md) に詳細があります。
 Phase 4 は 2026-11-04 に完了しました。実装・Windows ローカル品質ゲート・Android 実機確認を終え、PR #34・#35 で Windows / Ubuntu の必須 CI 成功後に完了記録を merge しています。moto g66j 5G (Android 16、Chrome 156.0.8078.79) で検針シートを確認し、Chrome 終了後・端末再起動後・HTML 移動後の入力復元と途中経過 JSON による回復を確認しました。MR1 / 結果 JSON の PC 取込と不正入力の拒否も確認済みです。詳細は[開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)と[Phase 4 完了記録](docs/plan/implemented/フェーズ4_スマホ検針ダイアログ・差分プレビュー・一括確定計画.md)を参照してください。
-Phase 5 は進行中です。スキーマ v4、集計式マスタの Service・版管理と復元用の整合性検査を実装しています。集計計算・式編集画面・ダッシュボード・復元画面・配布手順は未実装です。
+Phase 5 は進行中です。スキーマ v4、集計式マスタの Service・版管理、期間集計 Service と復元用の整合性検査を実装しています。集計 Service は保存済み業務日を使い、式の版別寄与・交換境界・欠測理由を返します。式編集画面・ダッシュボード・CSV / PNG 出力・復元画面・配布手順は未実装です。Windows / Ubuntu の必須 CI 成功は未確認です。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
 - **開発規約**: [Copilot 開発ガイドライン](.github/copilot-instructions.md)

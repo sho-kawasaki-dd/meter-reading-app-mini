@@ -44,6 +44,8 @@ from meter_reading_mini.core.errors import (
     ValidationError,
 )
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    AggregationBoundaryRecord,
+    AggregationReadingRecord,
     AssignmentCalculationCorrectionRecord,
     AssignmentCalculationTerms,
     AssignmentMeasuredReadingRecord,
@@ -621,6 +623,99 @@ class SQLiteRepository:
             replace(version, terms=tuple(terms[effective_date]))
             for effective_date, version in versions.items()
         ]
+
+    def _aggregation_rows(
+        self, query: str, measurement_definition_ids: Collection[str]
+    ) -> list[tuple[Any, ...]]:
+        ids = sorted(set(measurement_definition_ids))
+        rows: list[tuple[Any, ...]] = []
+        for offset in range(0, len(ids), 500):
+            batch = ids[offset : offset + 500]
+            placeholders = ", ".join("?" for _ in batch)
+            rows.extend(self._conn.execute(f"{query} ({placeholders})", tuple(batch)).fetchall())
+        return rows
+
+    def list_aggregation_readings(
+        self, measurement_definition_ids: Collection[str]
+    ) -> list[AggregationReadingRecord]:
+        rows = self._aggregation_rows(
+            "SELECT p.planned_reading_id, p.measurement_definition_id, p.meter_id, "
+            "p.location_id, p.business_date, p.scheduled_at, p.task_state, "
+            "r.result_status, r.raw_reading, r.last_reading, r.usage_delta, "
+            "r.structured_payload_json FROM planned_readings AS p "
+            "LEFT JOIN reading_transactions AS r ON r.planned_reading_id = p.planned_reading_id "
+            "WHERE p.measurement_definition_id IN",
+            measurement_definition_ids,
+        )
+        readings: list[AggregationReadingRecord] = []
+        for row in rows:
+            try:
+                readings.append(
+                    AggregationReadingRecord(
+                        planned_reading_id=str(row[0]),
+                        measurement_definition_id=str(row[1]),
+                        meter_id=str(row[2]),
+                        location_id=str(row[3]),
+                        business_date=_read_date(str(row[4])),
+                        scheduled_at=parse_utc(str(row[5])),
+                        task_state=PlannedReadingTaskState(str(row[6])),
+                        result_status=ResultStatus(str(row[7])) if row[7] is not None else None,
+                        raw_reading=_read_decimal(str(row[8]) if row[8] is not None else None),
+                        last_reading=_read_decimal(str(row[9]) if row[9] is not None else None),
+                        usage_delta=_read_decimal(str(row[10]) if row[10] is not None else None),
+                        structured_payload_json=str(row[11]) if row[11] is not None else None,
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"集計対象の予定枠が不正です: {row[0]}") from exc
+        return readings
+
+    def list_aggregation_boundaries(
+        self, measurement_definition_ids: Collection[str]
+    ) -> list[AggregationBoundaryRecord]:
+        rows = self._aggregation_rows(
+            "SELECT replacement_event_id, measurement_definition_id, location_id, business_date, "
+            "old_meter_id, new_meter_id, replaced_at, old_assignment_effective_from, "
+            "new_assignment_effective_from, previous_measured_reading, "
+            "previous_measured_planned_reading_id, old_final_reading, old_meter_usage_delta, "
+            "new_initial_reading FROM replacement_boundaries "
+            "WHERE measurement_definition_id IN",
+            measurement_definition_ids,
+        )
+        boundaries: list[AggregationBoundaryRecord] = []
+        for row in rows:
+            try:
+                boundaries.append(
+                    AggregationBoundaryRecord(
+                        replacement_event_id=str(row[0]),
+                        measurement_definition_id=str(row[1]),
+                        location_id=str(row[2]),
+                        business_date=_read_date(str(row[3])),
+                        old_meter_id=str(row[4]),
+                        new_meter_id=str(row[5]),
+                        replaced_at=parse_utc(str(row[6])),
+                        old_assignment_effective_from=parse_utc(str(row[7])),
+                        new_assignment_effective_from=parse_utc(str(row[8])),
+                        previous_measured_reading=_read_decimal(
+                            str(row[9]) if row[9] is not None else None
+                        ),
+                        previous_measured_planned_reading_id=(
+                            str(row[10]) if row[10] is not None else None
+                        ),
+                        old_final_reading=_read_decimal(
+                            str(row[11]) if row[11] is not None else None
+                        ),
+                        old_meter_usage_delta=_read_decimal(
+                            str(row[12]) if row[12] is not None else None
+                        ),
+                        new_initial_reading=_read_decimal(
+                            str(row[13]) if row[13] is not None else None
+                        ),
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"集計対象の交換境界が不正です: {row[0]}") from exc
+        return boundaries
 
     def create_aggregation_formula(self, formula: AggregationFormulaRecord) -> None:
         self._execute(

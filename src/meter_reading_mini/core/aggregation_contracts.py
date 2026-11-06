@@ -82,6 +82,155 @@ class AggregationFormulaVersionRecord:
         return self.is_initial and self.effective_from_date < self.registered_business_date
 
 
+class AggregationPeriodUnit(StrEnum):
+    DAY = "day"
+    MONTH = "month"
+    CALENDAR_YEAR = "calendar_year"
+    FISCAL_YEAR = "fiscal_year"
+
+
+class AggregationTargetType(StrEnum):
+    DEFINITION = "definition"
+    FORMULA = "formula"
+
+
+class AggregationDetailSource(StrEnum):
+    READING = "reading"
+    REPLACEMENT = "replacement"
+
+
+class AggregationBaselineSource(StrEnum):
+    READING = "reading"
+    REPLACEMENT_INITIAL = "replacement_initial"
+
+
+class AggregationCode(StrEnum):
+    MISSING_UNMEASURED = "MISSING_UNMEASURED"
+    MISSING_NON_MEASURED = "MISSING_NON_MEASURED"
+    MISSING_PARTIAL_ITEMS = "MISSING_PARTIAL_ITEMS"
+    MISSING_GAP_BETWEEN_BASELINE = "MISSING_GAP_BETWEEN_BASELINE"
+    MISSING_NO_BASELINE = "MISSING_NO_BASELINE"
+    MISSING_REPLACEMENT_READING = "MISSING_REPLACEMENT_READING"
+    MISSING_ASSIGNMENT_PENDING = "MISSING_ASSIGNMENT_PENDING"
+    WARN_NEGATIVE = "WARN_NEGATIVE"
+    WARN_PERIOD_MISMATCH = "WARN_PERIOD_MISMATCH"
+    INFO_CARRYOVER = "INFO_CARRYOVER"
+    INFO_REPLACEMENT = "INFO_REPLACEMENT"
+    INFO_DISABLED_DEFINITION = "INFO_DISABLED_DEFINITION"
+    INFO_RETROACTIVE_FORMULA = "INFO_RETROACTIVE_FORMULA"
+    INFO_VERSION_SWITCH = "INFO_VERSION_SWITCH"
+    INFO_MULTI_LOCATION = "INFO_MULTI_LOCATION"
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationIssue:
+    code: AggregationCode
+    message: str
+    measurement_definition_id: str | None = None
+    source_id: str | None = None
+    related_ids: tuple[str, ...] = ()
+    meter_id: str | None = None
+    assignment_effective_from: datetime | None = None
+    resolution: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationBaseline:
+    source: AggregationBaselineSource
+    source_id: str
+    business_date: date
+    at: datetime
+    reading: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationDetail:
+    source: AggregationDetailSource
+    source_id: str
+    measurement_definition_id: str
+    location_id: str
+    business_date: date
+    at: datetime
+    status: str
+    baseline: AggregationBaseline | None
+    source_usage: Decimal | None
+    coefficient: Decimal
+    contribution: Decimal | None
+    version_effective_from: date | None
+    retroactive: bool
+    issues: tuple[AggregationIssue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationApplication:
+    start: date
+    end: date
+    version: AggregationFormulaVersionRecord
+    contribution: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationResult:
+    target_type: AggregationTargetType
+    target_id: str
+    display_name: str
+    purpose: Purpose
+    category: Category
+    unit: str
+    decimal_places: int | None
+    location_ids: tuple[str, ...]
+    value: Decimal | None
+    details: tuple[AggregationDetail, ...]
+    issues: tuple[AggregationIssue, ...]
+    applications: tuple[AggregationApplication, ...] = ()
+    missing_definition_ids: tuple[str, ...] = ()
+    is_partial_application: bool = False
+    exclusion_reason: str | None = None
+    uses_current_attributes: bool = False
+
+    def _codes(self, prefix: str) -> tuple[AggregationCode, ...]:
+        present = {issue.code for issue in self.issues}
+        return tuple(
+            code for code in AggregationCode if code in present and code.startswith(prefix)
+        )
+
+    @property
+    def missing_codes(self) -> tuple[AggregationCode, ...]:
+        return self._codes("MISSING_")
+
+    @property
+    def warning_codes(self) -> tuple[AggregationCode, ...]:
+        return self._codes("WARN_")
+
+    @property
+    def information_codes(self) -> tuple[AggregationCode, ...]:
+        return self._codes("INFO_")
+
+    @property
+    def is_reference(self) -> bool:
+        return self.value is not None and bool(self.missing_codes)
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationPeriod:
+    unit: AggregationPeriodUnit
+    start: date
+    end: date
+    nominal_start: date
+    nominal_end: date
+    is_in_progress: bool
+    results: tuple[AggregationResult, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationReport:
+    requested_start: date
+    requested_end: date
+    as_of: date
+    purpose: Purpose
+    periods: tuple[AggregationPeriod, ...]
+
+
 def resolve_aggregation_cycle_group(
     reading_cycle: ReadingCycle | str | None,
 ) -> AggregationCycleGroup:
