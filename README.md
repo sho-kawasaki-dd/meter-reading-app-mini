@@ -14,7 +14,7 @@ Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロ�
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
 Phase 3 は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。Windows での手動通し確認と両 OS の必須 CI 成功を確認し、完了記録 PR #29 を merge しました。[完了記録](docs/plan/implemented/フェーズ3_メイン画面・マスタ・PC直接入力・交換UI計画.md) に詳細があります。
 Phase 4 は 2026-11-04 に完了しました。実装・Windows ローカル品質ゲート・Android 実機確認を終え、PR #34・#35 で Windows / Ubuntu の必須 CI 成功後に完了記録を merge しています。moto g66j 5G (Android 16、Chrome 156.0.8078.79) で検針シートを確認し、Chrome 終了後・端末再起動後・HTML 移動後の入力復元と途中経過 JSON による回復を確認しました。MR1 / 結果 JSON の PC 取込と不正入力の拒否も確認済みです。詳細は[開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)と[Phase 4 完了記録](docs/plan/implemented/フェーズ4_スマホ検針ダイアログ・差分プレビュー・一括確定計画.md)を参照してください。
-Phase 5 の機能や配布手順は未実装の計画項目を含みます。各フェーズの状況と実装済み範囲を確認してください。
+Phase 5 は進行中です。スキーマ v4、集計式マスタの Service・版管理と復元用の整合性検査を実装しています。集計計算・式編集画面・ダッシュボード・復元画面・配布手順は未実装です。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
 - **開発規約**: [Copilot 開発ガイドライン](.github/copilot-instructions.md)
@@ -325,6 +325,8 @@ Quick Share → Files → Chrome の経路を使い、Chrome 終了後・端末�
 
 ### 集計・CSV 出力
 
+スキーマ v4 では集計式と適用版を保持し、無効化・再有効化の履歴を管理します。式に参照された測定定義の単位・カテゴリは変更できません。式の登録・編集画面はまだありません。v1〜v3 の DB は起動時に移行前バックアップを作成して v4 へ移行します。
+
 日次・月次・年次、カテゴリ・場所・測定定義で集計し、グラフと内訳を確認する設計です。
 二重計上を防ぐため、検針目的の初期選択は `operational` とし、`billing`・`audit` と区別します。
 時刻列は UTC 保存、業務日付・検針枠・締め判定はローカルタイムゾーンを基準とします。
@@ -418,6 +420,8 @@ uv run python -m meter_reading_mini
 | `src/meter_reading_mini/config.py` | アプリデータ・ログ等の保存先を解決 |
 | 各 `__init__.py` | `meter_reading_mini`・`core`・`db`・`ui` を Python パッケージとして定義 |
 | `core/contract_models.py` | Enum、DTO、Decimal 文字列等のデータ契約 |
+| `core/aggregation_contracts.py` | 集計式・版・項目の契約と共通検証 |
+| `core/aggregation_formulas.py` | 集計式の登録・版管理 |
 | `core/errors.py` | 業務例外の基底型と共通例外 |
 | `core/logging_config.py` | ローテーション付きログの設定 |
 | `core/measurement_definition_service.py` | 測定定義の業務操作・入力検証 |
@@ -441,6 +445,7 @@ uv run python -m meter_reading_mini
 | `core/work_package_download.py` | 予定枠の補完生成と検針用データの構築 |
 | `db/connection.py` | sqlite3 接続、PRAGMA 設定、トランザクション管理 |
 | `db/schema.sql` | SQLite のテーブル・制約定義 |
+| `db/schema_v3.sql` | スキーマ v3 の固定 DDL |
 | `db/migrations.py` | スキーマの移行と版別検査 |
 | `db/integrity.py` | 復元候補の業務整合性検査 |
 | `db/repositories.py` | 標準 `sqlite3` による Repository 実装 |
@@ -466,7 +471,7 @@ uv run python -m meter_reading_mini
 | Phase 2 | 完了 (2026-10-28) | 単一 HTML 検針シート・途中保存・MR1 / JSON パーサと DB 同期のブラウザ往復テスト |
 | Phase 3 | 完了 (2026-11-01、両 OS 必須 CI 成功・PR #29 merge 済み) | メイン画面・マスタ・設定・PC 直接入力・交換 UI |
 | Phase 4 | 完了 (2026-11-04、両 OS 必須 CI 成功・PR #34・#35 merge 済み) | スマホ検針ダイアログ・プレビュー・一括確定 |
-| Phase 5 | 予定 | 集計・出力・バックアップ / 復元・インストーラー |
+| Phase 5 | 進行中 (式マスタ基盤のみ) | 集計・出力・バックアップ / 復元・インストーラー |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。
 Phase 2 の完了条件は Playwright によるブラウザ検証までです。Android 実機確認は Phase 4 で実施し、端末・OS・Chrome・起動経路と確認結果を開発計画書に記録しています。

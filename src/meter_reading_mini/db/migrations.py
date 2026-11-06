@@ -19,7 +19,7 @@ from meter_reading_mini.core.timeutil import parse_utc, utc_now_str
 from meter_reading_mini.db.backup import copy_database
 from meter_reading_mini.db.connection import connect, transaction
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MIN_SUPPORTED_SCHEMA_VERSION = 1
 
 
@@ -410,6 +410,19 @@ def _migrate_review_flags_and_replacement_values(conn: sqlite3.Connection) -> No
             )
 
 
+def _migrate_aggregation_formulas(conn: sqlite3.Connection) -> None:
+    for name in (
+        "aggregation_formulas",
+        "aggregation_formula_versions",
+        "aggregation_formula_terms",
+    ):
+        ddl = next(table.sql for table in SCHEMA_SPECS[4].tables if table.name == name)
+        conn.execute(ddl)
+    for name in ("idx_aggregation_formula_initial", "idx_aggregation_formula_terms_definition"):
+        ddl = next(index.sql for index in SCHEMA_SPECS[4].indexes if index.name == name)
+        conn.execute(ddl)
+
+
 MIGRATIONS: dict[int, MigrationStep | str] = {
     2: MigrationStep(
         _migrate_assignment_calculation_settings,
@@ -417,6 +430,7 @@ MIGRATIONS: dict[int, MigrationStep | str] = {
         rebuilds_tables=True,
     ),
     3: MigrationStep(_migrate_review_flags_and_replacement_values),
+    4: MigrationStep(_migrate_aggregation_formulas),
 }
 
 SCHEMA_SPECS: dict[int, SchemaSpec] = {
@@ -425,7 +439,7 @@ SCHEMA_SPECS: dict[int, SchemaSpec] = {
     ),
     2: _schema_spec_from_ddl(
         files("meter_reading_mini.db")
-        .joinpath("schema.sql")
+        .joinpath("schema_v3.sql")
         .read_text(encoding="utf-8")
         .replace(
             "CREATE TABLE assignment_review_flags (\n"
@@ -443,6 +457,9 @@ SCHEMA_SPECS: dict[int, SchemaSpec] = {
         )
     ),
     3: _schema_spec_from_ddl(
+        files("meter_reading_mini.db").joinpath("schema_v3.sql").read_text(encoding="utf-8")
+    ),
+    4: _schema_spec_from_ddl(
         files("meter_reading_mini.db").joinpath("schema.sql").read_text(encoding="utf-8")
     ),
 }

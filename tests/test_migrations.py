@@ -39,6 +39,10 @@ def _schema_v1_sql() -> str:
     return files("meter_reading_mini.db").joinpath("schema_v1.sql").read_text(encoding="utf-8")
 
 
+def _schema_v3_sql() -> str:
+    return files("meter_reading_mini.db").joinpath("schema_v3.sql").read_text(encoding="utf-8")
+
+
 def _create_database(
     path: Path, *, schema_sql: str | None = None, version: int = SCHEMA_VERSION
 ) -> None:
@@ -594,3 +598,141 @@ def test_v1_restore_candidate_is_copied_migrated_and_checked_without_altering_so
         assert inspect_schema(source, 1) == []
     finally:
         source.close()
+
+
+@pytest.mark.parametrize("old_version", [1, 2, 3])
+def test_v1_v2_v3_files_migrate_to_v4_without_changing_existing_readings(
+    tmp_path: Path, old_version: int
+) -> None:
+    path = tmp_path / f"v{old_version}.db"
+    _create_database(path, schema_sql=_schema_v1_sql(), version=1)
+    original = migrations.connect(path)
+    try:
+        _insert_v1_assignment_history(original)
+        if old_version > 1:
+            migrations.migrate_schema(original, 1, old_version)
+        assert inspect_schema(original, old_version) == []
+        before = original.execute("SELECT * FROM reading_transactions").fetchall()
+        assert (
+            original.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'aggregation_formulas'"
+            ).fetchone()
+            is None
+        )
+    finally:
+        original.close()
+
+    conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "v4")
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone() == (4,)
+        assert inspect_schema(conn, 4) == []
+        assert conn.execute("SELECT * FROM reading_transactions").fetchall() == before
+        assert conn.execute("SELECT COUNT(*) FROM aggregation_formulas").fetchone() == (0,)
+        assert check_business_integrity(conn) == []
+    finally:
+        conn.close()
+    backup = connect_readonly(tmp_path / "backups" / f"pre-migrate_v{old_version}_v4.db")
+    try:
+        assert backup.execute("PRAGMA user_version").fetchone() == (old_version,)
+        assert inspect_schema(backup, old_version) == []
+        assert backup.execute("SELECT * FROM reading_transactions").fetchall() == before
+    finally:
+        backup.close()
+
+
+def test_v2_and_v3_schema_specs_remain_frozen_after_v4() -> None:
+    v2_tables = {table.name for table in SCHEMA_SPECS[2].tables}
+    v3_tables = {table.name for table in SCHEMA_SPECS[3].tables}
+    v4_tables = {table.name for table in SCHEMA_SPECS[4].tables}
+    assert v3_tables - v2_tables == {"assignment_review_flags"}
+    assert v4_tables - v3_tables == {
+        "aggregation_formulas",
+        "aggregation_formula_versions",
+        "aggregation_formula_terms",
+    }
+    with closing(connect_memory()) as conn:
+        conn.executescript(_schema_v3_sql())
+        assert inspect_schema(conn, 3) == []
+
+
+@pytest.mark.parametrize("failure", ["partial", "inspection"])
+def test_v4_migration_failure_rolls_back_tables_and_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    path = tmp_path / "v3-rollback.db"
+    _create_database(path, schema_sql=_schema_v3_sql(), version=3)
+    conn = migrations.connect(path)
+    try:
+        conn.execute("INSERT INTO staff (id, name) VALUES (1, '試験担当')")
+        original_inspect = migrations.inspect_schema
+        selected_migrations = migrations.MIGRATIONS
+        if failure == "partial":
+
+            def partial_migration(connection: sqlite3.Connection) -> None:
+                ddl = next(
+                    table.sql
+                    for table in SCHEMA_SPECS[4].tables
+                    if table.name == "aggregation_formulas"
+                )
+                connection.execute(ddl)
+                raise RuntimeError("移行途中の失敗")
+
+            selected_migrations = {4: MigrationStep(partial_migration)}
+        else:
+
+            def failed_inspect(connection, version, specs=SCHEMA_SPECS):
+                return (
+                    ["検査失敗"] if version == 4 else original_inspect(connection, version, specs)
+                )
+
+            monkeypatch.setattr(migrations, "inspect_schema", failed_inspect)
+
+        with pytest.raises((RuntimeError, UnsupportedSchemaError)):
+            migrations.migrate_schema(conn, 3, 4, selected_migrations)
+        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
+        assert original_inspect(conn, 3) == []
+        assert conn.execute("SELECT id, name FROM staff").fetchall() == [(1, "試験担当")]
+        assert not conn.in_transaction
+    finally:
+        conn.close()
+
+
+def test_v4_migration_and_new_schema_commit_failures_roll_back(tmp_path: Path) -> None:
+    class CommitFailingConnection(sqlite3.Connection):
+        fail_commit = False
+
+        def execute(self, sql, parameters=()):
+            if self.fail_commit and sql.strip().upper() == "COMMIT":
+                raise sqlite3.OperationalError("simulated commit failure")
+            return super().execute(sql, parameters)
+
+    conn = sqlite3.connect(
+        tmp_path / "v4-commit.db", autocommit=True, factory=CommitFailingConnection
+    )
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(_schema_v3_sql())
+        conn.execute("PRAGMA user_version = 3")
+        conn.execute("INSERT INTO staff (id, name) VALUES (1, '試験担当')")
+        conn.fail_commit = True
+        with pytest.raises(sqlite3.OperationalError, match="commit failure"):
+            migrations.migrate_schema(conn, 3, 4)
+        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
+        assert inspect_schema(conn, 3) == []
+        assert conn.execute("SELECT name FROM staff").fetchone() == ("試験担当",)
+        assert not conn.in_transaction
+    finally:
+        conn.close()
+
+    new_conn = sqlite3.connect(":memory:", autocommit=True, factory=CommitFailingConnection)
+    try:
+        new_conn.fail_commit = True
+        with pytest.raises(sqlite3.OperationalError, match="commit failure"):
+            create_schema(new_conn)
+        assert new_conn.execute("PRAGMA user_version").fetchone() == (0,)
+        assert new_conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'"
+        ).fetchone() == (0,)
+        assert not new_conn.in_transaction
+    finally:
+        new_conn.close()

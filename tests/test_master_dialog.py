@@ -15,7 +15,13 @@ from reading_service_helpers import DEFINITION_ID, LOCATION_ID, METER_ID, STAFF_
 from test_assignment_calculation_settings import _setup_replacement
 
 from meter_reading_mini.app_context import AppContext, create_app_context
-from meter_reading_mini.core.contract_models import Category, ReadingCycle
+from meter_reading_mini.core.aggregation_contracts import (
+    AggregationCycleGroup,
+    AggregationFormulaCreateInput,
+    AggregationFormulaTerm,
+    AggregationFormulaVersionInput,
+)
+from meter_reading_mini.core.contract_models import Category, Purpose, ReadingCycle
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
     MeasurementDefinitionRecord,
@@ -188,6 +194,34 @@ def test_staff_create_rename_duplicate_and_reactivation(master_data: MasterData)
     page.active_button.click()
     assert _staff(master_data, created.staff_id).is_active
     assert master_data.dialog.correction_page.staff_combo.findData(created.staff_id) >= 0
+
+
+def test_formula_reference_blocks_definition_change_with_visible_error(
+    master_data: MasterData,
+) -> None:
+    master_data.services.aggregation_formulas.create_formula(
+        AggregationFormulaCreateInput(
+            display_name="集計式",
+            unit="m3",
+            category=Category.WATER,
+            cycle_group=AggregationCycleGroup.DAILY,
+            purpose=Purpose.OPERATIONAL,
+            decimal_places=2,
+            initial_version=AggregationFormulaVersionInput(
+                effective_from_date=date(2026, 2, 1),
+                is_active=True,
+                terms=(AggregationFormulaTerm(DEFINITION_ID, Decimal("1"), 0),),
+            ),
+        )
+    )
+    page = master_data.dialog.definition_page
+    _select_row(page.table, DEFINITION_ID)
+    page.unit_edit.setText("L")
+    page.save_button.click()
+    assert "集計式の履歴に参照" in master_data.messages[-1]
+    assert "新しい測定定義" in master_data.messages[-1]
+    assert _definition(master_data, DEFINITION_ID).unit == "m3"
+    assert page.unit_edit.text() == "L"
 
 
 def test_definition_create_backfill_edit_precision_and_reactivation(

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from functools import partial
 
+from meter_reading_mini.core.aggregation_formulas import AggregationFormulaService
 from meter_reading_mini.core.assignment_calculation_settings import (
     AssignmentCalculationSettingsService,
 )
@@ -48,6 +49,7 @@ class AppContext:
     assignment_calculation_settings: AssignmentCalculationSettingsService
     meter_master: MeterMasterService
     measurement_definitions: MeasurementDefinitionService
+    aggregation_formulas: AggregationFormulaService
     staff: StaffService
     reading_preview: ReadingPreviewService
     reading_writer: ReadingWriteOrchestrationService
@@ -175,6 +177,13 @@ def create_app_context(
         meter_master=meter_master,
         measurement_definitions=MeasurementDefinitionService(
             repository, repository, repository, transaction_factory=transaction_factory
+        ),
+        aggregation_formulas=AggregationFormulaService(
+            repository,
+            repository,
+            transaction_factory=transaction_factory,
+            current_business_date_provider=business_date,
+            clock=clock,
         ),
         staff=StaffService(repository, transaction_factory=transaction_factory),
         reading_preview=reading_preview,

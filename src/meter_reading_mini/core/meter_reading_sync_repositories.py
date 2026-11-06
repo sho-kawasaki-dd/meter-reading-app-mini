@@ -14,6 +14,11 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
 
+from meter_reading_mini.core.aggregation_contracts import (
+    AggregationFormulaRecord,
+    AggregationFormulaUpdateInput,
+    AggregationFormulaVersionRecord,
+)
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -939,6 +944,34 @@ class MeasurementDefinitionManagementRepository(
     def list_measurement_definitions(
         self, *, show_inactive: bool = False
     ) -> list[MeasurementDefinitionRecord]: ...
+
+    def is_measurement_definition_referenced_by_formula(
+        self, measurement_definition_id: str
+    ) -> bool: ...
+
+
+class AggregationFormulaRepository(Protocol):
+    def get_aggregation_formula(self, formula_id: str) -> AggregationFormulaRecord | None: ...
+
+    def list_aggregation_formulas(self) -> list[AggregationFormulaRecord]: ...
+
+    def list_aggregation_formula_versions(
+        self, formula_id: str
+    ) -> list[AggregationFormulaVersionRecord]: ...
+
+    def create_aggregation_formula(self, formula: AggregationFormulaRecord) -> None: ...
+
+    def update_aggregation_formula(
+        self, formula_id: str, request: AggregationFormulaUpdateInput
+    ) -> None: ...
+
+    def insert_aggregation_formula_version(
+        self, version: AggregationFormulaVersionRecord
+    ) -> None: ...
+
+    def replace_aggregation_formula_version(
+        self, version: AggregationFormulaVersionRecord, *, previous_effective_date: date
+    ) -> None: ...
 
 
 class MeasurementDefinitionQueryRepository(Protocol):

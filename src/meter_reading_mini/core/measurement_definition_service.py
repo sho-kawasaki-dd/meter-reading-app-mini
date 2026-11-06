@@ -11,7 +11,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from meter_reading_mini.core.contract_models import Purpose
-from meter_reading_mini.core.errors import ValidationError
+from meter_reading_mini.core.errors import FormulaReferencedDefinitionError, ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionCreateInput,
     MeasurementDefinitionCreateRequest,
@@ -112,6 +112,10 @@ class MeasurementDefinitionService:
             if current is None:
                 raise ValidationError(f"測定定義が見つかりません: {normalized_id}")
             self._reject_immutable_changes(current, normalized)
+            if (
+                current.unit != normalized.unit or current.category != normalized.category
+            ) and self._repository.is_measurement_definition_referenced_by_formula(normalized_id):
+                raise FormulaReferencedDefinitionError(normalized_id)
             self._validate_precision_change(normalized_id, normalized.decimal_places)
             self._repository.update_measurement_definition(normalized_id, normalized)
             updated = self._repository.get_measurement_definition(normalized_id)

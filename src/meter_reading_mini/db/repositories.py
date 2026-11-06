@@ -6,11 +6,21 @@ import calendar
 import json
 import sqlite3
 from collections.abc import Callable, Collection
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from meter_reading_mini.core.aggregation_contracts import (
+    AggregationCycleGroup,
+    AggregationFormulaRecord,
+    AggregationFormulaTerm,
+    AggregationFormulaUpdateInput,
+    AggregationFormulaVersionRecord,
+    parse_aggregation_coefficient,
+    serialize_aggregation_coefficient,
+)
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -24,6 +34,7 @@ from meter_reading_mini.core.contract_models import (
     ValueSchema,
 )
 from meter_reading_mini.core.errors import (
+    FormulaValidationError,
     InactiveMasterError,
     InvalidTimezoneError,
     MasterInUseError,
@@ -97,6 +108,9 @@ from meter_reading_mini.core.timeutil import parse_utc, utc_now, utc_now_str
 
 _TIMEZONE_SETTING = "app.timezone.v1"
 _DEFAULT_TIMEZONE = "Asia/Tokyo"
+_AGGREGATION_FORMULA_COLUMNS = (
+    "formula_id, display_name, unit, category, cycle_group, purpose, decimal_places"
+)
 
 
 def _date_text(value: date) -> str:
@@ -128,6 +142,31 @@ def _read_decimal(value: str | None) -> Decimal | None:
     if not parsed.is_finite() or format(parsed, "f") != value:
         raise ValidationError(f"DB の Decimal 値が plain decimal 形式ではありません: {value}")
     return parsed
+
+
+def _read_aggregation_formula(row: tuple[Any, ...]) -> AggregationFormulaRecord:
+    try:
+        category = Category(str(row[3]))
+        cycle_group = AggregationCycleGroup(str(row[4]))
+        purpose = Purpose(str(row[5]))
+    except ValueError as exc:
+        raise FormulaValidationError("DB の集計式属性が不正です。") from exc
+    decimal_places = row[6]
+    if decimal_places is not None and (
+        type(decimal_places) is not int or not 0 <= decimal_places <= 10
+    ):
+        raise FormulaValidationError("DB の集計式の表示小数桁数が不正です。")
+    if any(not isinstance(value, str) or not value.strip() for value in row[:3]):
+        raise FormulaValidationError("DB の集計式 ID・名称・単位が不正です。")
+    return AggregationFormulaRecord(
+        formula_id=str(row[0]),
+        display_name=str(row[1]),
+        unit=str(row[2]),
+        category=category,
+        cycle_group=cycle_group,
+        purpose=purpose,
+        decimal_places=decimal_places,
+    )
 
 
 def _replacement_reading_map(
@@ -505,6 +544,166 @@ class SQLiteRepository:
                 raise ValidationError(f"測定定義が見つかりません: {row[0]}")
             definitions.append(definition)
         return definitions
+
+    def is_measurement_definition_referenced_by_formula(
+        self, measurement_definition_id: str
+    ) -> bool:
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM aggregation_formula_terms "
+                "WHERE measurement_definition_id = ? LIMIT 1",
+                (measurement_definition_id,),
+            ).fetchone()
+            is not None
+        )
+
+    def get_aggregation_formula(self, formula_id: str) -> AggregationFormulaRecord | None:
+        row = self._conn.execute(
+            f"SELECT {_AGGREGATION_FORMULA_COLUMNS} FROM aggregation_formulas WHERE formula_id = ?",
+            (formula_id,),
+        ).fetchone()
+        return None if row is None else _read_aggregation_formula(row)
+
+    def list_aggregation_formulas(self) -> list[AggregationFormulaRecord]:
+        rows = self._conn.execute(
+            f"SELECT {_AGGREGATION_FORMULA_COLUMNS} FROM aggregation_formulas "
+            "ORDER BY display_name, formula_id"
+        ).fetchall()
+        return [_read_aggregation_formula(row) for row in rows]
+
+    def list_aggregation_formula_versions(
+        self, formula_id: str
+    ) -> list[AggregationFormulaVersionRecord]:
+        rows = self._conn.execute(
+            "SELECT v.effective_from_date, v.is_active, v.is_initial, v.created_at, "
+            "v.registered_business_date, t.measurement_definition_id, t.coefficient, t.sort_order "
+            "FROM aggregation_formula_versions AS v "
+            "LEFT JOIN aggregation_formula_terms AS t "
+            "ON t.formula_id = v.formula_id AND t.effective_from_date = v.effective_from_date "
+            "WHERE v.formula_id = ? ORDER BY v.effective_from_date, t.sort_order",
+            (formula_id,),
+        ).fetchall()
+        versions: dict[date, AggregationFormulaVersionRecord] = {}
+        terms: dict[date, list[AggregationFormulaTerm]] = {}
+        for row in rows:
+            try:
+                effective_date = _read_date(str(row[0]))
+                registered_date = _read_date(str(row[4]))
+                created_at = parse_utc(str(row[3]))
+            except ValueError as exc:
+                raise FormulaValidationError("DB の集計式版の日付・日時が不正です。") from exc
+            if type(row[1]) is not int or row[1] not in (0, 1):
+                raise FormulaValidationError("DB の集計式版の有効状態が不正です。")
+            if type(row[2]) is not int or row[2] not in (0, 1):
+                raise FormulaValidationError("DB の集計式版の初版状態が不正です。")
+            if effective_date not in versions:
+                versions[effective_date] = AggregationFormulaVersionRecord(
+                    formula_id=formula_id,
+                    effective_from_date=effective_date,
+                    is_active=bool(row[1]),
+                    is_initial=bool(row[2]),
+                    created_at=created_at,
+                    registered_business_date=registered_date,
+                    terms=(),
+                )
+                terms[effective_date] = []
+            if row[5] is not None:
+                if type(row[7]) is not int or row[7] < 0:
+                    raise FormulaValidationError("DB の集計式項目の表示順が不正です。")
+                terms[effective_date].append(
+                    AggregationFormulaTerm(
+                        measurement_definition_id=str(row[5]),
+                        coefficient=parse_aggregation_coefficient(row[6]),
+                        sort_order=row[7],
+                    )
+                )
+        return [
+            replace(version, terms=tuple(terms[effective_date]))
+            for effective_date, version in versions.items()
+        ]
+
+    def create_aggregation_formula(self, formula: AggregationFormulaRecord) -> None:
+        self._execute(
+            "INSERT INTO aggregation_formulas "
+            f"({_AGGREGATION_FORMULA_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                formula.formula_id,
+                formula.display_name,
+                formula.unit,
+                formula.category.value,
+                formula.cycle_group.value,
+                formula.purpose.value,
+                formula.decimal_places,
+            ),
+        )
+
+    def update_aggregation_formula(
+        self, formula_id: str, request: AggregationFormulaUpdateInput
+    ) -> None:
+        cursor = self._execute(
+            "UPDATE aggregation_formulas SET display_name = ?, decimal_places = ? "
+            "WHERE formula_id = ?",
+            (request.display_name, request.decimal_places, formula_id),
+        )
+        if cursor.rowcount == 0:
+            raise FormulaValidationError(f"集計式が見つかりません: {formula_id}")
+
+    def _insert_aggregation_formula_terms(self, version: AggregationFormulaVersionRecord) -> None:
+        for term in version.terms:
+            self._execute(
+                "INSERT INTO aggregation_formula_terms "
+                "(formula_id, effective_from_date, measurement_definition_id, coefficient, "
+                "sort_order) VALUES (?, ?, ?, ?, ?)",
+                (
+                    version.formula_id,
+                    _date_text(version.effective_from_date),
+                    term.measurement_definition_id,
+                    serialize_aggregation_coefficient(term.coefficient),
+                    term.sort_order,
+                ),
+            )
+
+    def insert_aggregation_formula_version(self, version: AggregationFormulaVersionRecord) -> None:
+        self._execute(
+            "INSERT INTO aggregation_formula_versions "
+            "(formula_id, effective_from_date, is_active, is_initial, created_at, "
+            "registered_business_date) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                version.formula_id,
+                _date_text(version.effective_from_date),
+                int(version.is_active),
+                int(version.is_initial),
+                utc_now_str(version.created_at),
+                _date_text(version.registered_business_date),
+            ),
+        )
+        self._insert_aggregation_formula_terms(version)
+
+    def replace_aggregation_formula_version(
+        self, version: AggregationFormulaVersionRecord, *, previous_effective_date: date
+    ) -> None:
+        self._execute(
+            "DELETE FROM aggregation_formula_terms "
+            "WHERE formula_id = ? AND effective_from_date = ?",
+            (version.formula_id, _date_text(previous_effective_date)),
+        )
+        cursor = self._execute(
+            "UPDATE aggregation_formula_versions SET effective_from_date = ?, is_active = ?, "
+            "is_initial = ?, created_at = ?, registered_business_date = ? "
+            "WHERE formula_id = ? AND effective_from_date = ?",
+            (
+                _date_text(version.effective_from_date),
+                int(version.is_active),
+                int(version.is_initial),
+                utc_now_str(version.created_at),
+                _date_text(version.registered_business_date),
+                version.formula_id,
+                _date_text(previous_effective_date),
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise FormulaValidationError(f"集計式の版が見つかりません: {version.formula_id}")
+        self._insert_aggregation_formula_terms(version)
 
     def list_planned_reading_generation_definitions(
         self,
