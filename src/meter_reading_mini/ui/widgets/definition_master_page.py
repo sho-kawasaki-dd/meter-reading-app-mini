@@ -34,6 +34,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionUpdateRequest,
 )
 from meter_reading_mini.ui.error_handling import run_guarded
+from meter_reading_mini.ui.models.reading_overview_model import CATEGORY_LABELS, PURPOSE_LABELS
 from meter_reading_mini.ui.widgets.decimal_line_edit import DecimalLineEdit
 from meter_reading_mini.ui.widgets.form_helpers import (
     python_date,
@@ -59,11 +60,6 @@ VALUE_LABELS = {
 METHOD_LABELS = {
     CalculationMethod.DELTA: "前回との差分",
     CalculationMethod.RAW_ONLY: "読値のみ",
-}
-PURPOSE_LABELS = {
-    Purpose.OPERATIONAL: "運用",
-    Purpose.BILLING: "請求",
-    Purpose.AUDIT: "監査",
 }
 
 
@@ -427,6 +423,32 @@ class DefinitionMasterPage(QWidget):
                 )
             )
         else:
+            current = self._services.measurement_definitions.get_measurement_definition(
+                self._editing_id
+            )
+            if current is None or current.category is None or current.purpose is None:
+                raise ValidationError("選択した測定定義の現在属性を取得できません。")
+            changes = []
+            if current.unit != self.unit_edit.text().strip():
+                changes.append(f"単位: {current.unit} → {self.unit_edit.text().strip()}")
+            if current.category != category:
+                changes.append(
+                    f"カテゴリ: {CATEGORY_LABELS[current.category]} → {CATEGORY_LABELS[category]}"
+                )
+            if current.purpose != purpose:
+                changes.append(
+                    f"目的: {PURPOSE_LABELS[current.purpose]} → {PURPOSE_LABELS[purpose]}"
+                )
+            if changes and not confirm(
+                self,
+                "過去の直接集計への影響",
+                "現在の単位・カテゴリ・目的は過去の直接集計にも適用されます。"
+                "過去の表示や分類が変わります。\n\n"
+                + "\n".join(changes)
+                + "\n\n集計式に参照された定義の単位・カテゴリは変更できません。"
+                "変更が必要な場合は新しい測定定義を作成してください。\n保存しますか？",
+            ):
+                return
             definition = self._services.measurement_definitions.update_measurement_definition(
                 self._editing_id,
                 MeasurementDefinitionUpdateRequest(

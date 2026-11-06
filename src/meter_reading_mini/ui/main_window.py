@@ -56,6 +56,7 @@ from meter_reading_mini.ui.models.reading_overview_model import (
 )
 from meter_reading_mini.ui.sheet_save_directory_memory import SheetSaveDirectoryMemory
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
+from meter_reading_mini.ui.widgets.dashboard import DashboardWindow
 
 _CYCLE_TABS: tuple[tuple[str, frozenset[ReadingCycle]], ...] = (
     ("すべて", frozenset()),
@@ -108,6 +109,7 @@ class MainWindow(QMainWindow):
         self._display_settings_path = display_settings_path
         self._staff_memory = StaffSelectionMemory()
         self._sheet_save_directory_memory = SheetSaveDirectoryMemory()
+        self._dashboard: DashboardWindow | None = None
         self._all_readings: tuple[ReadingOverviewRecord, ...] = ()
         self._review_assignments: tuple[_ReviewAssignment, ...] = ()
         self._view_loaded = False
@@ -136,6 +138,7 @@ class MainWindow(QMainWindow):
         self.manual_reading_action.setEnabled(False)
         self.master_action = QAction("マスタ管理", self)
         self.replacement_action = QAction("メーター交換", self)
+        self.dashboard_action = QAction("使用量集計", self)
         self.settings_action = QAction("設定", self)
         for action in (
             self.refresh_action,
@@ -143,6 +146,7 @@ class MainWindow(QMainWindow):
             self.manual_reading_action,
             self.master_action,
             self.replacement_action,
+            self.dashboard_action,
             self.settings_action,
         ):
             toolbar.addAction(action)
@@ -246,6 +250,7 @@ class MainWindow(QMainWindow):
         self.manual_reading_action.triggered.connect(self._on_manual_reading)
         self.master_action.triggered.connect(lambda: self._guard(self._open_master))
         self.replacement_action.triggered.connect(lambda: self._guard(self._open_replacement))
+        self.dashboard_action.triggered.connect(lambda: self._guard(self._open_dashboard))
         self.settings_action.triggered.connect(lambda: self._guard(self._open_settings))
         self.review_correction_button.clicked.connect(
             lambda: self._guard(self._show_review_guidance)
@@ -328,6 +333,8 @@ class MainWindow(QMainWindow):
         self.refresh_planned_readings()
 
     def _refresh_and_reload(self, boundary: _ClockBoundary, *, follow_today: bool = False) -> None:
+        if self._dashboard is not None:
+            self._dashboard.invalidate()
         self._services.planned_reading_maintenance.refresh()
         previous_date = _python_date(self.date_edit.date())
         with QSignalBlocker(self.date_edit):
@@ -572,6 +579,15 @@ class MainWindow(QMainWindow):
         )
         dialog.saved.connect(self.notify_dialog_saved)
         dialog.exec()
+
+    def _open_dashboard(self) -> None:
+        dialog = DashboardWindow(self._services, self._staff_memory, self)
+        self._dashboard = dialog
+        dialog.data_changed.connect(self.notify_dialog_saved)
+        try:
+            dialog.exec()
+        finally:
+            self._dashboard = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.boundary_timer.stop()

@@ -13,6 +13,7 @@ from meter_reading_mini.core.contract_models import (
     Category,
     PowerFactorPhase,
     PowerFactorReading,
+    Purpose,
     ReadingCycle,
     ResultStatus,
 )
@@ -30,6 +31,11 @@ CATEGORY_LABELS = {
     Category.WATER: "水道",
     Category.BOILER: "ボイラー",
     Category.OTHERS: "その他",
+}
+PURPOSE_LABELS = {
+    Purpose.OPERATIONAL: "運用",
+    Purpose.BILLING: "請求",
+    Purpose.AUDIT: "監査",
 }
 CYCLE_LABELS = {
     ReadingCycle.DAILY_1X: "日次1回",
