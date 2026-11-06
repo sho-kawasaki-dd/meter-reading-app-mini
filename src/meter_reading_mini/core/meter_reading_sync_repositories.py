@@ -14,6 +14,11 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
 
+from meter_reading_mini.core.aggregation_contracts import (
+    AggregationFormulaRecord,
+    AggregationFormulaUpdateInput,
+    AggregationFormulaVersionRecord,
+)
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -105,6 +110,40 @@ class PlannedReadingCloseReason(StrEnum):
     METER_REPLACED = "meter_replaced"
     SCHEDULE_RECOMPOSED = "schedule_recomposed"
     DEFINITION_DEACTIVATED = "definition_deactivated"
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationReadingRecord:
+    planned_reading_id: str
+    measurement_definition_id: str
+    meter_id: str
+    location_id: str
+    business_date: date
+    scheduled_at: datetime
+    task_state: PlannedReadingTaskState
+    result_status: ResultStatus | None
+    raw_reading: Decimal | None
+    last_reading: Decimal | None
+    usage_delta: Decimal | None
+    structured_payload_json: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AggregationBoundaryRecord:
+    replacement_event_id: str
+    measurement_definition_id: str
+    location_id: str
+    business_date: date
+    old_meter_id: str
+    new_meter_id: str
+    replaced_at: datetime
+    old_assignment_effective_from: datetime
+    new_assignment_effective_from: datetime
+    previous_measured_reading: Decimal | None
+    previous_measured_planned_reading_id: str | None
+    old_final_reading: Decimal | None
+    old_meter_usage_delta: Decimal | None
+    new_initial_reading: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -939,6 +978,60 @@ class MeasurementDefinitionManagementRepository(
     def list_measurement_definitions(
         self, *, show_inactive: bool = False
     ) -> list[MeasurementDefinitionRecord]: ...
+
+    def is_measurement_definition_referenced_by_formula(
+        self, measurement_definition_id: str
+    ) -> bool: ...
+
+
+class AggregationFormulaRepository(Protocol):
+    def get_aggregation_formula(self, formula_id: str) -> AggregationFormulaRecord | None: ...
+
+    def list_aggregation_formulas(self) -> list[AggregationFormulaRecord]: ...
+
+    def list_aggregation_formula_versions(
+        self, formula_id: str
+    ) -> list[AggregationFormulaVersionRecord]: ...
+
+    def create_aggregation_formula(self, formula: AggregationFormulaRecord) -> None: ...
+
+    def update_aggregation_formula(
+        self, formula_id: str, request: AggregationFormulaUpdateInput
+    ) -> None: ...
+
+    def insert_aggregation_formula_version(
+        self, version: AggregationFormulaVersionRecord
+    ) -> None: ...
+
+    def replace_aggregation_formula_version(
+        self, version: AggregationFormulaVersionRecord, *, previous_effective_date: date
+    ) -> None: ...
+
+
+class AggregationReportRepository(Protocol):
+    def list_measurement_definitions(
+        self, *, show_inactive: bool = False
+    ) -> list[MeasurementDefinitionRecord]: ...
+
+    def list_aggregation_formulas(self) -> list[AggregationFormulaRecord]: ...
+
+    def list_aggregation_formula_versions(
+        self, formula_id: str
+    ) -> list[AggregationFormulaVersionRecord]: ...
+
+    def list_meter_assignments(
+        self, measurement_definition_id: str
+    ) -> list[MeterAssignmentRecord]: ...
+
+    def list_assignment_review_flags(self) -> list[AssignmentReviewFlagRecord]: ...
+
+    def list_aggregation_readings(
+        self, measurement_definition_ids: Collection[str]
+    ) -> list[AggregationReadingRecord]: ...
+
+    def list_aggregation_boundaries(
+        self, measurement_definition_ids: Collection[str]
+    ) -> list[AggregationBoundaryRecord]: ...
 
 
 class MeasurementDefinitionQueryRepository(Protocol):

@@ -1,4 +1,4 @@
--- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 3)
+-- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 4)
 -- 将来の設備管理アプリ統合時にも備品在庫管理テーブルと衝突しない命名とする
 
 CREATE TABLE staff (
@@ -206,3 +206,55 @@ CREATE TABLE meter_app_settings (
   setting_value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE aggregation_formulas (
+  formula_id TEXT NOT NULL PRIMARY KEY,
+  display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0),
+  unit TEXT NOT NULL CHECK (length(trim(unit)) > 0),
+  category TEXT NOT NULL CHECK (category IN ('electricity','gas','water','boiler','others')),
+  cycle_group TEXT NOT NULL CHECK (cycle_group IN ('daily','weekly','monthly','every_two_months')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('operational','billing','audit')),
+  decimal_places INTEGER CHECK (
+    decimal_places IS NULL OR (typeof(decimal_places) = 'integer' AND decimal_places BETWEEN 0 AND 10)
+  )
+);
+
+CREATE TABLE aggregation_formula_versions (
+  formula_id TEXT NOT NULL REFERENCES aggregation_formulas(formula_id),
+  effective_from_date TEXT NOT NULL CHECK (
+    effective_from_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+  ),
+  is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)),
+  is_initial INTEGER NOT NULL CHECK (is_initial IN (0, 1)),
+  created_at TEXT NOT NULL,
+  registered_business_date TEXT NOT NULL CHECK (
+    registered_business_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+  ),
+  PRIMARY KEY (formula_id, effective_from_date)
+);
+CREATE UNIQUE INDEX idx_aggregation_formula_initial
+  ON aggregation_formula_versions(formula_id) WHERE is_initial = 1;
+
+CREATE TABLE aggregation_formula_terms (
+  formula_id TEXT NOT NULL,
+  effective_from_date TEXT NOT NULL,
+  measurement_definition_id TEXT NOT NULL
+    REFERENCES measurement_definitions(measurement_definition_id),
+  coefficient TEXT NOT NULL CHECK (
+    length(coefficient) > 0
+    AND coefficient GLOB '*[1-9]*'
+    AND coefficient NOT GLOB '*[^0-9.-]*'
+    AND instr(substr(coefficient, 2), '-') = 0
+    AND substr(coefficient, 1, 1) != '.'
+    AND substr(coefficient, 1, 2) != '-.'
+    AND substr(coefficient, -1) != '.'
+    AND length(coefficient) - length(replace(coefficient, '.', '')) <= 1
+  ),
+  sort_order INTEGER NOT NULL CHECK (typeof(sort_order) = 'integer' AND sort_order >= 0),
+  FOREIGN KEY (formula_id, effective_from_date)
+    REFERENCES aggregation_formula_versions(formula_id, effective_from_date),
+  PRIMARY KEY (formula_id, effective_from_date, measurement_definition_id),
+  UNIQUE (formula_id, effective_from_date, sort_order)
+);
+CREATE INDEX idx_aggregation_formula_terms_definition
+  ON aggregation_formula_terms(measurement_definition_id);

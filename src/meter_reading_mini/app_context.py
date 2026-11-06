@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from functools import partial
 
+from meter_reading_mini.core.aggregation_formulas import AggregationFormulaService
 from meter_reading_mini.core.assignment_calculation_settings import (
     AssignmentCalculationSettingsService,
 )
@@ -21,6 +22,7 @@ from meter_reading_mini.core.planned_reading_maintenance import PlannedReadingMa
 from meter_reading_mini.core.reading_overview import ReadingOverviewQueryService
 from meter_reading_mini.core.reading_preview import ReadingPreviewService
 from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
+from meter_reading_mini.core.reports import AggregationReportService
 from meter_reading_mini.core.schedule_settings import (
     CutoffSettingsService,
     MeasurementDefinitionScheduleService,
@@ -36,7 +38,7 @@ from meter_reading_mini.core.work_package_download import (
     PlannedReadingLifecycleService,
 )
 from meter_reading_mini.db.bootstrap_seeds import bootstrap_default_settings
-from meter_reading_mini.db.connection import transaction
+from meter_reading_mini.db.connection import read_transaction, transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
 
 
@@ -48,6 +50,8 @@ class AppContext:
     assignment_calculation_settings: AssignmentCalculationSettingsService
     meter_master: MeterMasterService
     measurement_definitions: MeasurementDefinitionService
+    aggregation_formulas: AggregationFormulaService
+    aggregation_reports: AggregationReportService
     staff: StaffService
     reading_preview: ReadingPreviewService
     reading_writer: ReadingWriteOrchestrationService
@@ -175,6 +179,18 @@ def create_app_context(
         meter_master=meter_master,
         measurement_definitions=MeasurementDefinitionService(
             repository, repository, repository, transaction_factory=transaction_factory
+        ),
+        aggregation_formulas=AggregationFormulaService(
+            repository,
+            repository,
+            transaction_factory=transaction_factory,
+            current_business_date_provider=business_date,
+            clock=clock,
+        ),
+        aggregation_reports=AggregationReportService(
+            repository,
+            read_transaction_factory=partial(read_transaction, connection),
+            current_business_date_provider=business_date,
         ),
         staff=StaffService(repository, transaction_factory=transaction_factory),
         reading_preview=reading_preview,

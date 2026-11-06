@@ -53,6 +53,7 @@ from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDia
 from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.main_window import MainWindow, _ReviewAssignment
+from meter_reading_mini.ui.widgets.dashboard import DashboardWindow
 
 DAY = date(2026, 2, 4)
 
@@ -230,6 +231,24 @@ def _insert_review_flag(data: OverviewData, reason: str = "旧倍率が実測値
     )
 
 
+def test_dashboard_opens_and_is_invalidated_on_data_refresh(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[bool] = []
+
+    def show(dialog: DashboardWindow) -> int:
+        assert window._dashboard is dialog
+        assert dialog._report is not None
+        window.notify_dialog_saved()
+        opened.append(dialog._report is None and not dialog.csv_button.isEnabled())
+        return 0
+
+    monkeypatch.setattr(DashboardWindow, "exec", show)
+    window.dashboard_action.trigger()
+    assert opened == [True]
+    assert window._dashboard is None
+
+
 def test_overview_displays_results_states_counts_and_selection(
     window: MainWindow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -272,7 +291,7 @@ def test_overview_displays_results_states_counts_and_selection(
     toolbar = window.findChild(QToolBar, "mainToolbar")
     assert toolbar is not None
     assert window.mobile_reading_action in toolbar.actions()
-    assert all("ダッシュボード" not in action.text() for action in toolbar.actions())
+    assert window.dashboard_action in toolbar.actions()
 
 
 def test_combined_filters_and_successor_navigation(window: MainWindow, qtbot: QtBot) -> None:
@@ -1062,6 +1081,34 @@ def test_mobile_action_is_reachable_at_150_percent(
     assert window.rect().contains(window.mapFromGlobal(center))
     opened: list[bool] = []
     monkeypatch.setattr(MobileReadingDialog, "exec", lambda _dialog: opened.append(True) or 0)
+
+    qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+
+    assert opened == [True]
+
+
+def test_dashboard_action_is_reachable_at_150_percent(
+    overview_data: OverviewData,
+    qtbot: QtBot,
+    restore_app_font: QFont,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apply_display_settings(DisplaySettings(None, 150))
+    window = MainWindow(overview_data.services)
+    qtbot.addWidget(window)
+    window.resize(1280, 680)
+    window.show()
+    QApplication.processEvents()
+    toolbar = window.findChild(QToolBar, "mainToolbar")
+    assert toolbar is not None
+    button = toolbar.widgetForAction(window.dashboard_action)
+    assert button is not None and button.isVisible() and button.isEnabled()
+    assert button.width() >= button.sizeHint().width()
+    center = button.mapToGlobal(button.rect().center())
+    assert toolbar.rect().contains(toolbar.mapFromGlobal(center))
+    assert window.rect().contains(window.mapFromGlobal(center))
+    opened: list[bool] = []
+    monkeypatch.setattr(DashboardWindow, "exec", lambda _dialog: opened.append(True) or 0)
 
     qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
 

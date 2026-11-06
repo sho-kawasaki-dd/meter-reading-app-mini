@@ -135,6 +135,20 @@ class MasterInUseError(DomainError):
     pass
 
 
+class FormulaValidationError(ValidationError):
+    """集計式・版・項目の業務条件違反を表す。"""
+
+
+class FormulaReferencedDefinitionError(MasterInUseError):
+    """集計式に参照された測定定義の属性変更を表す。"""
+
+    def __init__(self, measurement_definition_id: str) -> None:
+        super().__init__(
+            "集計式の履歴に参照されているため、測定定義の単位・カテゴリは変更できません。"
+            f"新しい測定定義を作成してください: {measurement_definition_id}"
+        )
+
+
 class SchemaTooNewError(DomainError):
     pass
 

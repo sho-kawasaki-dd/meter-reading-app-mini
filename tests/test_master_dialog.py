@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -9,13 +10,27 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QTableWidget, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QLineEdit,
+    QMessageBox,
+    QScrollArea,
+    QTableWidget,
+    QWidget,
+)
 from pytestqt.qtbot import QtBot
 from reading_service_helpers import DEFINITION_ID, LOCATION_ID, METER_ID, STAFF_ID, build_services
 from test_assignment_calculation_settings import _setup_replacement
 
 from meter_reading_mini.app_context import AppContext, create_app_context
-from meter_reading_mini.core.contract_models import Category, ReadingCycle
+from meter_reading_mini.core.aggregation_contracts import (
+    AggregationCycleGroup,
+    AggregationFormulaCreateInput,
+    AggregationFormulaTerm,
+    AggregationFormulaVersionInput,
+)
+from meter_reading_mini.core.contract_models import Category, Purpose, ReadingCycle
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
     MeasurementDefinitionRecord,
@@ -29,6 +44,7 @@ from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.main_window import MainWindow
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
+from meter_reading_mini.ui.widgets.aggregation_formula_page import AggregationFormulaPage
 
 
 @dataclass
@@ -46,7 +62,7 @@ def master_data(
     fixed_clock: datetime,
     qtbot: QtBot,
     monkeypatch: pytest.MonkeyPatch,
-) -> MasterData:
+) -> Iterator[MasterData]:
     connection, repository = file_database_repository
     build_services(connection, repository)
     services = create_app_context(connection, clock=lambda: fixed_clock)
@@ -57,7 +73,9 @@ def master_data(
     dialog = MasterDialog(services, StaffSelectionMemory())
     qtbot.addWidget(dialog)
     dialog.show()
-    return MasterData(connection, repository, services, dialog, messages)
+    yield MasterData(connection, repository, services, dialog, messages)
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    dialog.close()
 
 
 def _select_row(table: QTableWidget, key: str) -> None:
@@ -188,6 +206,34 @@ def test_staff_create_rename_duplicate_and_reactivation(master_data: MasterData)
     page.active_button.click()
     assert _staff(master_data, created.staff_id).is_active
     assert master_data.dialog.correction_page.staff_combo.findData(created.staff_id) >= 0
+
+
+def test_formula_reference_blocks_definition_change_with_visible_error(
+    master_data: MasterData,
+) -> None:
+    master_data.services.aggregation_formulas.create_formula(
+        AggregationFormulaCreateInput(
+            display_name="集計式",
+            unit="m3",
+            category=Category.WATER,
+            cycle_group=AggregationCycleGroup.DAILY,
+            purpose=Purpose.OPERATIONAL,
+            decimal_places=2,
+            initial_version=AggregationFormulaVersionInput(
+                effective_from_date=date(2026, 2, 1),
+                is_active=True,
+                terms=(AggregationFormulaTerm(DEFINITION_ID, Decimal("1"), 0),),
+            ),
+        )
+    )
+    page = master_data.dialog.definition_page
+    _select_row(page.table, DEFINITION_ID)
+    page.unit_edit.setText("L")
+    page.save_button.click()
+    assert "集計式の履歴に参照" in master_data.messages[-1]
+    assert "新しい測定定義" in master_data.messages[-1]
+    assert _definition(master_data, DEFINITION_ID).unit == "m3"
+    assert page.unit_edit.text() == "L"
 
 
 def test_definition_create_backfill_edit_precision_and_reactivation(
@@ -511,6 +557,310 @@ def _assert_reachable(area: QScrollArea, target: QWidget, dialog: QWidget) -> No
     assert dialog.rect().contains(dialog.mapFromGlobal(center))
 
 
+def _set_formula_term(page: AggregationFormulaPage, coefficient: str = "-1.5") -> None:
+    page.add_term_button.click()
+    combo = page.terms_table.cellWidget(0, 0)
+    edit = page.terms_table.cellWidget(0, 1)
+    assert isinstance(combo, QComboBox)
+    assert isinstance(edit, QLineEdit)
+    combo.setCurrentIndex(combo.findData(DEFINITION_ID))
+    edit.setText(coefficient)
+
+
+def _prepare_formula(page: AggregationFormulaPage) -> None:
+    page.name_edit.setText("後付け式")
+    page.unit_edit.setText("m3")
+    page.category_combo.setCurrentIndex(page.category_combo.findData(Category.WATER.value))
+    page.effective_date.setDate(QDate(2026, 2, 1))
+    _set_formula_term(page)
+
+
+def test_formula_editor_retroactive_versions_and_inactive_period(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    confirmations: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *_args: (
+            confirmations.append(text) or QMessageBox.StandardButton.Yes
+        ),
+    )
+    page = master_data.dialog.formula_page
+    _prepare_formula(page)
+    page.save_formula_button.click()
+    formulas = master_data.services.aggregation_formulas.list_formulas()
+    assert len(formulas) == 1
+    formula = formulas[0]
+    versions = master_data.services.aggregation_formulas.list_versions(formula.formula_id)
+    assert versions[0].is_retroactive
+    assert versions[0].terms[0].coefficient == Decimal("-1.5")
+    assert "現在業務日: 2026-02-04" in confirmations[0]
+    assert "当時その式が存在した証明ではありません" in confirmations[0]
+    assert not page.unit_edit.isEnabled()
+
+    page.new_version_button.click()
+    page.effective_date.setDate(QDate(2026, 2, 10))
+    edit = page.terms_table.cellWidget(0, 1)
+    assert isinstance(edit, QLineEdit)
+    edit.setText("0.25")
+    page.save_version_button.click()
+    assert len(master_data.services.aggregation_formulas.list_versions(formula.formula_id)) == 2
+    assert "2026-02-01" in confirmations[-1]
+    assert "将来版は削除・変更しません" in confirmations[-1]
+
+    page.new_version_button.click()
+    page.effective_date.setDate(QDate(2026, 2, 6))
+    page.active_check.setChecked(False)
+    page.save_version_button.click()
+    versions = master_data.services.aggregation_formulas.list_versions(formula.formula_id)
+    assert [version.effective_from_date for version in versions] == [
+        date(2026, 2, 1),
+        date(2026, 2, 6),
+        date(2026, 2, 10),
+    ]
+    assert not versions[1].is_active and not versions[1].terms
+    assert versions[2].terms[0].coefficient == Decimal("0.25")
+    assert page.effective_date.date() == QDate(2026, 2, 6)
+    _select_row(page.history_table, "2026-02-01")
+    assert not page.save_version_button.isEnabled()
+    assert "2 版以上の初版は変更できません" in page.version_notice.text()
+
+
+def test_formula_editor_resaves_only_initial_version_and_cancel_preserves_input(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = master_data.dialog.formula_page
+    _prepare_formula(page)
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.No)
+    page.save_formula_button.click()
+    assert master_data.services.aggregation_formulas.list_formulas() == []
+    assert page.name_edit.text() == "後付け式"
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    page.save_formula_button.click()
+    formula = master_data.services.aggregation_formulas.list_formulas()[0]
+    page.effective_date.setDate(QDate(2026, 1, 25))
+    coefficient = page.terms_table.cellWidget(0, 1)
+    assert isinstance(coefficient, QLineEdit)
+    coefficient.setText("2.50")
+    page.save_version_button.click()
+    versions = master_data.services.aggregation_formulas.list_versions(formula.formula_id)
+    assert len(versions) == 1
+    assert versions[0].effective_from_date == date(2026, 1, 25)
+    assert versions[0].terms[0].coefficient == Decimal("2.50")
+
+
+def test_formula_editor_preserves_early_initial_effective_date(master_data: MasterData) -> None:
+    formula = master_data.services.aggregation_formulas.create_formula(
+        AggregationFormulaCreateInput(
+            display_name="古い集計式",
+            unit="m3",
+            category=Category.WATER,
+            cycle_group=AggregationCycleGroup.DAILY,
+            purpose=Purpose.OPERATIONAL,
+            decimal_places=None,
+            initial_version=AggregationFormulaVersionInput(
+                date.min,
+                True,
+                (AggregationFormulaTerm(DEFINITION_ID, Decimal("1"), 0),),
+            ),
+        )
+    )
+    page = master_data.dialog.formula_page
+    page.reload()
+    _select_row(page.table, formula.formula_id)
+    assert page.effective_date.date() == QDate(1, 1, 1)
+    coefficient = page.terms_table.cellWidget(0, 1)
+    assert isinstance(coefficient, QLineEdit)
+    coefficient.setText("2")
+
+    page.save_version_button.click()
+
+    version = master_data.services.aggregation_formulas.list_versions(formula.formula_id)[0]
+    assert version.effective_from_date == date.min
+    assert version.terms[0].coefficient == Decimal("2")
+
+
+def test_formula_editor_preserves_but_cannot_reuse_inactive_definition(
+    master_data: MasterData,
+) -> None:
+    page = master_data.dialog.formula_page
+    _prepare_formula(page)
+    page.save_formula_button.click()
+    formula = master_data.services.aggregation_formulas.list_formulas()[0]
+    master_data.services.measurement_definitions.deactivate_measurement_definition(DEFINITION_ID)
+    page.refresh_definitions()
+    page.reload()
+    _select_row(page.table, formula.formula_id)
+    combo = page.terms_table.cellWidget(0, 0)
+    assert isinstance(combo, QComboBox)
+    assert combo.currentData() == DEFINITION_ID
+    assert "現在無効" in combo.currentText()
+    page.new_version_button.click()
+    page.effective_date.setDate(QDate(2026, 2, 5))
+    page.save_version_button.click()
+    assert "無効な測定定義を新たに使用できません" in master_data.messages[-1]
+    assert len(master_data.services.aggregation_formulas.list_versions(formula.formula_id)) == 1
+
+
+def test_formula_editor_does_not_discard_unsaved_metadata_or_version(
+    master_data: MasterData,
+) -> None:
+    page = master_data.dialog.formula_page
+    _prepare_formula(page)
+    page.save_formula_button.click()
+    formula = master_data.services.aggregation_formulas.list_formulas()[0]
+    page.name_edit.setText("変更した名前")
+    page.effective_date.setDate(QDate(2026, 1, 25))
+    coefficient = page.terms_table.cellWidget(0, 1)
+    assert isinstance(coefficient, QLineEdit)
+    coefficient.setText("2.50")
+    page.save_version_button.click()
+    assert "名称・表示桁数の変更を先に保存" in master_data.messages[-1]
+    assert page.name_edit.text() == "変更した名前"
+    assert coefficient.text() == "2.50"
+    page.save_formula_button.click()
+    assert page.effective_date.date() == QDate(2026, 1, 25)
+    assert coefficient.text() == "2.50"
+    page.save_version_button.click()
+    updated = master_data.services.aggregation_formulas.get_formula(formula.formula_id)
+    assert updated is not None
+    assert updated.display_name == "変更した名前"
+    versions = master_data.services.aggregation_formulas.list_versions(formula.formula_id)
+    assert versions[0].effective_from_date == date(2026, 1, 25)
+    assert versions[0].terms[0].coefficient == Decimal("2.50")
+
+
+def test_unsaved_formula_is_preserved_when_switching_or_starting_new(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = master_data.dialog.formula_page
+    formula = master_data.services.aggregation_formulas.create_formula(
+        AggregationFormulaCreateInput(
+            display_name="別の式",
+            unit="m3",
+            category=Category.WATER,
+            cycle_group=AggregationCycleGroup.DAILY,
+            purpose=Purpose.OPERATIONAL,
+            decimal_places=None,
+            initial_version=AggregationFormulaVersionInput(
+                date(2026, 2, 1),
+                True,
+                (AggregationFormulaTerm(DEFINITION_ID, Decimal("1"), 0),),
+            ),
+        )
+    )
+    page.reload()
+    _prepare_formula(page)
+    coefficient = page.terms_table.cellWidget(0, 1)
+    assert isinstance(coefficient, QLineEdit)
+    coefficient.setText("未完成")
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *_args: prompts.append(text) or QMessageBox.StandardButton.No,
+    )
+
+    page.new_button.click()
+    _select_row(page.table, formula.formula_id)
+    assert len(prompts) == 2
+    assert page.table.currentRow() == -1
+    assert page.name_edit.text() == "後付け式"
+    assert coefficient.text() == "未完成"
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    _select_row(page.table, formula.formula_id)
+    assert page.name_edit.text() == "別の式"
+    assert page._editing_id == formula.formula_id
+
+
+def test_unsaved_version_is_preserved_when_switching_history_or_adding_version(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = master_data.dialog.formula_page
+    _prepare_formula(page)
+    page.save_formula_button.click()
+    page.new_version_button.click()
+    page.effective_date.setDate(QDate(2026, 2, 10))
+    page.save_version_button.click()
+    coefficient = page.terms_table.cellWidget(0, 1)
+    assert isinstance(coefficient, QLineEdit)
+    coefficient.setText("-")
+    page.name_edit.setText("未保存の名称")
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *_args: prompts.append(text) or QMessageBox.StandardButton.No,
+    )
+
+    _select_row(page.history_table, "2026-02-01")
+    assert page.effective_date.date() == QDate(2026, 2, 10)
+    assert page.history_table.currentRow() == 1
+    assert coefficient.text() == "-"
+    page.new_version_button.click()
+    assert page.effective_date.date() == QDate(2026, 2, 10)
+    assert coefficient.text() == "-"
+    assert len(prompts) == 2
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    page.new_version_button.click()
+    assert page.effective_date.date() == QDate(2026, 2, 4)
+    assert coefficient.text() == "-"
+    assert page._version_changed()
+    _select_row(page.history_table, "2026-02-01")
+    assert page.name_edit.text() == "未保存の名称"
+    assert page.effective_date.date() == QDate(2026, 2, 1)
+
+
+def test_master_dialog_confirms_before_discarding_formula_draft(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dialog = master_data.dialog
+    page = dialog.formula_page
+    page.name_edit.setText("入力途中")
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *_args: prompts.append(text) or QMessageBox.StandardButton.No,
+    )
+
+    dialog.accept()
+    dialog.reject()
+    assert not dialog.close()
+    assert dialog.isVisible()
+    assert page.name_edit.text() == "入力途中"
+    assert len(prompts) == 3
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    assert dialog.close()
+    assert not dialog.isVisible()
+
+
+def test_definition_attribute_change_warns_and_can_be_cancelled(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    confirmations: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *_args: (
+            confirmations.append(text) or QMessageBox.StandardButton.No
+        ),
+    )
+    page = master_data.dialog.definition_page
+    _select_row(page.table, DEFINITION_ID)
+    original = _definition(master_data, DEFINITION_ID)
+    page.purpose_combo.setCurrentIndex(page.purpose_combo.findData(Purpose.BILLING.value))
+    page.save_button.click()
+    assert _definition(master_data, DEFINITION_ID).purpose == original.purpose
+    assert "過去の直接集計" in confirmations[-1]
+    assert "運用 → 請求" in confirmations[-1]
+
+
 def test_dialog_controls_fit_and_are_reachable_at_150_percent(
     master_data: MasterData,
     tmp_path: Path,
@@ -524,8 +874,9 @@ def test_dialog_controls_fit_and_are_reachable_at_150_percent(
     assert master.width() <= 1280 and master.height() <= 680
     for index, target in (
         (0, master.meter_page.rename_button),
-        (2, master.correction_page.apply_button),
-        (3, master.staff_page.save_button),
+        (2, master.formula_page.save_version_button),
+        (3, master.correction_page.apply_button),
+        (4, master.staff_page.save_button),
     ):
         master.tabs.setCurrentIndex(index)
         area = master.tabs.widget(index)

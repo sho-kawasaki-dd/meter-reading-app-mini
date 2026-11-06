@@ -20,6 +20,7 @@ CORE_ROOT = PACKAGE_ROOT / "core"
 DB_ROOT = PACKAGE_ROOT / "db"
 UI_ROOT = PACKAGE_ROOT / "ui"
 CONTRACT_FILES = (
+    "aggregation_contracts.py",
     "contract_models.py",
     "errors.py",
     "meter_reading_sync_repositories.py",
@@ -27,6 +28,7 @@ CONTRACT_FILES = (
     "reading_values.py",
 )
 CONTRACT_MODULES = {
+    "meter_reading_mini.core.aggregation_contracts",
     "meter_reading_mini.core.contract_models",
     "meter_reading_mini.core.errors",
     "meter_reading_mini.core.meter_reading_sync_repositories",
