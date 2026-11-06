@@ -13,8 +13,14 @@ from reading_service_helpers import (
     sync_request,
 )
 
+from meter_reading_mini.core.contract_models import (
+    Category,
+    MeterReadingSyncRequest,
+    MeterReplacementSubmission,
+)
 from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
+    MeterMasterCreateRequest,
     PlannedReadingTaskState,
     ReadingUpsertRequest,
     ReadingWriteService,
@@ -112,6 +118,72 @@ def test_commit_failure_rolls_back_completed_batch(
     assert conn.execute(
         "SELECT COUNT(*) FROM reading_transactions WHERE planned_reading_id = 'plan-commit-fails'"
     ).fetchone() == (0,)
+
+
+def test_commit_failure_rolls_back_replacement_correction(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, service = build_services(conn, repository)
+    with transaction(conn):
+        repository.create_meter_master(
+            MeterMasterCreateRequest(
+                meter_id="commit-failure-new-meter",
+                location_id="test-location",
+                location_name="試験場所",
+                meter_name="交換後メーター",
+                category=Category.WATER,
+            )
+        )
+    create_plan(repository, "commit-failure-old-slot", _scheduled(6))
+    original = MeterReplacementSubmission.model_validate(
+        {
+            "replacement_event_id": "replace-commit-failure",
+            "location_id": "test-location",
+            "old_meter_id": "test-meter",
+            "new_meter_id": "commit-failure-new-meter",
+            "replaced_at": "2026-02-04T05:30:00+00:00",
+            "client_updated_at": "2026-02-04T05:31:00+00:00",
+            "old_final_reading": None,
+            "new_initial_reading": None,
+            "updated_by": "入力側の担当者",
+            "note": "初回",
+        }
+    )
+    assert (
+        service.sync(
+            MeterReadingSyncRequest(reading_items=[], replacement_items=[original]),
+            confirmation_context(),
+        ).accepted_replacement_items
+        == 1
+    )
+
+    failing_conn = cast(sqlite3.Connection, _FailingCommitConnection(conn))
+    failing_service = _build_sync_with_connection(failing_conn, repository, writer)
+    corrected = MeterReplacementSubmission.model_validate(
+        original.model_dump(mode="python")
+        | {
+            "client_updated_at": "2026-02-04T05:32:00+00:00",
+            "old_final_reading": "10",
+            "new_initial_reading": "5",
+            "note": "訂正",
+        }
+    )
+    with pytest.raises(sqlite3.OperationalError, match="simulated COMMIT failure"):
+        failing_service.sync(
+            MeterReadingSyncRequest(reading_items=[], replacement_items=[corrected]),
+            confirmation_context(),
+        )
+
+    assert conn.in_transaction is False
+    assert conn.execute(
+        "SELECT client_updated_at, note, arrival_sequence FROM replacement_events "
+        "WHERE replacement_event_id = 'replace-commit-failure'"
+    ).fetchone() == ("2026-02-04 05:31:00", "初回", 1)
+    assert conn.execute(
+        "SELECT old_final_reading, new_initial_reading FROM replacement_boundaries "
+        "WHERE replacement_event_id = 'replace-commit-failure'"
+    ).fetchone() == (None, None)
 
 
 def test_internal_sync_preserves_source_rows_and_pre_write_states(

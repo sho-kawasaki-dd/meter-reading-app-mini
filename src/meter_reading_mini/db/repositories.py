@@ -2262,7 +2262,8 @@ class SQLiteRepository:
     def upsert_replacement(self, request: ReplacementUpsertRequest) -> UpsertOutcome:
         client_updated_at = utc_now_str(request.client_updated_at)
         existing = self._conn.execute(
-            "SELECT client_updated_at, arrival_sequence FROM replacement_events "
+            "SELECT client_updated_at, arrival_sequence, location_id, old_meter_id, "
+            "new_meter_id, replaced_at, note FROM replacement_events "
             "WHERE replacement_event_id = ?",
             (request.replacement_event_id,),
         ).fetchone()
@@ -2286,21 +2287,49 @@ class SQLiteRepository:
             return UpsertOutcome(UpsertDisposition.INSERTED)
         if client_updated_at < str(existing[0]):
             return UpsertOutcome(UpsertDisposition.IGNORED_STALE)
+        if tuple(str(value) for value in existing[2:6]) != (
+            request.location_id,
+            request.old_meter_id,
+            request.new_meter_id,
+            utc_now_str(request.replaced_at),
+        ):
+            raise ValidationError("既存の交換イベントでは交換日時・旧新メーターを変更できません。")
+
+        boundaries = self.list_replacement_boundaries_for_event(request.replacement_event_id)
+        if not boundaries:
+            raise ValidationError("訂正対象の交換境界がありません。")
+        for boundary in boundaries:
+            if (
+                boundary.old_meter_id != request.old_meter_id
+                or boundary.new_meter_id != request.new_meter_id
+                or boundary.replaced_at != request.replaced_at
+            ):
+                raise ValidationError("交換イベントと交換境界の内容が一致しません。")
+        readings = _replacement_reading_map(
+            request, {boundary.measurement_definition_id for boundary in boundaries}
+        )
+        if (
+            client_updated_at == str(existing[0])
+            and request.note == existing[6]
+            and all(
+                readings[boundary.measurement_definition_id].old_final_reading
+                == boundary.old_final_reading
+                and readings[boundary.measurement_definition_id].new_initial_reading
+                == boundary.new_initial_reading
+                for boundary in boundaries
+            )
+        ):
+            return UpsertOutcome(UpsertDisposition.IGNORED_DUPLICATE)
+
         disposition = (
             UpsertDisposition.REPLACED_ON_TIE
             if client_updated_at == str(existing[0])
             else UpsertDisposition.UPDATED
         )
         self._execute(
-            "UPDATE replacement_events SET location_id = ?, old_meter_id = ?, new_meter_id = ?, "
-            "replaced_at = ?, old_final_reading = NULL, new_initial_reading = NULL, "
-            "client_updated_at = ?, "
-            "updated_by = ?, note = ?, arrival_sequence = ? WHERE replacement_event_id = ?",
+            "UPDATE replacement_events SET client_updated_at = ?, updated_by = ?, note = ?, "
+            "arrival_sequence = ? WHERE replacement_event_id = ?",
             (
-                request.location_id,
-                request.old_meter_id,
-                request.new_meter_id,
-                utc_now_str(request.replaced_at),
                 client_updated_at,
                 request.updated_by,
                 request.note,
@@ -2308,6 +2337,19 @@ class SQLiteRepository:
                 request.replacement_event_id,
             ),
         )
+        for definition_id, reading in readings.items():
+            self._execute(
+                "UPDATE replacement_boundaries SET old_final_reading = ?, "
+                "new_initial_reading = ?, updated_at = ? "
+                "WHERE replacement_event_id = ? AND measurement_definition_id = ?",
+                (
+                    _decimal_text(reading.old_final_reading),
+                    _decimal_text(reading.new_initial_reading),
+                    utc_now_str(self._now()),
+                    request.replacement_event_id,
+                    definition_id,
+                ),
+            )
         return UpsertOutcome(disposition)
 
     def get_replacement_boundary_for_new_meter_first_reading(

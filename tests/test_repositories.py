@@ -1074,6 +1074,10 @@ def test_replacement_reflection_preserves_boundary_even_without_initial_value(
     assert (
         sqlite_repository.upsert_replacement(replacement).disposition is UpsertDisposition.INSERTED
     )
+    with pytest.raises(ValidationError, match="訂正対象の交換境界がありません"):
+        sqlite_repository.upsert_replacement(replacement)
+    sqlite_repository.reflect_replacement(replacement)
+
     stale_replacement = replace(replacement, client_updated_at=READ_AT - timedelta(seconds=1))
     assert (
         sqlite_repository.upsert_replacement(stale_replacement).disposition
@@ -1081,9 +1085,8 @@ def test_replacement_reflection_preserves_boundary_even_without_initial_value(
     )
     assert (
         sqlite_repository.upsert_replacement(replacement).disposition
-        is UpsertDisposition.REPLACED_ON_TIE
+        is UpsertDisposition.IGNORED_DUPLICATE
     )
-    sqlite_repository.reflect_replacement(replacement)
 
     old = sqlite_repository.get_planned_reading("plan-before-replacement")
     assert old is not None
