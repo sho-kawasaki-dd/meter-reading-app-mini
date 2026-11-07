@@ -14,7 +14,7 @@ Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロ�
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
 Phase 3 は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。Windows での手動通し確認と両 OS の必須 CI 成功を確認し、完了記録 PR #29 を merge しました。[完了記録](docs/plan/implemented/フェーズ3_メイン画面・マスタ・PC直接入力・交換UI計画.md) に詳細があります。
 Phase 4 は 2026-11-04 に完了しました。実装・Windows ローカル品質ゲート・Android 実機確認を終え、PR #34・#35 で Windows / Ubuntu の必須 CI 成功後に完了記録を merge しています。moto g66j 5G (Android 16、Chrome 156.0.8078.79) で検針シートを確認し、Chrome 終了後・端末再起動後・HTML 移動後の入力復元と途中経過 JSON による回復を確認しました。MR1 / 結果 JSON の PC 取込と不正入力の拒否も確認済みです。詳細は[開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)と[Phase 4 完了記録](docs/plan/implemented/フェーズ4_スマホ検針ダイアログ・差分プレビュー・一括確定計画.md)を参照してください。
-Phase 5 は進行中です。5a のスキーマ v4、集計式の版管理・編集画面、期間集計、ダッシュボード、CSV / PNG 出力と復元用の整合性検査を実装し、自動テスト・自動操作確認を行いました。集計は保存済み業務日を使い、式の版別寄与・交換境界・欠測理由を扱います。5a は人手による通し確認と Windows / Ubuntu の必須 CI が未確認のため未完了です。5b の復元画面・安全な置換 / 再起動と 5c の配布基盤も未実装です。Phase 5a の実装完了を Phase 5 全体の完了とは扱いません。
+Phase 5 は進行中です。5a のスキーマ v4、集計式の版管理・編集画面、期間集計、ダッシュボード、CSV / PNG 出力と復元用の整合性検査を実装し、自動テスト・自動操作確認を行いました。集計は保存済み業務日を使い、式の版別寄与・交換境界・欠測理由を扱います。5a は人手による通し確認と Windows / Ubuntu の必須 CI が未確認のため未完了です。5b はバックアップ・復元画面、候補検査、現行 DB の保全・置換と Python 実行での再起動を実装し、自動検証しました。5b の必須 CI は未確認で、実際の exe とインストール後の復元・再起動は 5c で検証します。5c の配布基盤も未実装です。これらの実装を Phase 5 全体の完了とは扱いません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
 - **開発規約**: [Copilot 開発ガイドライン](.github/copilot-instructions.md)
@@ -358,16 +358,29 @@ export METER_READING_MINI_DATA_DIR="$HOME/.local/share/meter-reading-mini-test"
 uv run python -m meter_reading_mini
 ```
 
-### バックアップ・復元 (実装予定)
+### バックアップ・復元
 
-`sqlite3.Connection.backup()` で手動バックアップを作成します。
-復元元は読み取り専用で開き、版別スキーマ・SQLite 整合性・外部キーを検査します。
-一時 DB で移行・Decimal 値・結果状態・交換境界の業務整合性を検証し、
-現行 DB を `backups/pre-restore_日時.db` に保全してから置き換え、再起動します。
-端末ごとの表示設定は復元対象に含めません。
-最新版 DB の業務整合性検査基盤は [integrity.py](src/meter_reading_mini/db/integrity.py) にあり、
-割当条件・期間の重複・訂正履歴・交換イベントと境界の対応も検査します。
-バックアップ作成・復元を操作する画面と置換・再起動処理は引き続き未実装です。
+1. メイン画面の「ファイル」→「バックアップ・復元」を開きます。
+2. 「バックアップを保存」で保存先を選びます。既定名は業務タイムゾーンによる `meter_reading_YYYYMMDD_HHMMSS.db` です。既存ファイルは上書きできないため、別の名前を選んでください。
+3. 復元する場合は復元元を指定し、「復元候補を検査」でスキーマ版・データ件数・警告を確認します。復元元の変更、参照のキャンセル、検査失敗、最終確認のキャンセル後は再検査が必要です。
+4. 「内容を確認して復元」で現行 DB の上書き・自動保全・再起動を確認します。操作とタイマーを停止し、現行 DB を `backups/pre-restore_日時.db` に保全してから置換します。
+5. 新プロセスの起動完了を確認して通知します。再起動を確認できない場合は保全バックアップの場所を案内します。アプリが起動していなければ手動で起動し、必要に応じて保全先を確認してください。
+
+[バックアップ・復元 Service](src/meter_reading_mini/core/backup_restore_service.py) と
+[復元基盤](src/meter_reading_mini/db/restore.py) は、`sqlite3.Connection.backup()` による
+WAL 内のコミット済みデータを含むバックアップと、v1～v4 の復元候補の検査・移行を実装しています。
+バックアップは専用一時領域で作成し、排他的に予約した保存先へ書き込みます。
+保存先の差替えや予期しない関連ファイルを検出すると中止し、所有不明の関連ファイルを削除しません。
+復元元に空でない WAL がある場合は元 DB と WAL を一時領域へコピーし、読取専用で検査します。
+元 DB の `-shm` は作成・変更せず、空でないロールバックジャーナルがある候補は拒否します。
+[業務整合性検査](src/meter_reading_mini/db/integrity.py) は Decimal 値・結果状態・
+割当条件・期間の重複・訂正履歴・交換境界・集計式も検査します。
+
+確定時は復元元と候補を再検証し、チェックポイント・接続終了と保全内容を確認して原子的に置換します。
+新プロセスはロック取得・起動準備・画面表示とイベントループ開始後に確認を返し、
+30 秒以内に確認できない場合は成功と扱いません。変更検出用 SHA-256 は送信者認証ではありません。
+表示設定 `ui_settings.json` は復元対象外です。
+Python 実行での自動検証は実施済みですが、実際の exe とインストール後の復元・再起動は 5c で検証します。
 
 ## Windows 配布・ライセンス方針 (配布基盤の実装時に適用)
 
@@ -409,6 +422,7 @@ uv run python -m meter_reading_mini
 │   └── meter_reading_mini/
 │       ├── app.py
 │       ├── config.py
+│       ├── restart.py
 │       ├── core/
 │       ├── db/
 │       └── ui/
@@ -419,12 +433,15 @@ uv run python -m meter_reading_mini
 
 | ファイル / ディレクトリ | 役割 |
 | --- | --- |
-| `src/meter_reading_mini/app.py` | 起動処理を統括し、DB と起動時準備を画面表示前に実行 |
+| `src/meter_reading_mini/app.py` | 起動・復元後の DB 終了とロック・再起動の順序を統括 |
 | `src/meter_reading_mini/config.py` | アプリデータ・ログ等の保存先を解決 |
+| `src/meter_reading_mini/restart.py` | 実行形態に応じた再起動と起動完了の確認 |
 | 各 `__init__.py` | `meter_reading_mini`・`core`・`db`・`ui` を Python パッケージとして定義 |
 | `core/contract_models.py` | Enum、DTO、Decimal 文字列等のデータ契約 |
 | `core/aggregation_contracts.py` | 集計式・版・項目の契約と共通検証 |
 | `core/aggregation_formulas.py` | 集計式の登録・版管理 |
+| `core/backup_restore_contracts.py` | バックアップ・復元の契約 |
+| `core/backup_restore_service.py` | バックアップ・復元の操作 |
 | `core/errors.py` | 業務例外の基底型と共通例外 |
 | `core/logging_config.py` | ローテーション付きログの設定 |
 | `core/measurement_definition_service.py` | 測定定義の業務操作・入力検証 |
@@ -455,9 +472,10 @@ uv run python -m meter_reading_mini
 | `db/repositories.py` | 標準 `sqlite3` による Repository 実装 |
 | `db/bootstrap_seeds.py` | DB の既定設定の初期投入 |
 | `db/backup.py` | SQLite バックアップ関連処理 |
+| `db/restore.py` | 復元候補の検査・移行・保全・置換 |
 | `ui/single_instance.py` | QLockFile による多重起動防止 |
 | `ui/display_settings.py` | フォント・文字サイズ等の表示設定 |
-| `ui/dialogs/` | スマホ検針・PC 直接入力・交換・マスタ管理・設定のダイアログ |
+| `ui/dialogs/` | スマホ検針・PC 直接入力・交換・マスタ管理・設定・バックアップ / 復元のダイアログ |
 | `ui/widgets/` | スケジュール編集・マスタ管理・計算条件訂正・集計ダッシュボードの画面部品 |
 | `ui/dialog_placement.py` | ダイアログの画面内配置 |
 | `ui/error_handling.py` | 業務例外・予期しない例外の UI 通知 |
@@ -478,7 +496,7 @@ uv run python -m meter_reading_mini
 | Phase 4 | 完了 (2026-11-04、両 OS 必須 CI 成功・PR #34・#35 merge 済み) | スマホ検針ダイアログ・プレビュー・一括確定 |
 | Phase 5 | 進行中 (5a の完了条件一部未確認、5b・5c 未完了) | 5a・5b・5c の全機能と検証。Release 下書きの実績確認後に全体完了 |
 | Phase 5a | 実装・自動テスト・自動操作確認済み。人手による通し確認・必須 CI 未確認 | 集計式・版管理・期間集計・ダッシュボード・CSV / PNG |
-| Phase 5b | 未着手 (整合性検査等の基盤の一部は実装済み) | バックアップ・復元 UI、候補検査・移行、安全な置換・再起動 |
+| Phase 5b | 画面・復元・Python 再起動は実装・自動検証済み。必須 CI 未確認 | バックアップ・復元 UI、候補検査・移行、安全な置換・再起動。実際の exe・インストール後の検証は 5c |
 | Phase 5c | 未着手 | Windows 配布、ライセンス・対応ソース、Release 下書き自動作成 |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。

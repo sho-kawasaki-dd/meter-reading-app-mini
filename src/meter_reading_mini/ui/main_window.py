@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDateEdit,
+    QDialog,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from meter_reading_mini.app_context import AppContext
+from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.contract_models import Category, ReadingCycle
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
@@ -43,6 +45,7 @@ from meter_reading_mini.core.reading_overview import (
     filter_reading_overview,
     summarize_reading_overview,
 )
+from meter_reading_mini.ui.dialogs.backup_restore_dialog import BackupRestoreDialog
 from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDialog
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
@@ -103,10 +106,22 @@ def _python_date(value: QDate) -> date:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, services: AppContext, *, display_settings_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        services: AppContext,
+        *,
+        display_settings_path: Path | None = None,
+        backup_restore_service: BackupRestoreService | None = None,
+        backup_directory: Path | None = None,
+        request_restore: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__()
         self._services = services
         self._display_settings_path = display_settings_path
+        self._backup_restore_service = backup_restore_service
+        self._backup_directory = backup_directory
+        self._request_restore = request_restore
+        self._restore_pending = False
         self._staff_memory = StaffSelectionMemory()
         self._sheet_save_directory_memory = SheetSaveDirectoryMemory()
         self._dashboard: DashboardWindow | None = None
@@ -140,6 +155,12 @@ class MainWindow(QMainWindow):
         self.replacement_action = QAction("メーター交換", self)
         self.dashboard_action = QAction("使用量集計", self)
         self.settings_action = QAction("設定", self)
+        self.backup_restore_action = QAction("バックアップ・復元", self)
+        self.backup_restore_action.setEnabled(
+            self._backup_restore_service is not None
+            and self._backup_directory is not None
+            and self._request_restore is not None
+        )
         for action in (
             self.refresh_action,
             self.mobile_reading_action,
@@ -150,6 +171,8 @@ class MainWindow(QMainWindow):
             self.settings_action,
         ):
             toolbar.addAction(action)
+        file_menu = self.menuBar().addMenu("ファイル")
+        file_menu.addAction(self.backup_restore_action)
 
     def _build_contents(self) -> None:
         central = QWidget(self)
@@ -252,6 +275,7 @@ class MainWindow(QMainWindow):
         self.replacement_action.triggered.connect(lambda: self._guard(self._open_replacement))
         self.dashboard_action.triggered.connect(lambda: self._guard(self._open_dashboard))
         self.settings_action.triggered.connect(lambda: self._guard(self._open_settings))
+        self.backup_restore_action.triggered.connect(lambda: self._guard(self._open_backup_restore))
         self.review_correction_button.clicked.connect(
             lambda: self._guard(self._show_review_guidance)
         )
@@ -313,6 +337,8 @@ class MainWindow(QMainWindow):
             self._refresh_and_reload(boundary, follow_today=True)
 
     def _guard(self, operation: Callable[[], object], *, clear_on_error: bool = False) -> None:
+        if self._restore_pending:
+            return
         succeeded, _ = run_guarded(self, operation)
         if not succeeded and clear_on_error:
             self._clear_view()
@@ -588,6 +614,32 @@ class MainWindow(QMainWindow):
             dialog.exec()
         finally:
             self._dashboard = None
+
+    def _open_backup_restore(self) -> None:
+        service = self._backup_restore_service
+        directory = self._backup_directory
+        request_restore = self._request_restore
+        if service is None or directory is None or request_restore is None:
+            raise ValidationError("バックアップ・復元の準備ができていません。")
+        dialog = BackupRestoreDialog(service, directory, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._restore_pending = True
+        self.boundary_timer.stop()
+        self.setEnabled(False)
+        try:
+            request_restore()
+        except Exception as error:
+            self._restore_pending = False
+            self.setEnabled(True)
+            self.boundary_timer.start()
+            try:
+                service.discard_preview()
+            except Exception as cleanup_error:
+                raise ExceptionGroup(
+                    "復元の中断と候補の削除に失敗しました", [error, cleanup_error]
+                ) from error
+            raise
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.boundary_timer.stop()
