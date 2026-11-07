@@ -14,7 +14,7 @@ Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロ�
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
 Phase 3 は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。Windows での手動通し確認と両 OS の必須 CI 成功を確認し、完了記録 PR #29 を merge しました。[完了記録](docs/plan/implemented/フェーズ3_メイン画面・マスタ・PC直接入力・交換UI計画.md) に詳細があります。
 Phase 4 は 2026-11-04 に完了しました。実装・Windows ローカル品質ゲート・Android 実機確認を終え、PR #34・#35 で Windows / Ubuntu の必須 CI 成功後に完了記録を merge しています。moto g66j 5G (Android 16、Chrome 156.0.8078.79) で検針シートを確認し、Chrome 終了後・端末再起動後・HTML 移動後の入力復元と途中経過 JSON による回復を確認しました。MR1 / 結果 JSON の PC 取込と不正入力の拒否も確認済みです。詳細は[開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)と[Phase 4 完了記録](docs/plan/implemented/フェーズ4_スマホ検針ダイアログ・差分プレビュー・一括確定計画.md)を参照してください。
-Phase 5 は進行中です。5a のスキーマ v4、集計式の版管理・編集画面、期間集計、ダッシュボード、CSV / PNG 出力と復元用の整合性検査を実装し、自動テスト・自動操作確認を行いました。集計は保存済み業務日を使い、式の版別寄与・交換境界・欠測理由を扱います。5a は人手による通し確認と Windows / Ubuntu の必須 CI が未確認のため未完了です。5b はバックアップ・復元画面、候補検査、現行 DB の保全・置換と Python 実行での再起動を実装し、自動検証しました。5b の必須 CI は未確認で、実際の exe とインストール後の復元・再起動は 5c で検証します。5c の配布基盤も未実装です。これらの実装を Phase 5 全体の完了とは扱いません。
+Phase 5 は進行中です。5a のスキーマ v4、集計式の版管理・編集画面、期間集計、ダッシュボード、CSV / PNG 出力と復元用の整合性検査を実装し、自動テスト・自動操作確認を行いました。集計は保存済み業務日を使い、式の版別寄与・交換境界・欠測理由を扱います。5a は人手による通し確認が未実施のため未完了です。5b はバックアップ・復元画面、候補検査、現行 DB の保全・置換と再起動を実装し、Python 実行と実 exe で自動検証しました。PR #38・#39 の Windows / Ubuntu 必須 CI は成功しています。5c は Windows x64 開発用 exe のビルドと実行時資産を整備しましたが、インストーラー・法的資産・Release は未整備です。本変更の必須 CI、インストール後の検証も未確認であり、Phase 5 全体の完了とは扱いません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
 - **開発規約**: [Copilot 開発ガイドライン](.github/copilot-instructions.md)
@@ -28,7 +28,7 @@ Phase 5 は進行中です。5a のスキーマ v4、集計式の版管理・編
 - スマートフォン: Android / Chrome
 - Python 3.13 以上 (`requires-python = ">=3.13"`)
 - パッケージ管理: uv、ビルドバックエンド: hatchling
-- 主要依存: PySide6、platformdirs、pydantic
+- 主要依存: PySide6、platformdirs、pydantic、tzdata
 - DB: SQLite (`sqlite3` 標準モジュール)
 - PC 画面: 1366×768 以上、文字サイズ 150% でも操作可能な設計
 
@@ -380,12 +380,47 @@ WAL 内のコミット済みデータを含むバックアップと、v1～v4 �
 新プロセスはロック取得・起動準備・画面表示とイベントループ開始後に確認を返し、
 30 秒以内に確認できない場合は成功と扱いません。変更検出用 SHA-256 は送信者認証ではありません。
 表示設定 `ui_settings.json` は復元対象外です。
-Python 実行での自動検証は実施済みですが、実際の exe とインストール後の復元・再起動は 5c で検証します。
+Python 実行と一時保存先を使った実 exe での復元・再起動を自動検証済みです。
+インストール後の復元・再起動は 5c-2 で検証します。
 
-## Windows 配布・ライセンス方針 (配布基盤の実装時に適用)
+## Windows 開発用 exe のビルドと検証
 
-配布基盤は未実装です。備品在庫管理アプリと同じく PyInstaller と Inno Setup 6.7.3 を採用し、
-次の運用を適用します。現時点ではインストーラーやビルドスクリプトがあることを意味しません。
+Windows x64 の Python と開発用依存を用意し、リポジトリのルートで実行します。
+PyInstaller の `onedir` ビルドは毎回新しい `dist\pyinstaller\meter-reading-mini-<ID>` を作り、
+成功時に検証済み exe のパスを表示します。エラー時は今回の出力だけを削除し、
+中断で `.build-in-progress` が残った出力は使用しません。
+
+```powershell
+uv run --locked python scripts\build_windows.py
+```
+
+開発 PC では表示された exe を一時保存先で直接起動し、メイン画面の「ファイル」→
+「データベースの保存先」で表示されたパスが一時保存先であることを確認します。
+以下の `$exe` はビルド完了時に表示された絶対パスに置き換えてください。
+
+```powershell
+$exe = 'C:\ビルド完了時に表示されたパス\meter-reading-mini.exe'
+$env:METER_READING_MINI_DATA_DIR = Join-Path $env:TEMP ("meter-reading-mini-exe-" + [guid]::NewGuid().ToString('N'))
+& $exe
+```
+
+この環境変数は PowerShell セッションに残るため、確認後は必要に応じて解除してください。
+
+一連の自動検証には PowerShell 7、操作可能な Windows デスクトップ、Playwright の Chromium が必要です。
+合成データを一時領域に作成し、起動・DB パス・二重起動・起動失敗の通知・集計と Qt Charts の PNG 出力・
+シート出力と Chromium・バックアップ・復元後の別プロセス起動・タイムゾーンを検証します。
+空の保存先から最新スキーマの DB が作成されることも確認します。実データは使用しません。
+
+```powershell
+pwsh -NoProfile -File scripts\verify_windows_exe.ps1 -Executable $exe
+```
+
+これは開発検証用ビルドであり、ライセンス・対応ソース等を整えた配布物ではありません。
+インストーラー、インストール後の確認、Release 自動化は未実装・未検証です。
+
+## Windows 配布・ライセンス方針 (今後の整備)
+
+備品在庫管理アプリと同じく Inno Setup 6.7.3 を採用し、次の運用を適用します。
 
 - リリースタグは `v<版数>` / `v<版数>-rc<N>` とし、基本版数を `pyproject.toml` と一致させます。
 - タグは `main` に含まれるコミットに付け、push 前に利用者の確認を得ます。
@@ -418,6 +453,11 @@ Python 実行での自動検証は実施済みですが、実際の exe とイ�
 │       └── ローカル検針管理アプリ開発計画書.md
 ├── pyproject.toml
 ├── uv.lock
+├── packaging/
+│   └── meter_reading_mini.spec
+├── scripts/
+│   ├── build_windows.py
+│   └── verify_windows_exe.ps1
 ├── src/
 │   └── meter_reading_mini/
 │       ├── app.py
@@ -436,6 +476,8 @@ Python 実行での自動検証は実施済みですが、実際の exe とイ�
 | `src/meter_reading_mini/app.py` | 起動・復元後の DB 終了とロック・再起動の順序を統括 |
 | `src/meter_reading_mini/config.py` | アプリデータ・ログ等の保存先を解決 |
 | `src/meter_reading_mini/restart.py` | 実行形態に応じた再起動と起動完了の確認 |
+| `packaging/meter_reading_mini.spec` | Windows x64 exe の実行時資産と `tzdata` の同梱設定 |
+| `scripts/build_windows.py`・`scripts/verify_windows_exe.ps1` | 開発用 exe の新規ビルドと一時保存先での実行検証 |
 | 各 `__init__.py` | `meter_reading_mini`・`core`・`db`・`ui` を Python パッケージとして定義 |
 | `core/contract_models.py` | Enum、DTO、Decimal 文字列等のデータ契約 |
 | `core/aggregation_contracts.py` | 集計式・版・項目の契約と共通検証 |
@@ -495,9 +537,9 @@ Python 実行での自動検証は実施済みですが、実際の exe とイ�
 | Phase 3 | 完了 (2026-11-01、両 OS 必須 CI 成功・PR #29 merge 済み) | メイン画面・マスタ・設定・PC 直接入力・交換 UI |
 | Phase 4 | 完了 (2026-11-04、両 OS 必須 CI 成功・PR #34・#35 merge 済み) | スマホ検針ダイアログ・プレビュー・一括確定 |
 | Phase 5 | 進行中 (5a の完了条件一部未確認、5b・5c 未完了) | 5a・5b・5c の全機能と検証。Release 下書きの実績確認後に全体完了 |
-| Phase 5a | 実装・自動テスト・自動操作確認済み。人手による通し確認・必須 CI 未確認 | 集計式・版管理・期間集計・ダッシュボード・CSV / PNG |
-| Phase 5b | 画面・復元・Python 再起動は実装・自動検証済み。必須 CI 未確認 | バックアップ・復元 UI、候補検査・移行、安全な置換・再起動。実際の exe・インストール後の検証は 5c |
-| Phase 5c | 未着手 | Windows 配布、ライセンス・対応ソース、Release 下書き自動作成 |
+| Phase 5a | 実装・自動テスト・自動操作・PR #38 の両 OS 必須 CI は確認済み。人手による通し確認は未実施 | 集計式・版管理・期間集計・ダッシュボード・CSV / PNG |
+| Phase 5b | 画面・復元・Python / exe 再起動を実装・自動検証済み。PR #39 の両 OS 必須 CI は確認済み | バックアップ・復元 UI、候補検査・移行、安全な置換・再起動。インストール後の検証は 5c-2 |
+| Phase 5c | 開発用 exe ビルド・実行を検証済み。配布・インストール・Release は未整備 | Windows 配布、ライセンス・対応ソース、Release 下書き自動作成 |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。
 Phase 2 の完了条件は Playwright によるブラウザ検証までです。Android 実機確認は Phase 4 で実施し、端末・OS・Chrome・起動経路と確認結果を開発計画書に記録しています。

@@ -94,6 +94,8 @@ def restart_application(
         or configured_paths.data_dir.resolve() != paths.data_dir.resolve()
     ):
         environment[DATA_DIR_ENV] = str(paths.data_dir.resolve())
+    if getattr(sys, "frozen", False):
+        environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
 
     with tempfile.TemporaryDirectory(prefix=_RESTART_DIR_PREFIX, dir=paths.data_dir) as directory:
         ready_path = Path(directory).resolve() / "ready"

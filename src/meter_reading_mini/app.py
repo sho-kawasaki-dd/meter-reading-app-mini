@@ -77,6 +77,23 @@ def _create_qapplication() -> QApplication:
     return QApplication([])
 
 
+def _report_startup_error(message: str, *, gui_message: str | None = None) -> None:
+    if sys.stderr is not None:
+        print(message, file=sys.stderr)
+        return
+
+    application = QApplication.instance()
+    if application is None:
+        application = _create_qapplication()
+    if not isinstance(application, QApplication):
+        raise RuntimeError("起動エラーを表示できません: QApplication が利用できません。")
+    QMessageBox.critical(
+        None,
+        "アプリケーションを起動できません",
+        gui_message if gui_message is not None else message,
+    )
+
+
 def _initialize_ui(
     resources: ExitStack,
     application_factory: Callable[[], QApplication] | None,
@@ -202,7 +219,7 @@ def run_app(
 
         lock = (lock_factory or SingleInstanceLock)(resolved_paths.lock_path)
         if not lock.try_acquire():
-            print("アプリケーションは既に起動しています。", file=sys.stderr)
+            _report_startup_error("アプリケーションは既に起動しています。")
             return STARTUP_LOCKED
 
         restore_result: RestoreResult | None = None
@@ -271,6 +288,7 @@ def run_app(
                             resources.callback(backup_service.discard_preview)
                             window = MainWindow(
                                 context,
+                                database_path=resolved_paths.db_path,
                                 display_settings_path=resolved_paths.ui_settings_path,
                                 backup_restore_service=backup_service,
                                 backup_directory=resolved_paths.backup_dir,
@@ -316,7 +334,7 @@ def run_app(
                         elif isinstance(QApplication.instance(), QApplication):
                             show_domain_error(None, error)
                         else:
-                            print(f"アプリケーションの起動に失敗しました: {error}", file=sys.stderr)
+                            _report_startup_error(f"アプリケーションの起動に失敗しました: {error}")
                         return STARTUP_FAILURE
                     except Exception as error:
                         logger.exception("アプリケーションの起動または実行に失敗しました")
@@ -326,7 +344,10 @@ def run_app(
                                 or (lambda failure: show_unexpected_error(None, failure))
                             )(error)
                         else:
-                            print(f"アプリケーションの起動に失敗しました: {error}", file=sys.stderr)
+                            _report_startup_error(
+                                f"アプリケーションの起動に失敗しました: {error}",
+                                gui_message="予期しないエラーが発生しました。詳細はログを確認してください。",
+                            )
                         return STARTUP_FAILURE
             except Exception as error:
                 if restore_result is None:
@@ -351,5 +372,15 @@ def run_app(
     except Exception as error:
         if logging_initialized:
             logger.exception("アプリケーションの起動に失敗しました")
-        print(f"アプリケーションの起動に失敗しました: {error}", file=sys.stderr)
+        if isinstance(error, DomainError):
+            gui_message = f"アプリケーションの起動に失敗しました: {error.message}"
+        elif logging_initialized:
+            gui_message = "予期しないエラーが発生しました。詳細はログを確認してください。"
+        else:
+            gui_message = (
+                "アプリケーションの起動に失敗しました。保存先と実行環境を確認してください。"
+            )
+        _report_startup_error(
+            f"アプリケーションの起動に失敗しました: {error}", gui_message=gui_message
+        )
         return STARTUP_FAILURE
