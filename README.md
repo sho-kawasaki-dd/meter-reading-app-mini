@@ -14,7 +14,7 @@ Phase 1 は完了しています。標準 sqlite3 Repository とコア業務ロ�
 Phase 2 は 2026-10-28 に完了しました。単一 HTML 検針シート、スマホ入力・IndexedDB 自動保存・途中経過 JSON、MR1 / 結果 JSON の出力から Python パーサ・同期までを実装し、全体・`core/`・`db/` の coverage 90% 以上と Windows / Ubuntu の必須 CI 成功を確認しています。[完了記録](docs/plan/implemented/フェーズ2_単一HTML検針シート・MR1結果パーサ計画.md) に詳細があります。Android 実機確認と PC 側の差分プレビュー・一括確定 UI は Phase 4 以降の対象であり、Phase 2 の完了には含めません。
 Phase 3 は 2026-11-01 に完了しました。起動、メイン画面、マスタ管理、割当期間の計算条件訂正、設定、PC 直接入力・訂正、メーター交換・履歴訂正を利用できます。Windows での手動通し確認と両 OS の必須 CI 成功を確認し、完了記録 PR #29 を merge しました。[完了記録](docs/plan/implemented/フェーズ3_メイン画面・マスタ・PC直接入力・交換UI計画.md) に詳細があります。
 Phase 4 は 2026-11-04 に完了しました。実装・Windows ローカル品質ゲート・Android 実機確認を終え、PR #34・#35 で Windows / Ubuntu の必須 CI 成功後に完了記録を merge しています。moto g66j 5G (Android 16、Chrome 156.0.8078.79) で検針シートを確認し、Chrome 終了後・端末再起動後・HTML 移動後の入力復元と途中経過 JSON による回復を確認しました。MR1 / 結果 JSON の PC 取込と不正入力の拒否も確認済みです。詳細は[開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)と[Phase 4 完了記録](docs/plan/implemented/フェーズ4_スマホ検針ダイアログ・差分プレビュー・一括確定計画.md)を参照してください。
-Phase 5 は進行中です。5a のスキーマ v4、集計式の版管理・編集画面、期間集計、ダッシュボード、CSV / PNG 出力と復元用の整合性検査を実装し、自動テスト・自動操作確認を行いました。集計は保存済み業務日を使い、式の版別寄与・交換境界・欠測理由を扱います。5a は人手による通し確認と Windows / Ubuntu の必須 CI が未確認のため未完了です。5b の復元画面・安全な置換 / 再起動と 5c の配布基盤も未実装です。Phase 5a の実装完了を Phase 5 全体の完了とは扱いません。
+Phase 5 は進行中です。5a のスキーマ v4、集計式の版管理・編集画面、期間集計、ダッシュボード、CSV / PNG 出力と復元用の整合性検査を実装し、自動テスト・自動操作確認を行いました。集計は保存済み業務日を使い、式の版別寄与・交換境界・欠測理由を扱います。5a は人手による通し確認と Windows / Ubuntu の必須 CI が未確認のため未完了です。5b は候補検査・現行 DB の保全・安全な置換の基盤を実装しましたが、画面・アプリの終了と再起動への接続および必須 CI が未完了です。5c の配布基盤も未実装です。Phase 5a・5b の基盤実装を Phase 5 全体の完了とは扱いません。
 
 - **仕様の正本**: [ローカル検針管理アプリ開発計画書](docs/plan/ローカル検針管理アプリ開発計画書.md)
 - **開発規約**: [Copilot 開発ガイドライン](.github/copilot-instructions.md)
@@ -358,16 +358,23 @@ export METER_READING_MINI_DATA_DIR="$HOME/.local/share/meter-reading-mini-test"
 uv run python -m meter_reading_mini
 ```
 
-### バックアップ・復元 (実装予定)
+### バックアップ・復元 (基盤実装済み、画面・再起動は未実装)
 
-`sqlite3.Connection.backup()` で手動バックアップを作成します。
-復元元は読み取り専用で開き、版別スキーマ・SQLite 整合性・外部キーを検査します。
-一時 DB で移行・Decimal 値・結果状態・交換境界の業務整合性を検証し、
-現行 DB を `backups/pre-restore_日時.db` に保全してから置き換え、再起動します。
-端末ごとの表示設定は復元対象に含めません。
-最新版 DB の業務整合性検査基盤は [integrity.py](src/meter_reading_mini/db/integrity.py) にあり、
-割当条件・期間の重複・訂正履歴・交換イベントと境界の対応も検査します。
-バックアップ作成・復元を操作する画面と置換・再起動処理は引き続き未実装です。
+[バックアップ・復元 Service](src/meter_reading_mini/core/backup_restore_service.py) と
+[復元基盤](src/meter_reading_mini/db/restore.py) は、`sqlite3.Connection.backup()` による
+WAL 内のコミット済みデータを含むバックアップと、v1～v4 の復元候補の検査・移行を実装しています。
+バックアップは専用一時領域で作成し、排他的に予約した保存先へ書き込みます。
+保存先の差替えや予期しない関連ファイルを検出すると中止し、所有不明の関連ファイルを削除しません。
+復元元に空でない WAL がある場合は元 DB と WAL を一時領域へコピーし、読取専用で検査します。
+元 DB の `-shm` は作成・変更せず、空でないロールバックジャーナルがある候補は拒否します。
+[業務整合性検査](src/meter_reading_mini/db/integrity.py) は Decimal 値・結果状態・
+割当条件・期間の重複・訂正履歴・交換境界・集計式も検査します。
+
+確定時は復元元と候補を再検証し、現行 DB を `backups/pre-restore_日時.db` に保全した後、
+チェックポイント・接続終了と保全内容を確認して原子的に置換します。
+変更検出用 SHA-256 は送信者認証ではありません。表示設定 `ui_settings.json` は復元対象外です。
+バックアップ・復元の画面、業務タイムゾーンの注入、操作停止・多重起動ロック・接続終了・
+再起動の連携は PR-5b-2 の対象であり、現時点ではアプリから操作できません。
 
 ## Windows 配布・ライセンス方針 (配布基盤の実装時に適用)
 
@@ -425,6 +432,8 @@ uv run python -m meter_reading_mini
 | `core/contract_models.py` | Enum、DTO、Decimal 文字列等のデータ契約 |
 | `core/aggregation_contracts.py` | 集計式・版・項目の契約と共通検証 |
 | `core/aggregation_formulas.py` | 集計式の登録・版管理 |
+| `core/backup_restore_contracts.py` | バックアップ・復元の契約 |
+| `core/backup_restore_service.py` | バックアップ・復元の操作 |
 | `core/errors.py` | 業務例外の基底型と共通例外 |
 | `core/logging_config.py` | ローテーション付きログの設定 |
 | `core/measurement_definition_service.py` | 測定定義の業務操作・入力検証 |
@@ -455,6 +464,7 @@ uv run python -m meter_reading_mini
 | `db/repositories.py` | 標準 `sqlite3` による Repository 実装 |
 | `db/bootstrap_seeds.py` | DB の既定設定の初期投入 |
 | `db/backup.py` | SQLite バックアップ関連処理 |
+| `db/restore.py` | 復元候補の検査・移行・保全・置換 |
 | `ui/single_instance.py` | QLockFile による多重起動防止 |
 | `ui/display_settings.py` | フォント・文字サイズ等の表示設定 |
 | `ui/dialogs/` | スマホ検針・PC 直接入力・交換・マスタ管理・設定のダイアログ |
@@ -478,7 +488,7 @@ uv run python -m meter_reading_mini
 | Phase 4 | 完了 (2026-11-04、両 OS 必須 CI 成功・PR #34・#35 merge 済み) | スマホ検針ダイアログ・プレビュー・一括確定 |
 | Phase 5 | 進行中 (5a の完了条件一部未確認、5b・5c 未完了) | 5a・5b・5c の全機能と検証。Release 下書きの実績確認後に全体完了 |
 | Phase 5a | 実装・自動テスト・自動操作確認済み。人手による通し確認・必須 CI 未確認 | 集計式・版管理・期間集計・ダッシュボード・CSV / PNG |
-| Phase 5b | 未着手 (整合性検査等の基盤の一部は実装済み) | バックアップ・復元 UI、候補検査・移行、安全な置換・再起動 |
+| Phase 5b | 候補検査・保全・置換の基盤は実装済み。UI・再起動と必須 CI は未完了 | バックアップ・復元 UI、候補検査・移行、安全な置換・再起動 |
 | Phase 5c | 未着手 | Windows 配布、ライセンス・対応ソース、Release 下書き自動作成 |
 
 成果物と完了条件は開発計画書 8 章を参照してください。資産の同梱だけで各フェーズの完了とは扱いません。

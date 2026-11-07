@@ -27,11 +27,23 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def connect_readonly(path: Path) -> sqlite3.Connection:
+def connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    """immutable は WAL 等がなく、呼び出し側で変更を検出できるファイルに限る。"""
+
     if not path.exists():
         raise FileNotFoundError(path)
 
     uri = f"{path.resolve().as_uri()}?mode=ro"
+    if immutable:
+        for suffix in ("-wal", "-journal"):
+            sidecar = Path(f"{path.resolve()}{suffix}")
+            try:
+                size = sidecar.stat().st_size
+            except FileNotFoundError:
+                continue
+            if size:
+                raise ValueError(f"未反映の関連ファイルがある DB は固定読取できません: {sidecar}")
+        uri += "&immutable=1"
     conn = sqlite3.connect(uri, uri=True, autocommit=True)
     try:
         _configure_connection(conn)

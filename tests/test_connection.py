@@ -78,6 +78,55 @@ def test_connect_readonly_requires_existing_file(tmp_path: Path) -> None:
         connect_readonly(tmp_path / "missing.db")
 
 
+def test_immutable_readonly_does_not_create_wal_sidecars(tmp_path: Path) -> None:
+    path = tmp_path / "single.db"
+    conn = connect(path)
+    conn.execute("CREATE TABLE sample (value TEXT)")
+    conn.execute("INSERT INTO sample VALUES ('保存済み')")
+    conn.close()
+    before = path.read_bytes()
+
+    readonly = connect_readonly(path, immutable=True)
+    try:
+        assert readonly.execute("SELECT value FROM sample").fetchall() == [("保存済み",)]
+        with pytest.raises(sqlite3.OperationalError):
+            readonly.execute("INSERT INTO sample VALUES ('変更')")
+    finally:
+        readonly.close()
+    assert path.read_bytes() == before
+    assert not Path(f"{path}-wal").exists()
+    assert not Path(f"{path}-shm").exists()
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
+def test_immutable_readonly_refuses_nonempty_sidecars(tmp_path: Path, suffix: str) -> None:
+    path = tmp_path / "source.db"
+    sqlite3.connect(path).close()
+    sidecar = Path(f"{path}{suffix}")
+    sidecar.write_bytes(b"pending")
+    with pytest.raises(ValueError, match="関連ファイル"):
+        connect_readonly(path, immutable=True)
+    assert sidecar.read_bytes() == b"pending"
+
+
+def test_immutable_readonly_refuses_live_wal_with_committed_data(tmp_path: Path) -> None:
+    path = tmp_path / "wal.db"
+    writer = connect(path)
+    try:
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("CREATE TABLE sample (value INTEGER)")
+        writer.execute("INSERT INTO sample VALUES (42)")
+        with pytest.raises(ValueError, match="関連ファイル"):
+            connect_readonly(path, immutable=True)
+        reader = connect_readonly(path)
+        try:
+            assert reader.execute("SELECT value FROM sample").fetchall() == [(42,)]
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+
+
 def test_connect_memory_configures_foreign_keys() -> None:
     conn = connect_memory()
     try:
