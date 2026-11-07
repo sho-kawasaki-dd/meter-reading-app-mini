@@ -136,7 +136,7 @@ def main() -> int:
         print(f"ビルドに失敗しました: {error}", file=sys.stderr)
         return 1
     print(f"ビルドが完了しました: {destination / f'{APP_NAME}.exe'}")
-    print("これは開発検証用です。インストーラー・配布用の法的資産は未整備です。")
+    print("これは開発検証用です。配布には法的監査とインストール検証が必要です。")
     return 0
 
 

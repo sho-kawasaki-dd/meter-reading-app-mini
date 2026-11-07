@@ -188,6 +188,58 @@ def test_run_app_lock_contention_stops_before_logging_database_and_ui(
     assert capsys.readouterr().err == "アプリケーションは既に起動しています。\n"
 
 
+def test_install_guard_contention_stops_before_logging_and_releases_data_lock(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    events: list[str] = []
+
+    class BusyGuard:
+        def try_acquire(self) -> bool:
+            events.append("guard.acquire")
+            return False
+
+        def release(self) -> None:
+            pytest.fail("取得できなかったガードを解放しました")
+
+    result = app_module.run_app(
+        paths,
+        lock_factory=lambda path: FakeLock(events),
+        install_guard_factory=BusyGuard,
+        logging_configurator=lambda **kwargs: events.append("logging"),
+    )
+
+    assert result == app_module.STARTUP_LOCKED
+    assert events == ["lock.acquire", "guard.acquire", "lock.release"]
+    assert "更新または削除が進行中" in capsys.readouterr().err
+    assert not paths.db_path.exists()
+
+
+def test_install_guard_failure_notifies_and_releases_data_lock(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    events: list[str] = []
+
+    class BrokenGuard:
+        def try_acquire(self) -> bool:
+            raise app_module.InstallationGuardError("ガードの保存先を確認してください。")
+
+        def release(self) -> None:
+            pytest.fail("取得できなかったガードを解放しました")
+
+    result = app_module.run_app(
+        paths,
+        lock_factory=lambda path: FakeLock(events),
+        install_guard_factory=BrokenGuard,
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert events == ["lock.acquire", "lock.release"]
+    assert "ガードの保存先を確認" in capsys.readouterr().err
+    assert not paths.db_path.exists()
+
+
 def test_windowed_startup_reports_lock_contention_without_stderr(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:

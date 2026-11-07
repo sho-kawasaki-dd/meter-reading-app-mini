@@ -1,0 +1,25 @@
+検針管理 mini - 対応ソースと再ビルド
+=====================================
+
+このビルドは検証用であり、配布用ではありません。libffi のビルドコミット、
+pydantic-core の Rust 依存・標準ライブラリ、Qt と Microsoft 製コンポーネントを
+含む対応ソース・通知の監査と、Sandbox / VM での再ビルドが未完了です。
+バイナリを提供する場合は、監査後の対応ソースを同じ Release に添付し、
+バイナリの提供中はソースも維持してください。上流 URL や GitHub 自動生成 ZIP
+だけでは代用できません。
+
+ソース一式にはアプリ、テスト、PyInstaller / Inno Setup の設定、ライセンス、
+取得元・版・SHA256 を記した依存ソース一覧を含めます。pydantic-core の
+Cargo.lock に記載された crate は SHA256 を照合して候補として収録しますが、
+実バイナリとの一致は未監査です。ユーザーデータは含めません。
+Windows x64、Python 3.13.12、uv、Inno Setup 6.7.3 と Windows 標準の
+.NET Framework C# コンパイラーを用意し、展開先で次を実行します。
+
+  uv sync --locked
+  uv run --locked python scripts\fetch_dependency_sources.py
+  uv run --locked python scripts\build_distribution.py --verification-only
+
+ビルドは毎回別の出力先を使い、失敗時に以前の成果物を流用しません。
+SHA256 は破損・変更の検出用であり、発行者の認証ではありません。
+初版は Authenticode 署名を行わないため、発行元不明の警告が表示される場合があります。
+インストール・更新・削除・復元後の再起動は実データのない Sandbox / VM で確認してください。

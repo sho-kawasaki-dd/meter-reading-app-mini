@@ -1,0 +1,52 @@
+検針管理 mini - 第三者ソフトウェア通知
+========================================
+
+自作コードは MIT、Qt Charts を含む結合後のアプリ全体は GNU GPL v3 です。
+各ライセンスの原文は licenses/、取得元・版・SHA256 は対応ソースの
+packaging/dependency-sources/manifest.json と構成一覧に記録します。
+
+Qt / PySide6 / shiboken6 6.12.0
+--------------------------------
+Qt Charts は GPLv3 または商用条件で提供されます。本配布では GPLv3 を選択し、
+全 Qt モジュールを一律に LGPL と扱いません。Qt Company および各貢献者の
+著作権表示・第三者コードの通知は、検証済み Qt ソースから生成する
+licenses/Qt-third-party-notices.txt に収録します。
+同梱する Qt DLL は qtbase、qtsvg、qtcharts のソースに対応し、
+PySide6 と shiboken6 は pyside-setup のソースに対応します。
+不要な Qt Network、QML、PDF、翻訳、TLS プラグイン等は同梱しません。
+
+Python 3.13.12 (python-build-standalone 20260211)
+------------------------------------------------
+Python は PSF License、OpenSSL 3.5.5 は Apache-2.0、SQLite 3.50.4 は
+パブリックドメインです。bzip2、liblzma、zlib、expat、mpdecimal、libffi の
+通知原文は licenses/ の python-build-standalone-* にあります。
+libffi のビルドに使われた正確なソースコミットは未確認です。候補を同梱しても
+対応確認済みとは扱いません。
+
+PyInstaller 6.22.3、hooks-contrib 2026.9
+----------------------------------------
+PyInstaller は GPL-2.0-or-later と bootloader 例外、hooks は Apache-2.0 です。
+原文と例外は PyInstaller-COPYING.txt および PyInstaller-hooks-contrib-LICENSE.txt。
+
+その他の同梱 Python パッケージ
+-------------------------------
+platformdirs 4.13.5、pydantic 2.14.1、pydantic-core 2.50.1、
+annotated-types 0.8.0、typing-inspection 0.4.4、setuptools 84.2.1 は MIT。
+typing-extensions 4.16.0 は PSF-2.0、tzdata 2026.5 は Apache-2.0、
+packaging 26.3 は Apache-2.0 または BSD-2-Clause です。
+setuptools に内包される依存の通知も licenses/ に収録します。
+pydantic-core の Cargo.lock に記載された crate の通知候補は
+licenses/Rust-third-party-notices.txt に収録します。r-efi の通知は同梱 AUTHORS、
+wit-bindgen-rt の通知は crate 記録の上流コミットの原文を含みます。後者は
+crate と上流の Rust ソースを照合しますが、実際のビルド対象、実バイナリとの
+対応および Rust 標準ライブラリを含む監査は未完了です。
+
+インストーラーと起動ランチャー
+--------------------------------
+Inno Setup 6.7.3 の原文は InnoSetup-LICENSE.txt。ランチャーは Windows の
+.NET Framework を使用します。Microsoft の VC / UCRT と .NET Framework を
+System Libraries と扱う判断は配布責任者の確認が必要です。
+
+重要: これは技術的な棚卸しであり法的助言ではありません。libffi・Rust 依存、
+Qt の配布バイナリとの対応、Microsoft の再配布条件を確認し、対応ソース・
+通知が不足しないことを検証するまでは配布しないでください。
