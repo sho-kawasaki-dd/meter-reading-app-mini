@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTabBar,
@@ -110,6 +111,7 @@ class MainWindow(QMainWindow):
         self,
         services: AppContext,
         *,
+        database_path: Path | None = None,
         display_settings_path: Path | None = None,
         backup_restore_service: BackupRestoreService | None = None,
         backup_directory: Path | None = None,
@@ -117,6 +119,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self._services = services
+        self._database_path = database_path.resolve() if database_path is not None else None
         self._display_settings_path = display_settings_path
         self._backup_restore_service = backup_restore_service
         self._backup_directory = backup_directory
@@ -156,6 +159,8 @@ class MainWindow(QMainWindow):
         self.dashboard_action = QAction("使用量集計", self)
         self.settings_action = QAction("設定", self)
         self.backup_restore_action = QAction("バックアップ・復元", self)
+        self.database_path_action = QAction("データベースの保存先", self)
+        self.database_path_action.setEnabled(self._database_path is not None)
         self.backup_restore_action.setEnabled(
             self._backup_restore_service is not None
             and self._backup_directory is not None
@@ -173,6 +178,7 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
         file_menu = self.menuBar().addMenu("ファイル")
         file_menu.addAction(self.backup_restore_action)
+        file_menu.addAction(self.database_path_action)
 
     def _build_contents(self) -> None:
         central = QWidget(self)
@@ -276,6 +282,7 @@ class MainWindow(QMainWindow):
         self.dashboard_action.triggered.connect(lambda: self._guard(self._open_dashboard))
         self.settings_action.triggered.connect(lambda: self._guard(self._open_settings))
         self.backup_restore_action.triggered.connect(lambda: self._guard(self._open_backup_restore))
+        self.database_path_action.triggered.connect(lambda: self._guard(self._show_database_path))
         self.review_correction_button.clicked.connect(
             lambda: self._guard(self._show_review_guidance)
         )
@@ -593,6 +600,11 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self._services, self._display_settings_path, self)
         dialog.saved.connect(self.notify_dialog_saved)
         dialog.exec()
+
+    def _show_database_path(self) -> None:
+        if self._database_path is None:
+            raise ValidationError("データベースの保存先が設定されていません。")
+        QMessageBox.information(self, "データベースの保存先", str(self._database_path))
 
     def _open_replacement(self) -> None:
         reading = self._selected_reading()

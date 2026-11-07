@@ -87,6 +87,7 @@ def test_frozen_restart_uses_the_executable_and_preserves_the_override(
     def launch(command: list[str], *, env: Mapping[str, str]) -> RunningProcess:
         assert command == ["meter-reading-mini.exe"]
         assert env[DATA_DIR_ENV] == str(paths.data_dir.resolve())
+        assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
         notice = restart.take_restart_notice(dict(env), paths.data_dir)
         assert notice is not None
         restart.signal_restart_ready(notice)

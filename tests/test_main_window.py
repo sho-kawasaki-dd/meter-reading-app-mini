@@ -249,6 +249,29 @@ def test_dashboard_opens_and_is_invalidated_on_data_refresh(
     assert window._dashboard is None
 
 
+def test_database_path_action_displays_the_absolute_path(
+    overview_data: OverviewData,
+    tmp_path: Path,
+    qtbot: QtBot,
+    messages: list[tuple[str, str, str]],
+) -> None:
+    database_path = tmp_path / "data" / "meter_reading.db"
+    window = MainWindow(overview_data.services, database_path=database_path)
+    qtbot.addWidget(window)
+    window.show()
+
+    menu = window.menuBar().actions()[0].menu()
+    assert isinstance(menu, QMenu)
+    assert window.database_path_action in menu.actions()
+    assert window.database_path_action.isEnabled()
+    window.database_path_action.trigger()
+    assert messages == [("information", "データベースの保存先", str(database_path.resolve()))]
+
+
+def test_database_path_action_is_disabled_when_path_is_not_configured(window: MainWindow) -> None:
+    assert not window.database_path_action.isEnabled()
+
+
 def test_overview_displays_results_states_counts_and_selection(
     window: MainWindow, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -174,6 +174,32 @@ def _assert_lock_released(path: Path) -> None:
     other.release()
 
 
+def test_app_displays_the_opened_database_path(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, _, _ = _prepare_paths(tmp_path)
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda parent, title, text, *args: (
+            messages.append((title, text)) or QMessageBox.StandardButton.Ok
+        ),
+    )
+
+    def inspect_window(application: QApplication) -> int:
+        window = next(
+            widget
+            for widget in application.topLevelWidgets()
+            if isinstance(widget, MainWindow) and widget.isVisible()
+        )
+        window.database_path_action.trigger()
+        return 0
+
+    assert app.run_app(paths, event_loop_runner=inspect_window) == app.STARTUP_SUCCESS
+    assert messages == [("データベースの保存先", str(paths.db_path.resolve()))]
+
+
 def test_restore_shutdown_order_and_confirmed_restart(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:

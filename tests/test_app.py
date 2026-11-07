@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from meter_reading_mini import app as app_module
 from meter_reading_mini.config import AppPaths, resolve_paths
@@ -186,6 +186,187 @@ def test_run_app_lock_contention_stops_before_logging_database_and_ui(
     assert result == app_module.STARTUP_LOCKED
     assert events == ["directories", "lock.acquire"]
     assert capsys.readouterr().err == "アプリケーションは既に起動しています。\n"
+
+
+def test_windowed_startup_reports_lock_contention_without_stderr(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
+
+    result = app_module.run_app(paths, lock_factory=lambda path: FakeLock([], acquired=False))
+
+    assert result == app_module.STARTUP_LOCKED
+    assert messages == [
+        ("アプリケーションを起動できません", "アプリケーションは既に起動しています。")
+    ]
+    assert not paths.db_path.exists()
+
+
+def test_windowed_startup_creates_an_application_for_early_errors(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(QApplication, "instance", lambda: None)
+    monkeypatch.setattr(app_module, "_create_qapplication", lambda: qapp)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
+
+    app_module._report_startup_error("起動に失敗しました。")
+
+    assert messages == [("アプリケーションを起動できません", "起動に失敗しました。")]
+
+
+def test_windowed_startup_reports_database_failure_without_stderr(
+    tmp_path: Path,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
+
+    def fail_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        raise OSError("DB を開けません")
+
+    result = app_module.run_app(
+        paths,
+        lock_factory=lambda path: FakeLock([]),
+        logging_configurator=lambda **kwargs: None,
+        database_opener=fail_open,
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert messages == [
+        (
+            "アプリケーションを起動できません",
+            "予期しないエラーが発生しました。詳細はログを確認してください。",
+        )
+    ]
+    assert "DB を開けません" in caplog.text
+
+
+def test_windowed_startup_reports_domain_failure_without_stderr(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
+
+    def fail_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        raise ValidationError("復元候補が不正です")
+
+    result = app_module.run_app(
+        paths,
+        lock_factory=lambda path: FakeLock([]),
+        logging_configurator=lambda **kwargs: None,
+        database_opener=fail_open,
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert messages == [
+        (
+            "アプリケーションを起動できません",
+            "アプリケーションの起動に失敗しました: 復元候補が不正です",
+        )
+    ]
+
+
+def test_windowed_startup_reports_failure_before_logging_without_stderr(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
+
+    def fail_logging(*, log_dir: Path) -> None:
+        raise OSError("ログを作成できません")
+
+    result = app_module.run_app(
+        paths,
+        lock_factory=lambda path: FakeLock([]),
+        logging_configurator=fail_logging,
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert messages == [
+        (
+            "アプリケーションを起動できません",
+            "アプリケーションの起動に失敗しました。保存先と実行環境を確認してください。",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (
+            ValidationError("表示設定が不正です"),
+            "アプリケーションの起動に失敗しました: 表示設定が不正です",
+        ),
+        (
+            RuntimeError("内部エラー"),
+            "予期しないエラーが発生しました。詳細はログを確認してください。",
+        ),
+    ],
+)
+def test_windowed_startup_reports_failure_before_ui_without_stderr(
+    tmp_path: Path,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    message: str,
+) -> None:
+    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(QApplication, "instance", lambda: None)
+    monkeypatch.setattr(app_module, "_create_qapplication", lambda: qapp)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
+
+    def fail_ui(*args: object, **kwargs: object) -> QApplication:
+        raise failure
+
+    monkeypatch.setattr(app_module, "_initialize_ui", fail_ui)
+    result = app_module.run_app(
+        paths,
+        lock_factory=lambda path: FakeLock([]),
+        logging_configurator=lambda **kwargs: None,
+        database_opener=lambda *args, **kwargs: sqlite3.connect(":memory:"),
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert messages == [("アプリケーションを起動できません", message)]
 
 
 def test_run_app_reports_database_open_failure_and_releases_lock(
