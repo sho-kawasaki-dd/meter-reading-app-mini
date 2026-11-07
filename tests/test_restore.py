@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from meter_reading_mini.core.backup_restore_contracts import RestoreSummary
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.errors import FileOutputError, InvalidBackupError, RestoreError
 from meter_reading_mini.db import restore
@@ -181,6 +182,7 @@ def test_preview_migrates_all_supported_versions_without_changing_source(
     assert preview.source_path == source
     assert preview.source_schema_version == version
     assert preview.warnings == ()
+    assert preview.summary == RestoreSummary(1, 0, 0, 0, 0, 0, 0)
     candidate = _workspace(harness) / "candidate.db"
     with closing(connect_readonly(candidate, immutable=True)) as conn:
         assert conn.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
@@ -215,6 +217,7 @@ def test_restore_preserves_v4_formula_and_wal_backup(
     result = harness.service.restore_after_shutdown(harness.close)
 
     assert preview.warnings == ()
+    assert preview.summary == RestoreSummary(1, 1, 1, 0, 0, 0, 1)
     assert result.backup_path == _backup_path(harness)
     assert harness.close_calls == 1
     assert _read_staff(result.backup_path) == ["現行担当"]

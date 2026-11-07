@@ -13,7 +13,11 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from meter_reading_mini.core.backup_restore_contracts import RestorePreview, RestoreResult
+from meter_reading_mini.core.backup_restore_contracts import (
+    RestorePreview,
+    RestoreResult,
+    RestoreSummary,
+)
 from meter_reading_mini.core.errors import (
     FileOutputError,
     InvalidBackupError,
@@ -158,6 +162,29 @@ def _business_warnings(conn: sqlite3.Connection) -> tuple[str, ...]:
         return tuple(list_business_integrity_warnings(conn))
     except sqlite3.DatabaseError as error:
         raise InvalidBackupError((f"業務整合性検査に失敗しました: {error}",)) from error
+
+
+def _restore_summary(conn: sqlite3.Connection) -> RestoreSummary:
+    row = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM staff), "
+        "(SELECT COUNT(*) FROM physical_meters), "
+        "(SELECT COUNT(*) FROM measurement_definitions), "
+        "(SELECT COUNT(*) FROM planned_readings), "
+        "(SELECT COUNT(*) FROM reading_transactions), "
+        "(SELECT COUNT(*) FROM replacement_events), "
+        "(SELECT COUNT(*) FROM aggregation_formulas)"
+    ).fetchone()
+    if row is None:
+        raise sqlite3.DatabaseError("復元候補の件数を確認できません")
+    return RestoreSummary(
+        staff_count=int(row[0]),
+        meter_count=int(row[1]),
+        definition_count=int(row[2]),
+        planned_reading_count=int(row[3]),
+        result_count=int(row[4]),
+        replacement_count=int(row[5]),
+        formula_count=int(row[6]),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +379,7 @@ class SQLiteBackupRestoreRepository:
                     check_migration_prechecks(candidate_conn, copied_version, SCHEMA_VERSION)
                     migrate_schema(candidate_conn, copied_version, SCHEMA_VERSION)
                 warnings = _business_warnings(candidate_conn)
+                summary = _restore_summary(candidate_conn)
                 _checkpoint(candidate_conn)
         except (MigrationError, UnsupportedSchemaError) as error:
             raise InvalidBackupError((f"旧版 DB を移行できません: {error}",)) from error
@@ -373,7 +401,7 @@ class SQLiteBackupRestoreRepository:
             ) from error
         self._check_source(source, source_before)
         return _Candidate(
-            RestorePreview(source, source_version, warnings),
+            RestorePreview(source, source_version, warnings, summary),
             workspace,
             source_before,
             candidate_fingerprint,
@@ -419,6 +447,8 @@ class SQLiteBackupRestoreRepository:
                     raise InvalidBackupError(("一時候補が最新版ではありません。",))
                 if _business_warnings(conn) != candidate.preview.warnings:
                     raise InvalidBackupError(("一時候補の警告が変わりました。",))
+                if _restore_summary(conn) != candidate.preview.summary:
+                    raise InvalidBackupError(("一時候補の件数が変わりました。",))
             _require_single_file(candidate.path)
             _require_private_file(candidate.path)
             if _fingerprint(candidate.path) != candidate.candidate_fingerprint:

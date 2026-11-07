@@ -9,10 +9,22 @@ from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
+class RestoreSummary:
+    staff_count: int
+    meter_count: int
+    definition_count: int
+    planned_reading_count: int
+    result_count: int
+    replacement_count: int
+    formula_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class RestorePreview:
     source_path: Path
     source_schema_version: int
     warnings: tuple[str, ...]
+    summary: RestoreSummary
 
 
 @dataclass(frozen=True, slots=True)
