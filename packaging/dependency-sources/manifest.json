@@ -2,7 +2,7 @@
   "schema_version": 1,
   "audit_status": "pending",
   "sandbox_validation_status": "pending",
-  "audit_note": "libffi の実ビルドコミット、pydantic-core バイナリと Rust 依存・標準ライブラリの対応、Rust 通知、Qt バイナリとの対応および Microsoft 製コンポーネントの条件は未監査。配布には使用しない。",
+  "audit_note": "libffi の実ビルドコミット、pydantic-core バイナリと Rust 依存・標準ライブラリの対応、Rust 通知、Qt バイナリとの対応および Microsoft 製コンポーネントの条件は未監査。手順: ../LICENSING_AUDIT_PROCEDURE.md。配布には使用しない。",
   "external": [
     {
       "component": "Qt-qtbase",

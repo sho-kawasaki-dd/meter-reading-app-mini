@@ -13,6 +13,7 @@ docs/plan/implemented/ルート配置移行計画.md
 docs/plan/フェーズ5_集計・バックアップ・配布計画.md
 docs/plan/ローカル検針管理アプリ開発計画書.md
 packaging/DISTRIBUTION_LICENSE.txt
+packaging/LICENSING_AUDIT_PROCEDURE.md
 packaging/SOURCE_CODE.txt
 packaging/THIRD_PARTY_NOTICES.txt
 packaging/bundle-files.txt
