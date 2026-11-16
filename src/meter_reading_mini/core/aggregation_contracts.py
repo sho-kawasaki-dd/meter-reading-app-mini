@@ -102,6 +102,7 @@ class AggregationDetailSource(StrEnum):
 class AggregationBaselineSource(StrEnum):
     READING = "reading"
     REPLACEMENT_INITIAL = "replacement_initial"
+    DEFINITION_INITIAL = "definition_initial"
 
 
 class AggregationCode(StrEnum):

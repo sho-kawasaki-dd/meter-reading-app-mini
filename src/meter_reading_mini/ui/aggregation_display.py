@@ -33,6 +33,7 @@ SOURCE_LABELS = {
 BASELINE_LABELS = {
     AggregationBaselineSource.READING: "前回実測",
     AggregationBaselineSource.REPLACEMENT_INITIAL: "交換時初期値",
+    AggregationBaselineSource.DEFINITION_INITIAL: "測定定義の初期値",
 }
 
 

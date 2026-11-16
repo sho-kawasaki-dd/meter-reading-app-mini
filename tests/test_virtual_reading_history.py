@@ -791,11 +791,17 @@ def test_virtual_unexpected_failure_does_not_publish_partial_changes(
             raw_reading: Decimal,
             previous_measured_reading: HistoricalMeasuredReadingRecord | None,
             replacement_boundary: ReplacementBoundaryRecord | None = None,
+            *,
+            definition_initial_reading: Decimal | None = None,
         ) -> UsageDeltaCalculationResult:
             if raw_reading == Decimal("130"):
                 raise RuntimeError("予期しない計算障害")
             return super().calculate_measured_reading(
-                measurement_definition, raw_reading, previous_measured_reading, replacement_boundary
+                measurement_definition,
+                raw_reading,
+                previous_measured_reading,
+                replacement_boundary,
+                definition_initial_reading=definition_initial_reading,
             )
 
     history = VirtualReadingHistory(sqlite_repository, calculation_service=FailingCalculation())

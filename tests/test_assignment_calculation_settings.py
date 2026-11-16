@@ -330,6 +330,26 @@ def test_preview_identifies_invalid_values_and_commit_rechecks(
         service.preview_correction(replace(request, staff_id="999"))
 
 
+def test_correction_rejects_initial_reading_even_without_measurements(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    conn.execute(
+        "UPDATE meter_assignments SET initial_reading = ? WHERE measurement_definition_id = ?",
+        ("100", DEFINITION_ID),
+    )
+    service = _service(conn, repository)
+    request = _request(repository, METER_ID, "1", "100")
+    before = _state(conn)
+    preview = service.preview_correction(request)
+    assert not preview.can_apply
+    assert any(issue.target == "initial_reading" for issue in preview.issues)
+    with pytest.raises(ValidationError):
+        service.correct_assignment(request)
+    assert _state(conn) == before
+
+
 def test_removing_rollover_is_rejected_if_a_difference_would_be_negative(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:

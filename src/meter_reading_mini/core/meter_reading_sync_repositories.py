@@ -8,7 +8,7 @@ Service が利用する Protocol と入出力レコードを提供し、lookup �
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -179,6 +179,7 @@ class MeterAssignmentRecord:
     rollover_value: Decimal | None
     effective_to: datetime | None = None
     needs_review: bool = False
+    initial_reading: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +286,7 @@ class MeasurementDefinitionCreateInput:
     generation_start_date: date
     initial_schedule_json: str | None
     initial_meter_id: str | None
+    initial_reading: Decimal | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -913,6 +915,14 @@ class MeterAssignmentRepository(AssignmentCalculationLookupRepository, Protocol)
     def set_initial_meter_assignment(
         self, measurement_definition_id: str, meter_id: str, effective_from: datetime
     ) -> None: ...
+
+    def set_assignment_initial_reading(
+        self, assignment: MeterAssignmentRecord, value: Decimal | None
+    ) -> None: ...
+
+    def has_assignment_measured_readings(self, assignment: MeterAssignmentRecord) -> bool: ...
+
+    def has_definition_replacement(self, measurement_definition_id: str) -> bool: ...
 
 
 class AssignmentCalculationSettingsRepository(MeterAssignmentRepository, Protocol):

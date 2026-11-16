@@ -53,6 +53,47 @@ def test_calculator_returns_zero_for_first_delta_measurement() -> None:
     assert result.usage_delta == Decimal("0")
 
 
+def test_definition_initial_is_used_only_without_previous_or_boundary() -> None:
+    service = UsageDeltaCalculationService()
+    definition = MeasurementDefinitionRecord(
+        measurement_definition_id="md-001",
+        value_schema=ValueSchema.DECIMAL_STRING,
+        calculation_method=CalculationMethod.DELTA,
+        multiplier=Decimal("2"),
+        rollover_value=Decimal("100"),
+    )
+    initial = service.calculate(
+        definition, build_request(raw_reading="3"), None, definition_initial_reading=Decimal("0")
+    )
+    assert (initial.last_reading, initial.usage_delta) == (Decimal("0"), Decimal("6"))
+    rollover = service.calculate_measured_reading(
+        definition, Decimal("3"), None, definition_initial_reading=Decimal("95")
+    )
+    assert (rollover.last_reading, rollover.usage_delta) == (Decimal("95"), Decimal("16"))
+    boundary = ReplacementBoundaryRecord(
+        replacement_event_id="replacement",
+        measurement_definition_id="md-001",
+        new_initial_reading=None,
+    )
+    after_replacement = service.calculate(
+        definition,
+        build_request(raw_reading="3"),
+        None,
+        boundary,
+        definition_initial_reading=Decimal("95"),
+    )
+    assert (after_replacement.last_reading, after_replacement.usage_delta) == (None, Decimal("0"))
+    no_rollover = MeasurementDefinitionRecord(
+        measurement_definition_id="md-001",
+        value_schema=ValueSchema.DECIMAL_STRING,
+        calculation_method=CalculationMethod.DELTA,
+    )
+    with pytest.raises(NegativeUsageDeltaError):
+        service.calculate_measured_reading(
+            no_rollover, Decimal("3"), None, definition_initial_reading=Decimal("10")
+        )
+
+
 def test_calculator_subtracts_previous_measured_reading() -> None:
     service = UsageDeltaCalculationService()
     definition = MeasurementDefinitionRecord(

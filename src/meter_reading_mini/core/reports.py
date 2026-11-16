@@ -6,7 +6,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Collection, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 from decimal import Decimal
 
 from meter_reading_mini.core.aggregation_contracts import (
@@ -47,7 +47,10 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeterAssignmentRecord,
     PlannedReadingTaskState,
 )
-from meter_reading_mini.core.timezone_settings import build_business_date_provider
+from meter_reading_mini.core.timezone_settings import (
+    DEFAULT_APP_TIMEZONE,
+    build_business_date_provider,
+)
 
 type _Event = AggregationReadingRecord | AggregationBoundaryRecord
 type _ReviewKey = tuple[str, str, datetime]
@@ -191,12 +194,14 @@ class _DefinitionHistory:
         boundaries: Sequence[AggregationBoundaryRecord],
         assignments: Sequence[MeterAssignmentRecord],
         review_flags: dict[_ReviewKey, AssignmentReviewFlagRecord],
+        business_timezone: tzinfo,
     ) -> None:
         self.definition = definition
         self._readings = sorted(
             readings, key=lambda item: (item.scheduled_at, item.planned_reading_id)
         )
         self._assignments = tuple(assignments)
+        self._business_timezone = business_timezone
         self._review_flags = review_flags
         self._cache: dict[tuple[AggregationDetailSource, str], _Observation] = {}
         self._measured: dict[str, list[AggregationReadingRecord]] = {}
@@ -334,6 +339,14 @@ class _DefinitionHistory:
         if len(incoming) > 1:
             raise ValidationError(f"メーターの交換基準が複数あります: {assignment.meter_id}")
         if not incoming:
+            if assignment.initial_reading is not None:
+                return AggregationBaseline(
+                    AggregationBaselineSource.DEFINITION_INITIAL,
+                    self.definition.measurement_definition_id,
+                    assignment.effective_from.astimezone(self._business_timezone).date(),
+                    assignment.effective_from,
+                    assignment.initial_reading,
+                )
             return None
         boundary = incoming[0]
         self._boundary_assignments(boundary)
@@ -820,9 +833,11 @@ class AggregationReportService:
         *,
         read_transaction_factory: _TransactionFactory,
         current_business_date_provider: Callable[[], date] | None = None,
+        timezone_provider: Callable[[], tzinfo] = lambda: DEFAULT_APP_TIMEZONE,
     ) -> None:
         self._repository = repository
         self._read_transaction_factory = read_transaction_factory
+        self._timezone_provider = timezone_provider
         self._current_business_date_provider = (
             current_business_date_provider or build_business_date_provider()
         )
@@ -953,6 +968,7 @@ class AggregationReportService:
                 boundaries_by_definition[definition_id],
                 self._repository.list_meter_assignments(definition_id),
                 flags,
+                self._timezone_provider(),
             )
             for definition_id in ids
         }

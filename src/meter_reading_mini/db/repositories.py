@@ -1361,13 +1361,14 @@ class SQLiteRepository:
             self._execute(
                 "INSERT INTO meter_assignments "
                 "(measurement_definition_id, meter_id, effective_from, effective_to, "
-                "multiplier, rollover_value) VALUES (?, ?, ?, NULL, ?, ?)",
+                "multiplier, rollover_value, initial_reading) VALUES (?, ?, ?, NULL, ?, ?, ?)",
                 (
                     request.measurement_definition_id,
                     request.initial_meter_id,
                     self._midnight_utc(request.generation_start_date),
                     _decimal_text(request.multiplier),
                     _decimal_text(request.rollover_value),
+                    _decimal_text(request.initial_reading),
                 ),
             )
 
@@ -1480,7 +1481,7 @@ class SQLiteRepository:
             "multiplier, rollover_value, EXISTS (SELECT 1 FROM assignment_review_flags AS f "
             "WHERE f.measurement_definition_id = meter_assignments.measurement_definition_id "
             "AND f.meter_id = meter_assignments.meter_id "
-            "AND f.assignment_effective_from = meter_assignments.effective_from) "
+            "AND f.assignment_effective_from = meter_assignments.effective_from), initial_reading "
             "FROM meter_assignments WHERE measurement_definition_id = ? "
             "AND effective_from <= ? AND (effective_to IS NULL OR effective_to > ?) "
             "ORDER BY effective_from, meter_id",
@@ -1498,6 +1499,8 @@ class SQLiteRepository:
 
     @staticmethod
     def _assignment_record(row: tuple[Any, ...]) -> MeterAssignmentRecord:
+        if len(row) < 8:
+            raise ValidationError("割当の読値初期値を取得できません。")
         multiplier = _read_decimal(str(row[4]))
         rollover_value = _read_decimal(str(row[5]) if row[5] is not None else None)
         if multiplier is None or multiplier <= 0:
@@ -1511,7 +1514,8 @@ class SQLiteRepository:
             effective_to=parse_utc(str(row[3])) if row[3] is not None else None,
             multiplier=multiplier,
             rollover_value=rollover_value,
-            needs_review=bool(row[6]) if len(row) > 6 else False,
+            needs_review=bool(row[6]),
+            initial_reading=_read_decimal(str(row[7]) if row[7] is not None else None),
         )
 
     def get_meter_assignment_by_key(
@@ -1522,7 +1526,7 @@ class SQLiteRepository:
             "multiplier, rollover_value, EXISTS (SELECT 1 FROM assignment_review_flags AS f "
             "WHERE f.measurement_definition_id = meter_assignments.measurement_definition_id "
             "AND f.meter_id = meter_assignments.meter_id "
-            "AND f.assignment_effective_from = meter_assignments.effective_from) "
+            "AND f.assignment_effective_from = meter_assignments.effective_from), initial_reading "
             "FROM meter_assignments "
             "WHERE measurement_definition_id = ? AND meter_id = ? AND effective_from = ?",
             (measurement_definition_id, meter_id, utc_now_str(effective_from)),
@@ -1535,7 +1539,7 @@ class SQLiteRepository:
             "multiplier, rollover_value, EXISTS (SELECT 1 FROM assignment_review_flags AS f "
             "WHERE f.measurement_definition_id = meter_assignments.measurement_definition_id "
             "AND f.meter_id = meter_assignments.meter_id "
-            "AND f.assignment_effective_from = meter_assignments.effective_from) "
+            "AND f.assignment_effective_from = meter_assignments.effective_from), initial_reading "
             "FROM meter_assignments WHERE measurement_definition_id = ? ORDER BY effective_from",
             (measurement_definition_id,),
         ).fetchall()
@@ -1557,6 +1561,40 @@ class SQLiteRepository:
             )
             for row in rows
         ]
+
+    def set_assignment_initial_reading(
+        self, assignment: MeterAssignmentRecord, value: Decimal | None
+    ) -> None:
+        cursor = self._execute(
+            "UPDATE meter_assignments SET initial_reading = ? "
+            "WHERE measurement_definition_id = ? AND meter_id = ? AND effective_from = ? "
+            "AND NOT EXISTS (SELECT 1 FROM meter_assignments AS earlier "
+            "WHERE earlier.measurement_definition_id = meter_assignments.measurement_definition_id "
+            "AND earlier.effective_from < meter_assignments.effective_from) "
+            "AND NOT EXISTS (SELECT 1 FROM replacement_boundaries AS b "
+            "WHERE b.measurement_definition_id = meter_assignments.measurement_definition_id "
+            "AND b.new_meter_id = meter_assignments.meter_id "
+            "AND b.new_assignment_effective_from = meter_assignments.effective_from)",
+            (
+                _decimal_text(value),
+                assignment.measurement_definition_id,
+                assignment.meter_id,
+                utc_now_str(assignment.effective_from),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValidationError("最初の割当が見つからないか、交換後の割当です。")
+
+    def has_assignment_measured_readings(self, assignment: MeterAssignmentRecord) -> bool:
+        return bool(self.list_assignment_measured_readings(assignment))
+
+    def has_definition_replacement(self, measurement_definition_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM replacement_boundaries "
+            "WHERE measurement_definition_id = ?)",
+            (measurement_definition_id,),
+        ).fetchone()
+        return bool(row[0])
 
     def clear_assignment_review_flag(self, assignment: MeterAssignmentRecord) -> None:
         self._execute(
@@ -2421,7 +2459,7 @@ class SQLiteRepository:
             "multiplier, rollover_value, EXISTS (SELECT 1 FROM assignment_review_flags AS f "
             "WHERE f.measurement_definition_id = meter_assignments.measurement_definition_id "
             "AND f.meter_id = meter_assignments.meter_id "
-            "AND f.assignment_effective_from = meter_assignments.effective_from) "
+            "AND f.assignment_effective_from = meter_assignments.effective_from), initial_reading "
             "FROM meter_assignments "
             "WHERE meter_id = ? AND effective_from < ? "
             "AND (effective_to IS NULL OR effective_to > ?) "

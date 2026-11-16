@@ -184,6 +184,7 @@ def test_legacy_location_name_conflict_is_a_warning_not_a_restore_blocker(
         ("measurement_definitions", "rollover_value"),
         ("meter_assignments", "multiplier"),
         ("meter_assignments", "rollover_value"),
+        ("meter_assignments", "initial_reading"),
         ("assignment_calculation_corrections", "old_multiplier"),
         ("assignment_calculation_corrections", "old_rollover_value"),
         ("assignment_calculation_corrections", "new_multiplier"),
@@ -218,6 +219,39 @@ def test_assignment_multiplier_rejects_invalid_values(
     assert any(
         "meter_assignments.multiplier" in reason for reason in check_business_integrity(conn)
     )
+
+
+@pytest.mark.parametrize(
+    ("meter_id", "value", "expected"),
+    [
+        (METER_ID, "-1", "meter_assignments.initial_reading"),
+        (METER_ID, "1000", "ロールオーバー"),
+        ("new-meter", "5", "最初の割当"),
+    ],
+)
+def test_integrity_rejects_invalid_initial_readings(
+    prepared_database: tuple[sqlite3.Connection, str], meter_id: str, value: str, expected: str
+) -> None:
+    conn, _ = prepared_database
+    conn.execute(
+        "UPDATE meter_assignments SET initial_reading = ? WHERE meter_id = ?", (value, meter_id)
+    )
+    assert any(expected in reason for reason in check_business_integrity(conn))
+
+
+def test_integrity_rejects_initial_reading_for_raw_only(
+    prepared_database: tuple[sqlite3.Connection, str],
+) -> None:
+    conn, _ = prepared_database
+    conn.execute(
+        "UPDATE meter_assignments SET initial_reading = '1' WHERE meter_id = ?", (METER_ID,)
+    )
+    conn.execute(
+        "UPDATE measurement_definitions SET calculation_method = 'raw_only' "
+        "WHERE measurement_definition_id = ?",
+        (DEFINITION_ID,),
+    )
+    assert any("測定方式" in reason for reason in check_business_integrity(conn))
 
 
 @pytest.mark.parametrize(

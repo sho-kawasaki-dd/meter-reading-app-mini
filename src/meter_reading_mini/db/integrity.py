@@ -22,7 +22,7 @@ from meter_reading_mini.core.contract_models import (
     Purpose,
 )
 from meter_reading_mini.core.errors import FormulaValidationError, ValidationError
-from meter_reading_mini.core.reading_values import validate_reading_value
+from meter_reading_mini.core.reading_values import validate_initial_reading, validate_reading_value
 from meter_reading_mini.core.timeutil import parse_utc
 from meter_reading_mini.db.backup import check_sqlite_integrity
 from meter_reading_mini.db.connection import read_transaction
@@ -37,6 +37,7 @@ _DECIMAL_FIELDS: dict[str, tuple[tuple[str, bool, bool], ...]] = {
     "meter_assignments": (
         ("multiplier", True, True),
         ("rollover_value", False, True),
+        ("initial_reading", False, False),
     ),
     "assignment_calculation_corrections": (
         ("old_multiplier", True, True),
@@ -136,7 +137,14 @@ def _check_assignments(
     by_definition: dict[str, list[_Assignment]] = {}
     rows = conn.execute(
         "SELECT a.rowid, a.measurement_definition_id, a.meter_id, a.effective_from, "
-        "a.effective_to, d.decimal_places, d.location_id, m.location_id "
+        "a.effective_to, d.decimal_places, d.location_id, m.location_id, "
+        "a.initial_reading, d.value_schema, d.calculation_method, "
+        "EXISTS (SELECT 1 FROM meter_assignments AS earlier "
+        "WHERE earlier.measurement_definition_id = a.measurement_definition_id "
+        "AND earlier.effective_from < a.effective_from), "
+        "EXISTS (SELECT 1 FROM replacement_boundaries AS b "
+        "WHERE b.measurement_definition_id = a.measurement_definition_id "
+        "AND b.new_meter_id = a.meter_id AND b.new_assignment_effective_from = a.effective_from) "
         ", EXISTS (SELECT 1 FROM assignment_review_flags AS f "
         "WHERE f.measurement_definition_id = a.measurement_definition_id "
         "AND f.meter_id = a.meter_id AND f.assignment_effective_from = a.effective_from) "
@@ -154,6 +162,11 @@ def _check_assignments(
         places,
         def_location,
         meter_location,
+        initial_reading,
+        value_schema,
+        calculation_method,
+        has_earlier,
+        is_replacement,
         needs_review,
     ) in rows:
         label = f"割当 {definition_id}/{meter_id}/{start_text}"
@@ -180,6 +193,21 @@ def _check_assignments(
             rollover=numbers.get(("meter_assignments", int(rowid), "rollover_value")),
             needs_review=bool(needs_review),
         )
+        if initial_reading is not None:
+            if has_earlier or is_replacement:
+                reasons.append(f"{label}の読値初期値は最初の割当だけに設定できます。")
+            if value_schema != "decimal_string" or calculation_method != "delta":
+                reasons.append(f"{label}の測定方式には読値初期値を設定できません。")
+            value = numbers.get(("meter_assignments", int(rowid), "initial_reading"))
+            if value is not None:
+                try:
+                    validate_initial_reading(
+                        value,
+                        decimal_places=assignment.decimal_places,
+                        rollover_value=None if assignment.needs_review else assignment.rollover,
+                    )
+                except ValidationError as exc:
+                    reasons.append(f"{label}の読値初期値: {exc}")
         by_key[(assignment.definition_id, assignment.meter_id, assignment.start_text)] = assignment
         by_definition.setdefault(assignment.definition_id, []).append(assignment)
 

@@ -25,6 +25,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
     PlannedReadingCloseReason,
 )
+from meter_reading_mini.core.reading_preview import ReadingPreviewService
 from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
 from meter_reading_mini.core.reading_write_orchestration import (
     ReadingWriteOrchestrationService,
@@ -87,6 +88,53 @@ def test_common_write_path_recalculates_all_following_measured_values(
         "SELECT last_reading, usage_delta FROM reading_transactions "
         "WHERE planned_reading_id = 'plan-3'"
     ).fetchone() == ("120", "30")
+
+
+def test_initial_reading_survives_preview_write_and_first_reading_removal(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, multiplier=Decimal("2"))
+    definitions = MeasurementDefinitionService(
+        repository, repository, repository, transaction_factory=partial(transaction, conn)
+    )
+    definitions.set_initial_reading(DEFINITION_ID, Decimal("10"))
+    for name, hour in (("initial-first", 4), ("initial-second", 5)):
+        create_plan(repository, name, _recorded_at(hour))
+    first = ManualReadingInput(
+        "initial-first", ResultStatus.MEASURED, _recorded_at(4), Decimal("12"), None
+    )
+    preview = ReadingPreviewService(
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        repository,
+        now_provider=lambda: _recorded_at(6),
+    ).preview_manual_reading(first)
+    assert (preview.previous_reading, preview.previous_source.value, preview.usage_delta) == (
+        Decimal("10"),
+        "definition_initial",
+        Decimal("4"),
+    )
+    writer.save_manual_reading(first, staff_id=STAFF_ID)
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "initial-second", ResultStatus.MEASURED, _recorded_at(5), Decimal("15"), None
+        ),
+        staff_id=STAFF_ID,
+    )
+    with pytest.raises(ValidationError):
+        definitions.set_initial_reading(DEFINITION_ID, Decimal("9"))
+    writer.save_manual_reading(
+        ManualReadingInput("initial-first", ResultStatus.SKIPPED, _recorded_at(4), None, None),
+        staff_id=STAFF_ID,
+    )
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        ("initial-second",),
+    ).fetchone() == ("10", "10")
 
 
 def test_manual_write_generates_pc_signature_and_monotonic_update_time(

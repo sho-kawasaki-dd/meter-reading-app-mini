@@ -33,9 +33,9 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingTaskState,
     ReplacementBoundaryLookupRepository,
     ReplacementBoundaryMaintenanceRepository,
-    ReplacementBoundaryRecord,
 )
 from meter_reading_mini.core.previous_reading import (
+    CalculationContext,
     PreviousReadingSource,
     describe_initial_previous_reading,
 )
@@ -114,6 +114,7 @@ class ReadingPreviewService:
                     resolved.raw_reading,
                     context.previous,
                     context.boundary,
+                    definition_initial_reading=context.definition_initial_reading,
                 )
                 usage_delta = calculation.usage_delta
                 rollover_applied = (
@@ -214,7 +215,7 @@ class ReadingPreviewService:
                     break
                 assignment = resolve_planned_assignment(self._assignment_repository, planned)
                 validate_persisted_assignment_reading(reading.raw_reading, assignment)
-                previous, replacement_boundary = self._calculation_context(
+                context = self._calculation_context(
                     planned,
                     definition,
                     historical,
@@ -222,8 +223,9 @@ class ReadingPreviewService:
                 self._calculation_service.calculate_measured_reading(
                     definition_with_assignment_conditions(definition, assignment),
                     historical.raw_for(reading),
-                    previous,
-                    replacement_boundary,
+                    context.previous,
+                    context.boundary,
+                    definition_initial_reading=context.definition_initial_reading,
                 )
                 historical.record(reading.planned_reading_id, historical.raw_for(reading))
             if next_boundary is None:
@@ -245,7 +247,7 @@ class ReadingPreviewService:
         planned: PlannedReadingRecord,
         definition: MeasurementDefinitionRecord,
         historical: HistoricalMeasuredReadingLookupRepository,
-    ) -> tuple[HistoricalMeasuredReadingRecord | None, ReplacementBoundaryRecord | None]:
+    ) -> CalculationContext:
         _, context = resolve_planned_calculation_context(
             self._assignment_repository,
             historical,
@@ -253,7 +255,7 @@ class ReadingPreviewService:
             planned,
             definition,
         )
-        return context.previous, context.boundary
+        return context
 
 
 class _VirtualHistoricalReadings:

@@ -33,6 +33,8 @@ class UsageDeltaCalculationService:
         reading_request: ReadingUpsertRequest,
         previous_measured_reading: HistoricalMeasuredReadingRecord | None,
         replacement_boundary: ReplacementBoundaryRecord | None = None,
+        *,
+        definition_initial_reading: Decimal | None = None,
     ) -> UsageDeltaCalculationResult:
         """resolved 済み reading request から確定差分を返す。"""
 
@@ -47,6 +49,7 @@ class UsageDeltaCalculationService:
             reading_request.raw_reading,
             previous_measured_reading,
             replacement_boundary,
+            definition_initial_reading=definition_initial_reading,
         )
 
     def calculate_measured_reading(
@@ -55,32 +58,23 @@ class UsageDeltaCalculationService:
         raw_reading: Decimal,
         previous_measured_reading: HistoricalMeasuredReadingRecord | None,
         replacement_boundary: ReplacementBoundaryRecord | None = None,
+        *,
+        definition_initial_reading: Decimal | None = None,
     ) -> UsageDeltaCalculationResult:
         """保存済み実測値の差分を、前回実測または交換境界から計算する。"""
 
         if measurement_definition.calculation_method is CalculationMethod.RAW_ONLY:
             return UsageDeltaCalculationResult(last_reading=None, usage_delta=None)
 
-        if (
-            previous_measured_reading is None
-            and replacement_boundary is not None
-            and replacement_boundary.new_initial_reading is not None
-        ):
+        if previous_measured_reading is not None:
+            last_reading = previous_measured_reading.raw_reading
+        elif replacement_boundary is not None:
             last_reading = replacement_boundary.new_initial_reading
-            delta = _calculate_delta(
-                raw_reading,
-                last_reading,
-                measurement_definition.rollover_value,
-            )
-            return UsageDeltaCalculationResult(
-                last_reading=last_reading,
-                usage_delta=exact_multiply(delta, measurement_definition.multiplier),
-            )
-
-        if previous_measured_reading is None:
+        else:
+            last_reading = definition_initial_reading
+        if last_reading is None:
             return UsageDeltaCalculationResult(last_reading=None, usage_delta=Decimal("0"))
 
-        last_reading = previous_measured_reading.raw_reading
         delta = _calculate_delta(
             raw_reading,
             last_reading,

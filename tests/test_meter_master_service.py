@@ -552,6 +552,128 @@ def test_measurement_definition_service_validates_create_values(
             service.create_measurement_definition(request)
 
 
+@pytest.mark.parametrize(
+    ("cycle", "schedule"),
+    [
+        (ReadingCycle.DAILY_2X, '{"reading_sessions":["08:00"]}'),
+        (ReadingCycle.DAILY_2X, '{"reading_sessions":["08:00","08:00"]}'),
+        (ReadingCycle.WEEKLY, '{"reading_sessions":["08:00"]}'),
+        (ReadingCycle.MONTHLY, '{"selector_type":"day_of_month","day_of_month":0}'),
+        (ReadingCycle.MONTHLY, '{"selector_type":"day_of_month","day_of_month":32}'),
+        (ReadingCycle.MONTHLY, '{"selector_type":"nth_weekday","nth":0,"nth_weekday":"monday"}'),
+        (
+            ReadingCycle.EVERY_TWO_MONTHS,
+            '{"selector_type":"nth_weekday","nth":6,"nth_weekday":"monday","month_parity":"odd"}',
+        ),
+        (
+            ReadingCycle.EVERY_TWO_MONTHS,
+            '{"selector_type":"month_edge","edge":"middle","month_parity":"odd"}',
+        ),
+    ],
+)
+def test_measurement_definition_rejects_invalid_initial_schedule(
+    file_database_repository: tuple, cycle: ReadingCycle, schedule: str
+) -> None:
+    conn, repository = file_database_repository
+    service = _definition_service(conn, repository, id_provider=lambda: "invalid-schedule")
+
+    with pytest.raises(ValidationError):
+        service.create_measurement_definition(
+            replace(_new_definition_request(), reading_cycle=cycle, initial_schedule_json=schedule)
+        )
+    assert repository.get_measurement_definition("invalid-schedule") is None
+
+
+def test_definition_initial_reading_creation_validation_and_update(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = _definition_service(conn, repository, id_provider=lambda: "initial-definition")
+    base = _new_definition_request(
+        initial_meter_id=METER_ID, decimal_places=2, rollover_value=Decimal("100")
+    )
+    for request in (
+        replace(base, initial_meter_id=None, initial_reading=Decimal("1")),
+        replace(base, initial_reading=Decimal("-1")),
+        replace(base, initial_reading=Decimal("NaN")),
+        replace(base, initial_reading=Decimal("1.234")),
+        replace(base, initial_reading=Decimal("100")),
+        replace(base, calculation_method=CalculationMethod.RAW_ONLY, initial_reading=Decimal("1")),
+        replace(
+            base, value_schema=ValueSchema.POWER_FACTOR_PERCENT_PHASE, initial_reading=Decimal("1")
+        ),
+    ):
+        with pytest.raises(ValidationError):
+            service.create_measurement_definition(request)
+    created = service.create_measurement_definition(replace(base, initial_reading=Decimal("1.230")))
+    assignment = repository.list_meter_assignments(created.measurement_definition_id)[0]
+    assert assignment.initial_reading == Decimal("1.230")
+    service.set_initial_reading(created.measurement_definition_id, Decimal("0"))
+    assert (
+        repository.list_meter_assignments(created.measurement_definition_id)[0].initial_reading == 0
+    )
+    service.set_initial_reading(created.measurement_definition_id, None)
+    assert (
+        repository.list_meter_assignments(created.measurement_definition_id)[0].initial_reading
+        is None
+    )
+
+
+@pytest.mark.parametrize("condition", ["inactive", "no_assignment", "needs_review", "raw_only"])
+def test_set_initial_reading_rejects_ineligible_definitions(
+    file_database_repository: tuple, condition: str
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = _definition_service(conn, repository)
+    if condition == "inactive":
+        service.deactivate_measurement_definition(DEFINITION_ID)
+    elif condition == "no_assignment":
+        conn.execute(
+            "DELETE FROM meter_assignments WHERE measurement_definition_id = ?", (DEFINITION_ID,)
+        )
+    elif condition == "needs_review":
+        conn.execute(
+            "INSERT INTO assignment_review_flags "
+            "SELECT measurement_definition_id, meter_id, effective_from, "
+            "'確認', '2026-02-01 00:00:00' "
+            "FROM meter_assignments WHERE measurement_definition_id = ?",
+            (DEFINITION_ID,),
+        )
+    else:
+        conn.execute(
+            "UPDATE measurement_definitions SET calculation_method = 'raw_only' "
+            "WHERE measurement_definition_id = ?",
+            (DEFINITION_ID,),
+        )
+    before = tuple(conn.iterdump())
+    with pytest.raises(ValidationError):
+        service.set_initial_reading(DEFINITION_ID, Decimal("10"))
+    assert tuple(conn.iterdump()) == before
+
+
+def test_initial_reading_blocks_incompatible_precision_reduction(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = _definition_service(conn, repository)
+    service.set_initial_reading(DEFINITION_ID, Decimal("1.23"))
+    update = MeasurementDefinitionUpdateRequest(
+        display_name="更新",
+        category=Category.WATER,
+        unit="m3",
+        decimal_places=1,
+        warning_threshold=None,
+        purpose=Purpose.OPERATIONAL,
+    )
+    before = tuple(conn.iterdump())
+    with pytest.raises(ValidationError, match="読値初期値"):
+        service.update_measurement_definition(DEFINITION_ID, update)
+    assert tuple(conn.iterdump()) == before
+
+
 def test_measurement_definition_service_sets_initial_assignment_and_reactivation_floor(
     file_database_repository: tuple,
 ) -> None:
@@ -628,7 +750,11 @@ def test_measurement_definition_service_rolls_back_create_after_partial_reposito
 
     monkeypatch.setattr(repository, "create_measurement_definition", create_then_fail)
     with pytest.raises(RuntimeError, match="初期履歴保存後の障害"):
-        service.create_measurement_definition(_new_definition_request(initial_meter_id=METER_ID))
+        service.create_measurement_definition(
+            replace(
+                _new_definition_request(initial_meter_id=METER_ID), initial_reading=Decimal("3")
+            )
+        )
     assert repository.get_measurement_definition("definition-rollback") is None
     assert repository.list_measurement_definition_schedule_history("definition-rollback") == []
     assert repository.list_meter_assignments("definition-rollback") == []

@@ -23,6 +23,7 @@ class PreviousReadingSource(StrEnum):
     MEASURED = "measured"
     REPLACEMENT_INITIAL = "replacement_initial"
     REPLACEMENT_NO_INITIAL = "replacement_no_initial"
+    DEFINITION_INITIAL = "definition_initial"
     NONE = "none"
 
 
@@ -32,6 +33,7 @@ class CalculationContext:
 
     previous: HistoricalMeasuredReadingRecord | None
     boundary: ReplacementBoundaryRecord | None
+    definition_initial_reading: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +93,13 @@ def describe_initial_previous_reading(context: CalculationContext) -> InitialPre
         )
     boundary = context.boundary
     if boundary is None:
+        if context.definition_initial_reading is not None:
+            return InitialPreviousReading(
+                PreviousReadingSource.DEFINITION_INITIAL,
+                context.definition_initial_reading,
+                None,
+                None,
+            )
         return InitialPreviousReading(PreviousReadingSource.NONE, None, None, None)
     if boundary.new_initial_reading is None:
         return InitialPreviousReading(
