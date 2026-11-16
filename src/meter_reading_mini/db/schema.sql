@@ -1,4 +1,4 @@
--- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 4)
+-- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 5)
 -- 将来の設備管理アプリ統合時にも備品在庫管理テーブルと衝突しない命名とする
 
 CREATE TABLE staff (
@@ -79,6 +79,7 @@ CREATE TABLE meter_assignments (
   effective_to TEXT,
   multiplier TEXT NOT NULL CHECK (length(multiplier) > 0),
   rollover_value TEXT CHECK (rollover_value IS NULL OR length(rollover_value) > 0),
+  initial_reading TEXT CHECK (initial_reading IS NULL OR length(initial_reading) > 0),
   CHECK (effective_to IS NULL OR effective_from < effective_to),
   PRIMARY KEY (measurement_definition_id, meter_id, effective_from)
 );

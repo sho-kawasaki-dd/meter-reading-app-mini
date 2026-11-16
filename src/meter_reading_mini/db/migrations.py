@@ -19,7 +19,7 @@ from meter_reading_mini.core.timeutil import parse_utc, utc_now_str
 from meter_reading_mini.db.backup import copy_database
 from meter_reading_mini.db.connection import connect, transaction
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MIN_SUPPORTED_SCHEMA_VERSION = 1
 
 
@@ -423,6 +423,22 @@ def _migrate_aggregation_formulas(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
 
 
+def _migrate_assignment_initial_reading(conn: sqlite3.Connection) -> None:
+    ddl = next(table.sql for table in SCHEMA_SPECS[5].tables if table.name == "meter_assignments")
+    conn.execute(
+        ddl.replace("CREATE TABLE meter_assignments", "CREATE TABLE meter_assignments_v5", 1)
+    )
+    conn.execute(
+        "INSERT INTO meter_assignments_v5 "
+        "(measurement_definition_id, meter_id, effective_from, effective_to, "
+        "multiplier, rollover_value, initial_reading) "
+        "SELECT measurement_definition_id, meter_id, effective_from, effective_to, "
+        "multiplier, rollover_value, NULL FROM meter_assignments"
+    )
+    conn.execute("DROP TABLE meter_assignments")
+    conn.execute("ALTER TABLE meter_assignments_v5 RENAME TO meter_assignments")
+
+
 MIGRATIONS: dict[int, MigrationStep | str] = {
     2: MigrationStep(
         _migrate_assignment_calculation_settings,
@@ -431,6 +447,7 @@ MIGRATIONS: dict[int, MigrationStep | str] = {
     ),
     3: MigrationStep(_migrate_review_flags_and_replacement_values),
     4: MigrationStep(_migrate_aggregation_formulas),
+    5: MigrationStep(_migrate_assignment_initial_reading, rebuilds_tables=True),
 }
 
 SCHEMA_SPECS: dict[int, SchemaSpec] = {
@@ -460,6 +477,9 @@ SCHEMA_SPECS: dict[int, SchemaSpec] = {
         files("meter_reading_mini.db").joinpath("schema_v3.sql").read_text(encoding="utf-8")
     ),
     4: _schema_spec_from_ddl(
+        files("meter_reading_mini.db").joinpath("schema_v4.sql").read_text(encoding="utf-8")
+    ),
+    5: _schema_spec_from_ddl(
         files("meter_reading_mini.db").joinpath("schema.sql").read_text(encoding="utf-8")
     ),
 }

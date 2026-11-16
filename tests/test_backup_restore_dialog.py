@@ -17,7 +17,7 @@ from pytestqt.qtbot import QtBot
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.errors import FileOutputError, InvalidBackupError
 from meter_reading_mini.db.connection import connect, connect_readonly
-from meter_reading_mini.db.migrations import create_schema
+from meter_reading_mini.db.migrations import SCHEMA_VERSION, create_schema
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
 from meter_reading_mini.ui.dialogs.backup_restore_dialog import BackupRestoreDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
@@ -154,7 +154,7 @@ def test_preview_shows_counts_and_warnings_and_edit_invalidates_it(
     _inspect(harness)
     text = harness.dialog.preview_text.toPlainText()
     assert str(harness.source) in text
-    assert "元のスキーマ版: 4" in text
+    assert f"元のスキーマ版: {SCHEMA_VERSION}" in text
     assert "担当者: 1 件" in text
     assert "メーター: 2 件" in text
     assert "異なる場所名" in text

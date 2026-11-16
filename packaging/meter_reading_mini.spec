@@ -7,7 +7,7 @@ package = root / "src" / "meter_reading_mini"
 
 datas = [
     (str(package / "db" / name), str(Path("meter_reading_mini") / "db"))
-    for name in ("schema.sql", "schema_v1.sql", "schema_v3.sql")
+    for name in ("schema.sql", "schema_v1.sql", "schema_v3.sql", "schema_v4.sql")
 ]
 datas += [
     (
