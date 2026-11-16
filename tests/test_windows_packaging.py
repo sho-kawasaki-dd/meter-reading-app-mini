@@ -145,15 +145,20 @@ def test_existing_destination_is_never_overwritten(
     assert sentinel.read_text(encoding="utf-8") == "unchanged"
 
 
-def test_distribution_rejects_missing_or_changed_assets(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ["schema.sql", "schema_v4.sql"])
+def test_distribution_rejects_missing_or_changed_assets(tmp_path: Path, name: str) -> None:
     _populate_distribution(tmp_path)
-    schema = tmp_path / build_windows.INTERNAL / "meter_reading_mini" / "db" / "schema.sql"
+    schema = tmp_path / build_windows.INTERNAL / "meter_reading_mini" / "db" / name
     schema.unlink()
     with pytest.raises(RuntimeError, match="実行時資産が不足"):
         build_windows._validate_distribution(tmp_path)
     schema.write_text("stale", encoding="utf-8")
     with pytest.raises(RuntimeError, match="ソースと一致しません"):
         build_windows._validate_distribution(tmp_path)
+
+
+def test_frozen_v4_schema_is_included_in_pyinstaller_spec() -> None:
+    assert '"schema_v4.sql"' in build_windows.SPEC.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

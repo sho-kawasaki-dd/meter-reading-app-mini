@@ -43,6 +43,10 @@ def _schema_v3_sql() -> str:
     return files("meter_reading_mini.db").joinpath("schema_v3.sql").read_text(encoding="utf-8")
 
 
+def _schema_v4_sql() -> str:
+    return files("meter_reading_mini.db").joinpath("schema_v4.sql").read_text(encoding="utf-8")
+
+
 def _create_database(
     path: Path, *, schema_sql: str | None = None, version: int = SCHEMA_VERSION
 ) -> None:
@@ -600,8 +604,8 @@ def test_v1_restore_candidate_is_copied_migrated_and_checked_without_altering_so
         source.close()
 
 
-@pytest.mark.parametrize("old_version", [1, 2, 3])
-def test_v1_v2_v3_files_migrate_to_v4_without_changing_existing_readings(
+@pytest.mark.parametrize("old_version", [1, 2, 3, 4])
+def test_v1_to_v4_files_migrate_to_v5_without_changing_existing_readings(
     tmp_path: Path, old_version: int
 ) -> None:
     path = tmp_path / f"v{old_version}.db"
@@ -613,25 +617,64 @@ def test_v1_v2_v3_files_migrate_to_v4_without_changing_existing_readings(
             migrations.migrate_schema(original, 1, old_version)
         assert inspect_schema(original, old_version) == []
         before = original.execute("SELECT * FROM reading_transactions").fetchall()
-        assert (
+        boundary_before = original.execute(
+            "SELECT old_meter_id, new_meter_id, previous_measured_reading, old_final_reading, "
+            "old_meter_usage_delta, new_initial_reading FROM replacement_boundaries"
+        ).fetchall()
+        if old_version > 1:
+            assignments_before = original.execute("SELECT * FROM meter_assignments").fetchall()
+        else:
+            assignments_before = []
+        if old_version >= 2:
+            original.execute("INSERT INTO staff (id, name) VALUES (1, '試験担当')")
             original.execute(
-                "SELECT name FROM sqlite_master WHERE name = 'aggregation_formulas'"
-            ).fetchone()
-            is None
-        )
+                "INSERT INTO assignment_calculation_corrections "
+                "(correction_id, measurement_definition_id, meter_id, assignment_effective_from, "
+                "old_multiplier, old_rollover_value, new_multiplier, new_rollover_value, "
+                "staff_id, staff_name, corrected_at, reason) "
+                "VALUES ('correction', 'definition', 'old-meter', '2026-02-01 00:00:00', "
+                "'10', '1000', '10', '1000', 1, '試験担当', '2026-02-04 04:00:00', '確認')"
+            )
+        if old_version >= 3:
+            original.execute(
+                "INSERT INTO assignment_review_flags VALUES "
+                "('definition', 'old-meter', '2026-02-01 00:00:00', '確認待ち', "
+                "'2026-02-04 04:00:00')"
+            )
     finally:
         original.close()
 
-    conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "v4")
+    conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "v5")
     try:
-        assert conn.execute("PRAGMA user_version").fetchone() == (4,)
-        assert inspect_schema(conn, 4) == []
+        assert conn.execute("PRAGMA user_version").fetchone() == (5,)
+        assert inspect_schema(conn, 5) == []
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("SELECT * FROM reading_transactions").fetchall() == before
+        assert (
+            conn.execute(
+                "SELECT old_meter_id, new_meter_id, previous_measured_reading, old_final_reading, "
+                "old_meter_usage_delta, new_initial_reading FROM replacement_boundaries"
+            ).fetchall()
+            == boundary_before
+        )
+        assignments_after = conn.execute("SELECT * FROM meter_assignments").fetchall()
+        assert len(assignments_after) == 2
+        assert all(row[-1] is None for row in assignments_after)
+        if old_version > 1:
+            assert [row[:-1] for row in assignments_after] == assignments_before
+        if old_version >= 3:
+            assert conn.execute("SELECT reason FROM assignment_review_flags").fetchall() == [
+                ("確認待ち",)
+            ]
+        if old_version >= 2:
+            assert conn.execute(
+                "SELECT correction_id, reason FROM assignment_calculation_corrections"
+            ).fetchall() == [("correction", "確認")]
         assert conn.execute("SELECT COUNT(*) FROM aggregation_formulas").fetchone() == (0,)
         assert check_business_integrity(conn) == []
     finally:
         conn.close()
-    backup = connect_readonly(tmp_path / "backups" / f"pre-migrate_v{old_version}_v4.db")
+    backup = connect_readonly(tmp_path / "backups" / f"pre-migrate_v{old_version}_v5.db")
     try:
         assert backup.execute("PRAGMA user_version").fetchone() == (old_version,)
         assert inspect_schema(backup, old_version) == []
@@ -640,7 +683,7 @@ def test_v1_v2_v3_files_migrate_to_v4_without_changing_existing_readings(
         backup.close()
 
 
-def test_v2_and_v3_schema_specs_remain_frozen_after_v4() -> None:
+def test_older_schema_specs_remain_frozen_after_v5() -> None:
     v2_tables = {table.name for table in SCHEMA_SPECS[2].tables}
     v3_tables = {table.name for table in SCHEMA_SPECS[3].tables}
     v4_tables = {table.name for table in SCHEMA_SPECS[4].tables}
@@ -653,6 +696,115 @@ def test_v2_and_v3_schema_specs_remain_frozen_after_v4() -> None:
     with closing(connect_memory()) as conn:
         conn.executescript(_schema_v3_sql())
         assert inspect_schema(conn, 3) == []
+    with closing(connect_memory()) as conn:
+        conn.executescript(_schema_v4_sql())
+        assert inspect_schema(conn, 4) == []
+        assert inspect_schema(conn, 5)
+
+
+@pytest.mark.parametrize("version", [4, 5])
+def test_rejects_database_whose_assignment_schema_differs_from_version(
+    tmp_path: Path, version: int
+) -> None:
+    path = tmp_path / f"invalid-v{version}.db"
+    if version == 4:
+        schema = _schema_v4_sql().replace(
+            "  rollover_value TEXT CHECK (rollover_value IS NULL OR length(rollover_value) > 0),",
+            "  rollover_value TEXT CHECK (rollover_value IS NULL OR length(rollover_value) > 0),\n"
+            "  initial_reading TEXT,",
+            1,
+        )
+    else:
+        schema = _schema_sql().replace(
+            "  initial_reading TEXT CHECK "
+            "(initial_reading IS NULL OR length(initial_reading) > 0),",
+            "  initial_reading TEXT,",
+            1,
+        )
+    _create_database(path, schema_sql=schema, version=version)
+    with pytest.raises(UnsupportedSchemaError, match="meter_assignments"):
+        open_database(path, tmp_path / "backups", backup_timestamp=lambda: "test")
+    assert not (tmp_path / "backups").exists()
+
+
+def test_v5_initial_reading_check_rejects_empty_string(tmp_path: Path) -> None:
+    path = tmp_path / "v5.db"
+    _create_database(path, schema_sql=_schema_v1_sql(), version=1)
+    with closing(migrations.connect(path)) as conn:
+        _insert_v1_assignment_history(conn)
+        migrations.migrate_schema(conn, 1, 5)
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+            conn.execute("UPDATE meter_assignments SET initial_reading = ''")
+        conn.execute(
+            "UPDATE meter_assignments SET initial_reading = '0' WHERE meter_id = 'old-meter'"
+        )
+        assert conn.execute(
+            "SELECT initial_reading FROM meter_assignments WHERE meter_id = 'old-meter'"
+        ).fetchone() == ("0",)
+
+
+@pytest.mark.parametrize("failure", ["partial", "inspection", "foreign-key", "commit"])
+def test_v5_migration_failures_roll_back_rebuild_and_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    class CommitFailingConnection(sqlite3.Connection):
+        fail_commit = False
+        fail_rename = False
+
+        def execute(self, sql, parameters=()):
+            if (
+                self.fail_rename
+                and sql == "ALTER TABLE meter_assignments_v5 RENAME TO meter_assignments"
+            ):
+                raise sqlite3.OperationalError("simulated rename failure")
+            if self.fail_commit and sql.strip().upper() == "COMMIT":
+                raise sqlite3.OperationalError("simulated commit failure")
+            return super().execute(sql, parameters)
+
+    conn = sqlite3.connect(
+        tmp_path / "v5-rollback.db", autocommit=True, factory=CommitFailingConnection
+    )
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(_schema_v1_sql())
+        conn.execute("PRAGMA user_version = 1")
+        _insert_v1_assignment_history(conn)
+        migrations.migrate_schema(conn, 1, 4)
+        if failure == "foreign-key":
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("DELETE FROM physical_meters WHERE meter_id = 'old-meter'")
+            conn.execute("PRAGMA foreign_keys = ON")
+        assignments_before = conn.execute("SELECT * FROM meter_assignments").fetchall()
+        boundaries_before = conn.execute("SELECT * FROM replacement_boundaries").fetchall()
+        readings_before = conn.execute("SELECT * FROM reading_transactions").fetchall()
+        original_inspect = migrations.inspect_schema
+        if failure == "partial":
+            conn.fail_rename = True
+        elif failure == "inspection":
+
+            def failed_inspect(connection, version, specs=SCHEMA_SPECS):
+                return (
+                    ["検査失敗"] if version == 5 else original_inspect(connection, version, specs)
+                )
+
+            monkeypatch.setattr(migrations, "inspect_schema", failed_inspect)
+        elif failure == "commit":
+            conn.fail_commit = True
+
+        expected_error = (
+            sqlite3.OperationalError if failure in {"partial", "commit"} else UnsupportedSchemaError
+        )
+        with pytest.raises(expected_error):
+            migrations.migrate_schema(conn, 4, 5)
+        assert conn.execute("PRAGMA user_version").fetchone() == (4,)
+        assert conn.execute("PRAGMA foreign_keys").fetchone() == (1,)
+        assert original_inspect(conn, 4) == []
+        assert conn.execute("SELECT * FROM meter_assignments").fetchall() == assignments_before
+        assert conn.execute("SELECT * FROM replacement_boundaries").fetchall() == boundaries_before
+        assert conn.execute("SELECT * FROM reading_transactions").fetchall() == readings_before
+        assert not conn.in_transaction
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("failure", ["partial", "inspection"])

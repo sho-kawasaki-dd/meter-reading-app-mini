@@ -398,7 +398,7 @@ def test_manual_backup_does_not_remove_existing_sidecars(
 
 @pytest.mark.parametrize(
     ("version", "message"),
-    [(0, "サポート"), (5, "新しい")],
+    [(0, "サポート"), (SCHEMA_VERSION + 1, "新しい")],
 )
 def test_unsupported_versions_are_rejected(
     harness: RestoreHarness, tmp_path: Path, version: int, message: str

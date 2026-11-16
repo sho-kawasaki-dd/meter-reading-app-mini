@@ -20,7 +20,10 @@ APP_NAME = "meter-reading-mini"
 PACKAGE = ROOT / "src" / "meter_reading_mini"
 INTERNAL = Path("_internal")
 APP_RESOURCES = (
-    *(Path("db") / name for name in ("schema.sql", "schema_v1.sql", "schema_v3.sql")),
+    *(
+        Path("db") / name
+        for name in ("schema.sql", "schema_v1.sql", "schema_v3.sql", "schema_v4.sql")
+    ),
     *(
         Path("core") / "mobile_reading_assets" / name
         for name in ("sheet.html", "sheet.css", "sheet.js")
