@@ -60,7 +60,9 @@ internal static class Child {
 
 
 def _exclusive_open(path: Path) -> int:
-    create_file = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True).CreateFileW
+    create_file = (
+        getattr(ctypes, "WinDLL")("kernel32", use_last_error=True).CreateFileW  # noqa: B009
+    )
     create_file.argtypes = (
         wintypes.LPCWSTR,
         wintypes.DWORD,
@@ -75,7 +77,9 @@ def _exclusive_open(path: Path) -> int:
 
 
 def _close(handle: int) -> None:
-    close_handle = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True).CloseHandle
+    close_handle = (
+        getattr(ctypes, "WinDLL")("kernel32", use_last_error=True).CloseHandle  # noqa: B009
+    )
     close_handle.argtypes = (wintypes.HANDLE,)
     close_handle.restype = wintypes.BOOL
     assert close_handle(handle)

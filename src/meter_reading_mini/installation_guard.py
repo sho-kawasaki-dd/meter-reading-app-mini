@@ -31,7 +31,7 @@ class InstallationGuard:
             raise InstallationGuardError("更新・削除ガードは既に取得されています。")
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+            kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)  # noqa: B009
             create_file = kernel32.CreateFileW
             create_file.argtypes = (
                 wintypes.LPCWSTR,
@@ -53,10 +53,10 @@ class InstallationGuard:
                 None,
             )
             if handle == _INVALID_HANDLE or handle is None:
-                error_code = getattr(ctypes, "get_last_error")()
+                error_code = getattr(ctypes, "get_last_error")()  # noqa: B009
                 if error_code in _SHARING_ERRORS:
                     return False
-                raise getattr(ctypes, "WinError")(error_code)
+                raise getattr(ctypes, "WinError")(error_code)  # noqa: B009
         except OSError as error:
             raise InstallationGuardError(
                 "更新・削除ガードを確保できません。保存先とアクセス権を確認してください。"
@@ -67,14 +67,14 @@ class InstallationGuard:
     def release(self) -> None:
         if self._handle is None:
             return
-        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)  # noqa: B009
         close_handle = kernel32.CloseHandle
         close_handle.argtypes = (wintypes.HANDLE,)
         close_handle.restype = wintypes.BOOL
         if not close_handle(self._handle):
-            raise InstallationGuardError(
-                "更新・削除ガードを解放できません。"
-            ) from getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())
+            raise InstallationGuardError("更新・削除ガードを解放できません。") from getattr(  # noqa: B009
+                ctypes, "WinError"
+            )(getattr(ctypes, "get_last_error")())  # noqa: B009
         self._handle = None
 
 
