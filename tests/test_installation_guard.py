@@ -44,7 +44,7 @@ def test_frozen_application_uses_user_local_guard_independently_of_data_override
 
 
 def _exclusive_open(path: Path) -> int:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
     create_file = kernel32.CreateFileW
     create_file.argtypes = (
         wintypes.LPCWSTR,
@@ -60,7 +60,7 @@ def _exclusive_open(path: Path) -> int:
 
 
 def _close(handle: int) -> None:
-    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close_handle = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True).CloseHandle
     close_handle.argtypes = (wintypes.HANDLE,)
     close_handle.restype = wintypes.BOOL
     assert close_handle(handle)
