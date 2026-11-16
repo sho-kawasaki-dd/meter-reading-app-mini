@@ -696,6 +696,8 @@
         return "前回値: " + previous.reading + " " + unit;
       case "replacement_initial":
         return "前回値: " + previous.reading + " " + unit + " (メーター交換時の初期値)";
+      case "definition_initial":
+        return "前回値: " + previous.reading + " " + unit + " (測定定義の初期値)";
       case "replacement_no_initial":
         return "前回値なし (メーター交換後の初回のため使用量は 0)";
       default:

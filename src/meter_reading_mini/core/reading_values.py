@@ -23,3 +23,12 @@ def validate_reading_value(
         raise ValidationError(
             f"読値 {value} はロールオーバー値 {rollover_value} 未満で指定してください。"
         )
+
+
+def validate_initial_reading(
+    value: Decimal, *, decimal_places: int | None, rollover_value: Decimal | None
+) -> None:
+    validate_reading_value(value, decimal_places=None, rollover_value=rollover_value)
+    fractional = format(value, "f").partition(".")[2].rstrip("0")
+    if decimal_places is not None and len(fractional) > decimal_places:
+        raise ValidationError(f"読値初期値の小数は {decimal_places} 桁以内で指定してください。")

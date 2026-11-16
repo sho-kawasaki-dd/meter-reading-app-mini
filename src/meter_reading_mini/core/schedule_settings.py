@@ -187,6 +187,20 @@ def validate_schedule_type_for_reading_cycle(
         schedule, EveryTwoMonthsSchedule
     ):
         raise ScheduleValidationError(["every_two_months には隔月スケジュールが必要です。"])
+    if isinstance(schedule, (MonthlySchedule, EveryTwoMonthsSchedule)):
+        if schedule.selector_type is MonthlyScheduleSelectorType.DAY_OF_MONTH and (
+            schedule.day_of_month is None or not 1 <= schedule.day_of_month <= 31
+        ):
+            raise ScheduleValidationError(["検針日は 1〜31 で指定してください。"])
+        if schedule.selector_type is MonthlyScheduleSelectorType.NTH_WEEKDAY and (
+            schedule.nth is None or not 1 <= schedule.nth <= 5
+        ):
+            raise ScheduleValidationError(["第何曜日は 1〜5 で指定してください。"])
+        if (
+            schedule.selector_type is MonthlyScheduleSelectorType.MONTH_EDGE
+            and schedule.edge not in ("first", "last")
+        ):
+            raise ScheduleValidationError(["月初・月末は first または last で指定してください。"])
 
 
 def _parse_monthly_schedule(data: dict[str, object]) -> MonthlySchedule:

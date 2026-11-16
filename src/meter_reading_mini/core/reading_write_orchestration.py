@@ -29,7 +29,6 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     AssignmentCalculationLookupRepository,
     CalculatedUsageUpdate,
     HistoricalMeasuredReadingLookupRepository,
-    HistoricalMeasuredReadingRecord,
     ManualReadingInput,
     MeasurementDefinitionLookupRepository,
     MeasurementDefinitionRecord,
@@ -42,7 +41,6 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReplacementBoundaryCalculationRecord,
     ReplacementBoundaryLookupRepository,
     ReplacementBoundaryMaintenanceRepository,
-    ReplacementBoundaryRecord,
     ReplacementUpsertRequest,
     ResultSource,
     StaffRepository,
@@ -151,15 +149,16 @@ class ReadingWriteOrchestrationService:
             measurement_definition, assignment
         )
         assert planned_reading.scheduled_at is not None
-        previous, boundary = self._get_calculation_context(
+        context = self._get_calculation_context(
             planned_reading,
             excluding_planned_reading_id=request.planned_reading_id,
         )
         calculation = self._calculation_service.calculate(
             scoped_definition,
             request,
-            previous,
-            boundary,
+            context.previous,
+            context.boundary,
+            definition_initial_reading=context.definition_initial_reading,
         )
         calculated_request = replace(
             request,
@@ -170,7 +169,7 @@ class ReadingWriteOrchestrationService:
             planned_reading=planned_reading,
             definition=measurement_definition,
             assignment=assignment,
-            context=CalculationContext(previous=previous, boundary=boundary),
+            context=context,
             request=calculated_request,
         )
 
@@ -268,7 +267,7 @@ class ReadingWriteOrchestrationService:
         planned_reading: PlannedReadingRecord,
         *,
         excluding_planned_reading_id: str,
-    ) -> tuple[HistoricalMeasuredReadingRecord | None, ReplacementBoundaryRecord | None]:
+    ) -> CalculationContext:
         if excluding_planned_reading_id != planned_reading.planned_reading_id:
             raise ValidationError("計算対象と除外する予定枠が一致しません。")
         definition = self._get_measurement_definition(planned_reading.measurement_definition_id)
@@ -279,7 +278,7 @@ class ReadingWriteOrchestrationService:
             planned_reading,
             definition,
         )
-        return context.previous, context.boundary
+        return context
 
     def _recalculate_following_measured_readings(
         self,
@@ -301,15 +300,16 @@ class ReadingWriteOrchestrationService:
             scoped_definition = definition_with_assignment_conditions(
                 measurement_definition, assignment
             )
-            previous, boundary = self._get_calculation_context(
+            context = self._get_calculation_context(
                 current_planned,
                 excluding_planned_reading_id=measured_reading.planned_reading_id,
             )
             result = self._calculation_service.calculate_measured_reading(
                 scoped_definition,
                 measured_reading.raw_reading,
-                previous,
-                boundary,
+                context.previous,
+                context.boundary,
+                definition_initial_reading=context.definition_initial_reading,
             )
             self._persistence_repository.save_calculated_usage(
                 CalculatedUsageUpdate(
@@ -399,15 +399,16 @@ class ReadingWriteOrchestrationService:
             scoped_definition = definition_with_assignment_conditions(
                 measurement_definition, assignment
             )
-            previous, replacement_boundary = self._get_calculation_context(
+            context = self._get_calculation_context(
                 planned,
                 excluding_planned_reading_id=measured_reading.planned_reading_id,
             )
             result = self._calculation_service.calculate_measured_reading(
                 scoped_definition,
                 measured_reading.raw_reading,
-                previous,
-                replacement_boundary,
+                context.previous,
+                context.boundary,
+                definition_initial_reading=context.definition_initial_reading,
             )
             self._persistence_repository.save_calculated_usage(
                 CalculatedUsageUpdate(

@@ -54,6 +54,7 @@ CYCLE_GROUP_LABELS = {
 PREVIOUS_SOURCE_LABELS = {
     PreviousReadingSource.MEASURED: "前回実測",
     PreviousReadingSource.REPLACEMENT_INITIAL: "交換時の新メーター初期値",
+    PreviousReadingSource.DEFINITION_INITIAL: "測定定義の初期値",
     PreviousReadingSource.REPLACEMENT_NO_INITIAL: "交換時の初期値なし",
     PreviousReadingSource.NONE: "前回値なし",
 }

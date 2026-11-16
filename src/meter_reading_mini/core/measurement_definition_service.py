@@ -10,7 +10,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from meter_reading_mini.core.contract_models import Purpose
+from meter_reading_mini.core.contract_models import CalculationMethod, Purpose, ValueSchema
 from meter_reading_mini.core.errors import FormulaReferencedDefinitionError, ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionCreateInput,
@@ -21,8 +21,10 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeterAssignmentRepository,
     MeterMasterWriteRepository,
 )
+from meter_reading_mini.core.reading_values import validate_initial_reading
 from meter_reading_mini.core.schedule_settings import (
     deserialize_schedule,
+    validate_expected_daily_count,
     validate_schedule_type_for_reading_cycle,
 )
 from meter_reading_mini.core.timezone_settings import normalize_to_utc
@@ -81,6 +83,7 @@ class MeasurementDefinitionService:
                 generation_start_date=request.generation_start_date,
                 initial_schedule_json=request.initial_schedule_json,
                 initial_meter_id=request.initial_meter_id,
+                initial_reading=request.initial_reading,
             )
         )
         with self._transaction_factory():
@@ -173,6 +176,35 @@ class MeasurementDefinitionService:
             normalized_meter_id,
         )
 
+    def set_initial_reading(self, measurement_definition_id: str, value: Decimal | None) -> None:
+        definition_id = _required(measurement_definition_id, "measurement_definition_id")
+        with self._transaction_factory():
+            definition = self._repository.get_measurement_definition(definition_id)
+            if definition is None or not definition.is_active:
+                raise ValidationError("有効な測定定義が見つかりません。")
+            if (
+                definition.calculation_method is not CalculationMethod.DELTA
+                or definition.value_schema is not ValueSchema.DECIMAL_STRING
+            ):
+                raise ValidationError("この測定定義には読値初期値を設定できません。")
+            assignments = self._assignment_repository.list_meter_assignments(definition_id)
+            if len(assignments) != 1:
+                raise ValidationError("交換前の初期割当が必要です。")
+            assignment = assignments[0]
+            if (
+                assignment.needs_review
+                or self._assignment_repository.has_assignment_measured_readings(assignment)
+                or self._assignment_repository.has_definition_replacement(definition_id)
+            ):
+                raise ValidationError("実測後・交換後・割当確認待ちの場合は変更できません。")
+            if value is not None:
+                validate_initial_reading(
+                    value,
+                    decimal_places=definition.decimal_places,
+                    rollover_value=assignment.rollover_value,
+                )
+            self._assignment_repository.set_assignment_initial_reading(assignment, value)
+
     @staticmethod
     def _reject_immutable_changes(
         current: MeasurementDefinitionRecord,
@@ -196,6 +228,10 @@ class MeasurementDefinitionService:
         for assignment in self._assignment_repository.list_meter_assignments(
             measurement_definition_id
         ):
+            if assignment.initial_reading is not None:
+                fractional = format(assignment.initial_reading, "f").partition(".")[2].rstrip("0")
+                if len(fractional) > decimal_places:
+                    raise ValidationError("既存の読値初期値を表せない小数桁数には変更できません。")
             rollover = assignment.rollover_value
             if rollover is None:
                 continue
@@ -218,10 +254,24 @@ def _normalize_create_request(
     _validate_optional_decimal(request.warning_threshold, "警告閾値", allow_zero=True)
     _validate_optional_decimal(request.rollover_value, "ロールオーバー値", allow_zero=False)
     _validate_decimal_places(request.decimal_places)
+    if request.initial_reading is not None:
+        if _optional(request.initial_meter_id) is None:
+            raise ValidationError("読値初期値には初期メーターの指定が必要です。")
+        if (
+            request.calculation_method is not CalculationMethod.DELTA
+            or request.value_schema is not ValueSchema.DECIMAL_STRING
+        ):
+            raise ValidationError("この測定定義には読値初期値を設定できません。")
+        validate_initial_reading(
+            request.initial_reading,
+            decimal_places=request.decimal_places,
+            rollover_value=request.rollover_value,
+        )
     if request.initial_schedule_json is not None:
         try:
             schedule = deserialize_schedule(request.reading_cycle, request.initial_schedule_json)
             validate_schedule_type_for_reading_cycle(request.reading_cycle, schedule)
+            validate_expected_daily_count(request.reading_cycle, schedule)
         except (TypeError, ValueError) as exc:
             raise ValidationError(f"初期スケジュールが正しくありません: {exc}") from exc
     return replace(

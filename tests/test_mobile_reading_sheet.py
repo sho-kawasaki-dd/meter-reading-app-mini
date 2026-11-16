@@ -42,6 +42,7 @@ from meter_reading_mini.core.errors import (
     SupersededPlannedReadingError,
     ValidationError,
 )
+from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
 from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
@@ -81,6 +82,43 @@ DAILY_TWICE = (
     '{"reading_session":"22:00","day_offset":0}]}'
 )
 WEEKLY_WEDNESDAY = '{"weekday":"wednesday","reading_session":"14:00"}'
+
+
+def test_sheet_displays_definition_initial_and_exports_calculated_result(
+    sheet_browser: SheetBrowser,
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, sync = build_services(conn, repository, multiplier=Decimal("2"))
+    create_plan(repository, "initial-slot", datetime(2026, 2, 4, 4, tzinfo=UTC))
+    MeasurementDefinitionService(
+        repository, repository, repository, transaction_factory=partial(transaction, conn)
+    ).set_initial_reading(DEFINITION_ID, Decimal("10"))
+    html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
+    page = sheet_browser.open_html(html)
+    page.locator('.tab[data-tab="all"]').click()
+    card = page.locator('.card[data-slot-id="initial-slot"]')
+    expect(card).to_contain_text("測定定義の初期値")
+    card.locator(".raw").fill("13")
+    card.locator(".confirm").click()
+    expect(card).to_have_attribute("data-previous", "10")
+    expect(card).to_have_attribute("data-usage", "6")
+    page.evaluate(
+        """() => Object.defineProperty(navigator, "clipboard", {
+          configurable: true, value: { writeText: () => Promise.reject(new Error("unavailable")) }
+        })"""
+    )
+    page.locator("#result-copy").click()
+    result = parse_mobile_reading_result(page.locator("#result-export-text").input_value())
+    response = sync.sync(
+        MeterReadingSyncRequest(reading_items=list(result.entries), replacement_items=[]),
+        confirmation_context(),
+    )
+    assert response.accepted_reading_items == 1
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        ("initial-slot",),
+    ).fetchone() == ("10", "6")
 
 
 def _extract_data(html: str) -> dict[str, Any]:

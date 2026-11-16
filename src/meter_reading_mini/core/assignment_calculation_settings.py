@@ -187,6 +187,11 @@ class AssignmentCalculationSettingsService:
         reading_impacts: list[AssignmentReadingImpact] = []
         boundary_impacts: list[AssignmentBoundaryImpact] = []
         issues: list[AssignmentCorrectionIssue] = []
+        if proposed.initial_reading is not None:
+            try:
+                validate_persisted_assignment_reading(proposed.initial_reading, proposed)
+            except ValidationError as exc:
+                issues.append(AssignmentCorrectionIssue("initial_reading", str(exc)))
 
         for reading in self._assignments.list_assignment_measured_readings(current):
             try:
@@ -210,6 +215,7 @@ class AssignmentCalculationSettingsService:
                     reading.raw_reading,
                     context.previous,
                     context.boundary,
+                    definition_initial_reading=context.definition_initial_reading,
                 )
                 reading_impacts.append(
                     AssignmentReadingImpact(

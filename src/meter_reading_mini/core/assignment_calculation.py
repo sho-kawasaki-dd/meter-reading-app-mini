@@ -22,7 +22,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReplacementBoundaryLookupRepository,
 )
 from meter_reading_mini.core.previous_reading import CalculationContext, resolve_calculation_context
-from meter_reading_mini.core.reading_values import validate_reading_value
+from meter_reading_mini.core.reading_values import validate_initial_reading, validate_reading_value
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
 
 
@@ -107,7 +107,15 @@ def resolve_planned_calculation_context(
             previous = None
         else:
             validate_persisted_assignment_reading(previous.raw_reading, assignment)
-    return assignment, CalculationContext(previous=previous, boundary=boundary)
+    if assignment.initial_reading is not None:
+        validate_initial_reading(
+            assignment.initial_reading,
+            decimal_places=definition.decimal_places,
+            rollover_value=assignment.rollover_value,
+        )
+    return assignment, CalculationContext(
+        previous=previous, boundary=boundary, definition_initial_reading=assignment.initial_reading
+    )
 
 
 def definition_with_assignment_conditions(
@@ -151,6 +159,12 @@ def calculate_boundary_usage(
     calculation_service: UsageDeltaCalculationService,
 ) -> ReplacementBoundaryCalculationUpdate:
     old_assignment, new_assignment = resolve_boundary_assignments(assignment_repository, boundary)
+    if old_assignment.initial_reading is not None:
+        validate_initial_reading(
+            old_assignment.initial_reading,
+            decimal_places=definition.decimal_places,
+            rollover_value=old_assignment.rollover_value,
+        )
     if boundary.new_initial_reading is not None:
         validate_persisted_assignment_reading(boundary.new_initial_reading, new_assignment)
     previous = historical_repository.get_latest_measured_reading(
@@ -186,6 +200,7 @@ def calculate_boundary_usage(
             boundary.old_final_reading,
             previous,
             previous_boundary,
+            definition_initial_reading=old_assignment.initial_reading,
         )
         usage_delta = result.usage_delta
     return ReplacementBoundaryCalculationUpdate(

@@ -302,6 +302,63 @@ def test_carryover_gap_auto_closed_and_late_recalculation(scenario: Scenario) ->
     assert first.missing_codes == (AggregationCode.MISSING_NO_BASELINE,)
 
 
+def test_definition_initial_baseline_and_first_reading_gap(scenario: Scenario) -> None:
+    scenario.definition("a")
+    scenario.context.measurement_definitions.set_initial_reading("a", Decimal("10"))
+    scenario.plan("gap-initial", "a", date(2026, 2, 1))
+    scenario.plan("first-initial", "a", date(2026, 2, 2), value="15")
+    result = scenario.result("a", date(2026, 2, 2), date(2026, 2, 3))
+    assert result.value == Decimal("5")
+    assert AggregationCode.MISSING_GAP_BETWEEN_BASELINE in result.missing_codes
+    baseline = result.details[0].baseline
+    assert baseline is not None
+    assert (baseline.source, baseline.source_id, baseline.business_date) == (
+        AggregationBaselineSource.DEFINITION_INITIAL,
+        "a",
+        date(2025, 1, 1),
+    )
+    scenario.conn.execute(
+        "UPDATE planned_readings SET task_state = 'auto_closed' WHERE planned_reading_id = ?",
+        ("gap-initial",),
+    )
+    scenario.save("gap-initial", "12")
+    result = scenario.result("a", date(2026, 2, 1), date(2026, 2, 2))
+    assert result.value == Decimal("2")
+    assert AggregationCode.MISSING_NO_BASELINE not in result.missing_codes
+
+
+def test_initial_baseline_for_replacement_and_reactivation_is_stable(scenario: Scenario) -> None:
+    scenario.definition("a")
+    scenario.conn.execute(
+        "UPDATE meter_assignments SET effective_from = '2026-02-01 15:00:00' "
+        "WHERE measurement_definition_id = 'a'"
+    )
+    scenario.context.measurement_definitions.set_initial_reading("a", Decimal("10"))
+    scenario.meter("new", "location-a")
+    scenario.context.meter_replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="meter-a",
+            new_meter_id="new",
+            replaced_at=datetime(2026, 2, 10, 3, tzinfo=UTC),
+            old_final_reading=Decimal("15"),
+            new_initial_reading=Decimal("0"),
+            staff_id=scenario.staff_id,
+        )
+    )
+    result = scenario.result("a", date(2026, 2, 10), date(2026, 2, 11))
+    assert result.value == Decimal("5")
+    baseline = result.details[0].baseline
+    assert baseline is not None
+    assert (baseline.source, baseline.business_date) == (
+        AggregationBaselineSource.DEFINITION_INITIAL,
+        date(2026, 2, 2),
+    )
+    scenario.context.measurement_definitions.deactivate_measurement_definition("a")
+    scenario.context.measurement_definitions.activate_measurement_definition("a")
+    again = scenario.result("a", date(2026, 2, 10), date(2026, 2, 11))
+    assert again.details[0].baseline == baseline
+
+
 def test_historical_reading_corrections_change_following_aggregates(scenario: Scenario) -> None:
     scenario.definition("a")
     scenario.plan("base", "a", date(2026, 2, 1), value="100")

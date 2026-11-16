@@ -329,6 +329,8 @@ class MeterReplacementService:
                     )
                     if prior_boundary is not None:
                         previous = prior_boundary.new_initial_reading
+                    else:
+                        previous = assignment.initial_reading
                 rollover = (
                     definition.calculation_method is not CalculationMethod.RAW_ONLY
                     and boundary.old_final_reading is not None

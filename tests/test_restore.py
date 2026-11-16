@@ -413,6 +413,23 @@ def test_unsupported_versions_are_rejected(
     assert not _backup_path(harness).exists()
 
 
+@pytest.mark.parametrize("value", ["-1", "10", "1e2"])
+def test_restore_rejects_invalid_assignment_initial_reading(
+    harness: RestoreHarness, tmp_path: Path, value: str
+) -> None:
+    source = tmp_path / "invalid-initial.db"
+    _create_source(source)
+    with closing(connect(source)) as conn:
+        _seed_formula(conn)
+        conn.execute(
+            "UPDATE meter_assignments SET initial_reading = ?, rollover_value = '10'", (value,)
+        )
+    with pytest.raises(InvalidBackupError):
+        harness.service.preview_restore(source)
+    _assert_no_workspace(harness)
+    assert not _backup_path(harness).exists()
+
+
 def test_corrupt_database_and_schema_are_rejected(harness: RestoreHarness, tmp_path: Path) -> None:
     corrupt = tmp_path / "corrupt.db"
     corrupt.write_bytes(b"not a sqlite database")

@@ -28,6 +28,7 @@ from meter_reading_mini.core.contract_models import (
     ValueSchema,
 )
 from meter_reading_mini.core.errors import ValidationError
+from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
 from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
@@ -264,6 +265,27 @@ def test_preview_is_read_only_and_returns_final_values_in_payload_order(
     _sync(sync, result)
     for row in preview.rows:
         _stored_equals_projection(sqlite_repository, row)
+
+
+def test_initial_reading_is_recomputed_for_mobile_preview_and_import(
+    memory_conn: sqlite3.Connection, sqlite_repository: SQLiteRepository
+) -> None:
+    _, sync = build_services(memory_conn, sqlite_repository, multiplier=Decimal("2"))
+    create_plan(sqlite_repository, "initial", _at(8))
+    MeasurementDefinitionService(
+        sqlite_repository,
+        sqlite_repository,
+        sqlite_repository,
+        transaction_factory=lambda: transaction(memory_conn),
+    ).set_initial_reading(DEFINITION_ID, Decimal("10"))
+    result = _result(_submission("initial", "13", 8))
+    preview = MobileReadingImportService(sqlite_repository).preview(result)
+    row = preview.rows[0]
+    assert row.input_calculation is not None
+    assert row.input_calculation.previous.source is PreviousReadingSource.DEFINITION_INITIAL
+    assert row.input_calculation.usage_delta == Decimal("6")
+    _sync(sync, result)
+    _stored_equals_projection(sqlite_repository, row)
 
 
 def test_preview_calculates_each_input_once_before_conflict_resolution(

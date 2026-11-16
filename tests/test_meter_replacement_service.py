@@ -36,6 +36,7 @@ from meter_reading_mini.core.errors import (
     SupersededPlannedReadingError,
     ValidationError,
 )
+from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
 from meter_reading_mini.core.meter_master_service import MeterMasterService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     AssignmentCalculationTerms,
@@ -147,6 +148,43 @@ def _database_state(conn: sqlite3.Connection) -> tuple[list[tuple], ...]:
     return tuple(
         conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() for table in tables
     )
+
+
+def test_replacement_before_first_reading_uses_definition_initial(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, multiplier=Decimal("10"))
+    _meter(repository, "new-meter")
+    definitions = MeasurementDefinitionService(
+        repository, repository, repository, transaction_factory=partial(transaction, conn)
+    )
+    definitions.set_initial_reading(DEFINITION_ID, Decimal("100"))
+    service = _service(conn, repository, writer)
+    create_plan(repository, "after-replacement", _at(6))
+    request = replace(_request(), new_initial_reading=None)
+    preview = service.preview_replacement(request)
+    assert preview.can_register
+    assert preview.definitions[0].old_usage_delta == Decimal("200")
+    service.register_replacement(request)
+    assert conn.execute(
+        "SELECT previous_measured_reading, previous_measured_planned_reading_id, "
+        "old_meter_usage_delta FROM replacement_boundaries"
+    ).fetchone() == (None, None, "200")
+    old_slot = repository.get_planned_reading("after-replacement")
+    assert old_slot is not None and old_slot.superseded_by_planned_reading_id is not None
+    successor = old_slot.superseded_by_planned_reading_id
+    writer.save_manual_reading(
+        ManualReadingInput(successor, ResultStatus.MEASURED, _at(6), Decimal("8"), None),
+        staff_id=STAFF_ID,
+    )
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        (successor,),
+    ).fetchone() == (None, "0")
+    assert check_business_integrity(conn) == []
+    with pytest.raises(ValidationError):
+        definitions.set_initial_reading(DEFINITION_ID, Decimal("90"))
 
 
 def test_replacement_retains_nonmeasured_audit_and_correction_updates_both_sides(
