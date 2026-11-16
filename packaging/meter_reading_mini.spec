@@ -29,6 +29,47 @@ analysis = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+excluded_names = {
+    "qt6pdf.dll",
+    "qt6qml.dll",
+    "qt6qmlmeta.dll",
+    "qt6qmlmodels.dll",
+    "qt6qmlworkerscript.dll",
+    "qt6quick.dll",
+    "qt6virtualkeyboard.dll",
+    "qt6network.dll",
+    "qtnetwork.pyd",
+    "opengl32sw.dll",
+    "qpdf.dll",
+    "qicns.dll",
+    "qtga.dll",
+    "qtiff.dll",
+    "qwbmp.dll",
+    "qwebp.dll",
+    "qdirect2d.dll",
+    "qminimal.dll",
+    "qoffscreen.dll",
+}
+excluded_directories = (
+    "pyside6/translations/",
+    "pyside6/plugins/tls/",
+    "pyside6/plugins/networkinformation/",
+    "pyside6/plugins/generic/",
+    "pyside6/plugins/platforminputcontexts/",
+)
+
+
+def included(entry):
+    destination = str(entry[0]).replace("\\", "/").lower()
+    return (
+        destination.rsplit("/", 1)[-1] not in excluded_names
+        and not destination.startswith(excluded_directories)
+    )
+
+
+analysis.binaries = [entry for entry in analysis.binaries if included(entry)]
+analysis.datas = [entry for entry in analysis.datas if included(entry)]
 pyz = PYZ(analysis.pure)
 exe = EXE(
     pyz,

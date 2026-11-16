@@ -46,6 +46,18 @@ class TrackedLock:
         self.events.append("lock.release")
 
 
+class TrackedInstallGuard:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def try_acquire(self) -> bool:
+        self.events.append("guard.acquire")
+        return True
+
+    def release(self) -> None:
+        self.events.append("guard.release")
+
+
 @pytest.fixture(autouse=True)
 def avoid_blocking_messages(monkeypatch: pytest.MonkeyPatch, restore_app_font: object) -> None:
     for kind in ("warning", "critical"):
@@ -221,6 +233,7 @@ def test_restore_shutdown_order_and_confirmed_restart(
     def launch(command: list[str], *, env: Mapping[str, str]) -> RunningProcess:
         events.append("restart.launch")
         _assert_lock_released(paths.lock_path)
+        assert "guard.release" not in events
         assert _staff(paths.db_path) == ["復元担当"]
         notice = restart.take_restart_notice(dict(env), paths.data_dir)
         assert notice is not None
@@ -233,6 +246,7 @@ def test_restore_shutdown_order_and_confirmed_restart(
         paths,
         database_opener=_tracked_opener(events),
         lock_factory=lambda path: TrackedLock(path, events),
+        install_guard_factory=lambda: TrackedInstallGuard(events),
         logging_configurator=lambda **kwargs: None,
         event_loop_runner=_exercise_restore(events, monkeypatch),
         restart_launcher=launch,
@@ -241,12 +255,14 @@ def test_restore_shutdown_order_and_confirmed_restart(
     assert result == app.STARTUP_SUCCESS
     assert events == [
         "lock.acquire",
+        "guard.acquire",
         "ui.stopped",
         "loop.exit",
         "db.close",
         "db.replace",
         "lock.release",
         "restart.launch",
+        "guard.release",
     ]
     assert len(launched_backup) == 1
     assert paths.ui_settings_path.read_bytes() == settings_before

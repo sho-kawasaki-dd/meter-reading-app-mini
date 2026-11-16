@@ -22,6 +22,7 @@ from meter_reading_mini.core.logging_config import configure_logging
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
 from meter_reading_mini.db.migrations import open_database
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
+from meter_reading_mini.installation_guard import InstallationGuardError, create_installation_guard
 from meter_reading_mini.restart import (
     RestartLauncher,
     RestartNotice,
@@ -69,6 +70,12 @@ class StartupErrorNotifier(Protocol):
 
 class InstanceLock(Protocol):
     def try_acquire(self, timeout_ms: int = 100) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+class InstallGuard(Protocol):
+    def try_acquire(self) -> bool: ...
 
     def release(self) -> None: ...
 
@@ -200,6 +207,7 @@ def run_app(
     application_factory: Callable[[], QApplication] | None = None,
     database_opener: DatabaseOpener | None = None,
     lock_factory: Callable[[Path], InstanceLock] | None = None,
+    install_guard_factory: Callable[[], InstallGuard | None] | None = None,
     logging_configurator: LoggingConfigurator | None = None,
     startup_preparer: StartupPreparer | None = None,
     startup_error_notifier: StartupErrorNotifier | None = None,
@@ -222,8 +230,22 @@ def run_app(
             _report_startup_error("アプリケーションは既に起動しています。")
             return STARTUP_LOCKED
 
+        with ExitStack() as startup_resources:
+            startup_resources.callback(lock.release)
+            install_guard = (install_guard_factory or create_installation_guard)()
+            if install_guard is not None:
+                if not install_guard.try_acquire():
+                    _report_startup_error(
+                        "アプリケーションの更新または削除が進行中です。完了後に起動してください。"
+                    )
+                    return STARTUP_LOCKED
+                startup_resources.callback(install_guard.release)
+            startup_resources.pop_all()
+
         restore_result: RestoreResult | None = None
         with ExitStack() as ui_resources:
+            if install_guard is not None:
+                ui_resources.callback(install_guard.release)
             try:
                 with ExitStack() as resources:
                     resources.callback(lock.release)
@@ -374,6 +396,8 @@ def run_app(
             logger.exception("アプリケーションの起動に失敗しました")
         if isinstance(error, DomainError):
             gui_message = f"アプリケーションの起動に失敗しました: {error.message}"
+        elif isinstance(error, InstallationGuardError):
+            gui_message = str(error)
         elif logging_initialized:
             gui_message = "予期しないエラーが発生しました。詳細はログを確認してください。"
         else:
