@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import shutil
 import sqlite3
 import ssl
@@ -573,6 +574,18 @@ def _assemble_bundle(
     )
 
 
+def _require_current_distribution(distribution: Path, working: Path) -> None:
+    run_directory = distribution.parent
+    if (
+        distribution.name != APP_NAME
+        or run_directory.parent != working
+        or not re.fullmatch(rf"{re.escape(APP_NAME)}-[0-9a-f]{{32}}", run_directory.name)
+        or not distribution.is_dir()
+        or (run_directory / ".build-in-progress").exists()
+    ):
+        raise ValueError("今回完了した PyInstaller の成果物ではありません。")
+
+
 def write_source_archive(
     destination: Path, snapshot: dict[str, str], sources: list[Source], source_dir: Path
 ) -> None:
@@ -640,6 +653,7 @@ def build(
         with tempfile.TemporaryDirectory(prefix=".work-", dir=run_directory) as work:
             working = Path(work)
             distribution = build_windows.build(working)
+            _require_current_distribution(distribution, working)
             stage = working / "bundle"
             _assemble_bundle(distribution, stage, snapshot, sources, source_dir)
             bundled = verify_bundle(stage, snapshot)
@@ -648,6 +662,7 @@ def build(
                     str(inno),
                     "/Q",
                     f"/DAppVersion={version}",
+                    *(["/DVerificationOnly"] if verification_only else []),
                     f"/DOutputName={setup.stem}",
                     f"/DBundleDir={stage}",
                     f"/O{run_directory}",

@@ -89,6 +89,42 @@ def test_source_snapshot_rejects_unlisted_and_business_files(tmp_path: Path) -> 
         builder.snapshot_source_files(root, manifest)
 
 
+def test_current_schema_is_included_in_source_and_bundle_allowlists() -> None:
+    snapshot = builder.snapshot_source_files()
+    assert "src/meter_reading_mini/db/schema_v4.sql" in snapshot
+    assert "_internal/meter_reading_mini/db/schema_v4.sql" in builder.read_allowlist(
+        builder.BUNDLE_ALLOWLIST
+    )
+
+
+def test_project_version_is_read_from_pyproject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.1.1"\n', encoding="utf-8")
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    assert builder._project_version() == "0.1.1"
+
+
+def test_only_completed_current_distribution_is_accepted(tmp_path: Path) -> None:
+    working = tmp_path / "work"
+    distribution = working / f"{builder.APP_NAME}-{'a' * 32}" / builder.APP_NAME
+    distribution.mkdir(parents=True)
+    builder._require_current_distribution(distribution, working)
+    marker = distribution.parent / ".build-in-progress"
+    marker.touch()
+    with pytest.raises(ValueError, match="今回完了した"):
+        builder._require_current_distribution(distribution, working)
+    marker.unlink()
+    with pytest.raises(ValueError, match="今回完了した"):
+        builder._require_current_distribution(distribution, tmp_path / "other-work")
+
+
+def _fresh_distribution(working: Path) -> Path:
+    distribution = working / f"{builder.APP_NAME}-{'a' * 32}" / builder.APP_NAME
+    distribution.mkdir(parents=True)
+    return distribution
+
+
 def _fake_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, dict[str, str], Path]:
@@ -338,6 +374,22 @@ def test_release_is_refused_when_sandbox_validation_is_pending(
     assert not output.exists()
 
 
+def test_verification_build_rejects_wrong_inno_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inno = tmp_path / "ISCC.exe"
+    _file(inno)
+    monkeypatch.setattr(builder, "read_sources", lambda: ("pending", "pending", []))
+    monkeypatch.setattr(builder, "read_cargo_sources", lambda sources, directory: [])
+    monkeypatch.setattr(builder, "snapshot_source_files", lambda: {})
+    monkeypatch.setattr(builder, "verify_sources", lambda sources, directory: None)
+    monkeypatch.setattr(builder, "verify_environment", lambda sources: {})
+    monkeypatch.setattr(builder, "_inno_version", lambda compiler: "6.7.2")
+    with pytest.raises(ValueError, match="Inno Setup 6.7.3"):
+        builder.build(tmp_path / "output", tmp_path, verification_only=True, inno_compiler=inno)
+    assert not (tmp_path / "output").exists()
+
+
 def test_failed_build_removes_only_new_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -352,7 +404,7 @@ def test_failed_build_removes_only_new_output(
     monkeypatch.setattr(builder, "verify_environment", lambda sources: {})
     monkeypatch.setattr(builder, "_inno_version", lambda compiler: "6.7.3")
     monkeypatch.setattr(builder, "_project_version", lambda: "0.1.0")
-    monkeypatch.setattr(builder.build_windows, "build", lambda working: working / "new")
+    monkeypatch.setattr(builder.build_windows, "build", _fresh_distribution)
     monkeypatch.setattr(builder, "_assemble_bundle", lambda *args: None)
     monkeypatch.setattr(builder, "verify_bundle", lambda *args: {})
 
@@ -380,7 +432,7 @@ def test_successful_verification_output_has_exact_artifacts_and_hashes(
     monkeypatch.setattr(builder, "verify_environment", lambda sources: {"python": "3.13.12"})
     monkeypatch.setattr(builder, "_inno_version", lambda compiler: "6.7.3")
     monkeypatch.setattr(builder, "_project_version", lambda: "0.1.0")
-    monkeypatch.setattr(builder.build_windows, "build", lambda working: working / "new")
+    monkeypatch.setattr(builder.build_windows, "build", _fresh_distribution)
     monkeypatch.setattr(builder, "_assemble_bundle", lambda *args: None)
     monkeypatch.setattr(builder, "verify_bundle", lambda *args: {"app/file": _digest(b"app")})
     monkeypatch.setattr(
@@ -388,6 +440,7 @@ def test_successful_verification_output_has_exact_artifacts_and_hashes(
     )
 
     def compile_installer(command: list[str], **kwargs: object) -> None:
+        assert "/DVerificationOnly" in command
         name = next(
             arg.removeprefix("/DOutputName=") for arg in command if arg.startswith("/DOutputName=")
         )

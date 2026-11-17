@@ -124,6 +124,7 @@ src/meter_reading_mini/db/restore.py
 src/meter_reading_mini/db/schema.sql
 src/meter_reading_mini/db/schema_v1.sql
 src/meter_reading_mini/db/schema_v3.sql
+src/meter_reading_mini/db/schema_v4.sql
 src/meter_reading_mini/installation_guard.py
 src/meter_reading_mini/restart.py
 src/meter_reading_mini/ui/__init__.py
