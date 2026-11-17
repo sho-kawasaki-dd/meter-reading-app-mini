@@ -35,6 +35,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
     MeterMasterCreateRequest,
 )
+from meter_reading_mini.db.bootstrap_seeds import bootstrap_default_settings
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.migrations import create_schema
 from meter_reading_mini.db.repositories import SQLiteRepository
@@ -430,6 +431,7 @@ def test_commit_failure_rolls_back_the_complete_correction(tmp_path: Path) -> No
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         create_schema(conn)
+        bootstrap_default_settings(conn)
         repository = SQLiteRepository(conn)
         _setup_replacement(conn, repository)
         service = _service(conn, repository)

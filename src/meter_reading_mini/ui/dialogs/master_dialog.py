@@ -75,12 +75,24 @@ class MasterDialog(QDialog):
         self.correction_page.refresh_staff()
 
     def accept(self) -> None:
-        succeeded, discard = run_guarded(self, self.formula_page.confirm_discard_changes)
+        succeeded, discard = run_guarded(
+            self,
+            lambda: (
+                self.definition_page.confirm_discard_changes()
+                and self.formula_page.confirm_discard_changes()
+            ),
+        )
         if succeeded and discard:
             super().accept()
 
     def reject(self) -> None:
-        succeeded, discard = run_guarded(self, self.formula_page.confirm_discard_changes)
+        succeeded, discard = run_guarded(
+            self,
+            lambda: (
+                self.definition_page.confirm_discard_changes()
+                and self.formula_page.confirm_discard_changes()
+            ),
+        )
         if succeeded and discard:
             super().reject()
 

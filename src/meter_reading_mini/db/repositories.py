@@ -1312,6 +1312,7 @@ class SQLiteRepository:
             raise ValidationError(f"物理メーターが見つかりません: {meter_id}")
 
     def create_measurement_definition(self, request: MeasurementDefinitionCreateRequest) -> None:
+        assignment_start: date | None = None
         if request.initial_meter_id is not None:
             meter = self.get_meter_master(request.initial_meter_id)
             if meter is None or not meter.is_active:
@@ -1320,6 +1321,7 @@ class SQLiteRepository:
                 )
             if meter.location_id != request.location_id:
                 raise ValidationError("測定定義と物理メーターの集計場所が一致しません。")
+            assignment_start = self._initial_assignment_start_date(request)
 
         self._execute(
             "INSERT INTO measurement_definitions "
@@ -1358,6 +1360,8 @@ class SQLiteRepository:
             ),
         )
         if request.initial_meter_id is not None:
+            if assignment_start is None:
+                raise ValidationError("初期割当の開始日を取得できません。")
             self._execute(
                 "INSERT INTO meter_assignments "
                 "(measurement_definition_id, meter_id, effective_from, effective_to, "
@@ -1365,12 +1369,70 @@ class SQLiteRepository:
                 (
                     request.measurement_definition_id,
                     request.initial_meter_id,
-                    self._midnight_utc(request.generation_start_date),
+                    self._midnight_utc(assignment_start),
                     _decimal_text(request.multiplier),
                     _decimal_text(request.rollover_value),
                     _decimal_text(request.initial_reading),
                 ),
             )
+
+    def _initial_assignment_start_date(self, request: MeasurementDefinitionCreateRequest) -> date:
+        start = request.generation_start_date
+        if request.initial_schedule_json is not None:
+            schedules = [
+                (start, _deserialize_schedule(request.reading_cycle, request.initial_schedule_json))
+            ]
+        else:
+            defaults = self.list_reading_cycle_schedule_defaults(request.reading_cycle)
+            current = self.get_reading_cycle_schedule_default(request.reading_cycle, start)
+            if current is None:
+                raise ScheduleHistoryResolutionError(
+                    request.measurement_definition_id,
+                    start.isoformat(),
+                    start.isoformat(),
+                    "適用可能な周期別既定スケジュール履歴がありません",
+                )
+            schedules = [
+                (start, _deserialize_schedule(request.reading_cycle, current.schedule_json))
+            ]
+            schedules.extend(
+                (
+                    record.effective_from_date,
+                    _deserialize_schedule(request.reading_cycle, record.schedule_json),
+                )
+                for record in defaults
+                if record.effective_from_date > start
+            )
+        earliest = start
+        for index, (effective, schedule) in enumerate(schedules):
+            offsets = (
+                [item.day_offset for item in schedule.reading_items]
+                if isinstance(schedule, DailySchedule)
+                else [schedule.day_offset]
+            )
+            minimum = min(offsets, default=0)
+            if minimum >= 0:
+                continue
+            end_ordinal = start.toordinal() - minimum
+            if index + 1 < len(schedules):
+                end_ordinal = min(end_ordinal, schedules[index + 1][0].toordinal())
+            ordinal = effective.toordinal()
+            while ordinal < end_ordinal and ordinal <= date.max.toordinal():
+                day = date.fromordinal(ordinal)
+                items = self._schedule_items(request.reading_cycle, day, schedule)
+                if items:
+                    try:
+                        earliest = min(
+                            earliest,
+                            *(day + timedelta(days=offset) for _, offset in items if offset < 0),
+                        )
+                    except OverflowError as error:
+                        raise ValidationError(
+                            "日付オフセットによる日付が対応範囲外です。"
+                        ) from error
+                    break
+                ordinal += 1
+        return earliest
 
     def update_measurement_definition(
         self,

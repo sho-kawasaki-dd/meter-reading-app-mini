@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,22 +20,39 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import DEFINITION_ID, LOCATION_ID, METER_ID, STAFF_ID, build_services
+from reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    STAFF_ID,
+    build_services,
+    create_plan,
+)
 from test_assignment_calculation_settings import _setup_replacement
 
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core.aggregation_contracts import (
+    AggregationBaselineSource,
+    AggregationCode,
     AggregationCycleGroup,
     AggregationFormulaCreateInput,
     AggregationFormulaTerm,
     AggregationFormulaVersionInput,
 )
-from meter_reading_mini.core.contract_models import Category, Purpose, ReadingCycle
+from meter_reading_mini.core.contract_models import (
+    Category,
+    Purpose,
+    ReadingCycle,
+    ReadingSession,
+    ResultStatus,
+)
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
+    ManualReadingInput,
     MeasurementDefinitionRecord,
     MeterMasterCreateInput,
     MeterMasterRecord,
+    ScheduleItem,
     StaffRecord,
 )
 from meter_reading_mini.db.repositories import SQLiteRepository
@@ -356,6 +373,237 @@ def test_definition_schedule_edit_and_reset_to_cycle_default(master_data: Master
         for item in history
     )
     assert "周期既定" in editor.history_text.toPlainText()
+
+
+def test_creation_schedule_and_initial_reading_are_saved_and_backfilled(
+    master_data: MasterData,
+) -> None:
+    page = master_data.dialog.definition_page
+    page.location_combo.setCurrentIndex(page.location_combo.findData(LOCATION_ID))
+    page.meter_combo.setCurrentIndex(page.meter_combo.findData(METER_ID))
+    page.name_edit.setText("時刻指定")
+    page.unit_edit.setText("m3")
+    page.start_date_edit.setDate(QDate(2026, 2, 2))
+    page.initial_reading_edit.setText("12.50")
+    page.creation_schedule_mode.setCurrentIndex(1)
+    editor = page.creation_schedule_editor
+    session = editor.daily_table.cellWidget(0, 0)
+    assert isinstance(session, QComboBox)
+    session.setCurrentIndex(session.findData("14:00"))
+    editor.daily_table.cellWidget(0, 1).setProperty("text", "-1")
+    page.save_button.click()
+
+    definition = next(
+        item
+        for item in master_data.services.measurement_definitions.list_measurement_definitions()
+        if item.display_name == "時刻指定"
+    )
+    definition_id = definition.measurement_definition_id
+    expected = DailySchedule((ScheduleItem(ReadingSession.SESSION_1400, -1),))
+    assert (
+        master_data.services.measurement_schedules.get_schedule(
+            definition_id, ReadingCycle.DAILY_1X, date(2026, 2, 2)
+        )
+        == expected
+    )
+    assert page.initial_reading_edit.text() == "12.50"
+    assert master_data.repository.list_meter_assignments(definition_id)[
+        0
+    ].effective_from == datetime(2026, 1, 31, 15, tzinfo=UTC)
+    assert page.schedule_panel.editor.schedule() == expected
+    master_data.services.planned_reading_maintenance.refresh()
+    assert master_data.connection.execute(
+        "SELECT business_date, reading_session, task_state FROM planned_readings "
+        "WHERE measurement_definition_id = ? ORDER BY business_date",
+        (definition_id,),
+    ).fetchall() == [
+        ("2026-02-02", "14:00", "auto_closed"),
+        ("2026-02-03", "14:00", "auto_closed"),
+        ("2026-02-04", "14:00", "open"),
+    ]
+    first_id = master_data.connection.execute(
+        "SELECT planned_reading_id FROM planned_readings "
+        "WHERE measurement_definition_id = ? AND business_date = '2026-02-02'",
+        (definition_id,),
+    ).fetchone()[0]
+    master_data.services.reading_writer.save_manual_reading(
+        ManualReadingInput(
+            first_id,
+            ResultStatus.MEASURED,
+            datetime(2026, 2, 1, 5, tzinfo=UTC),
+            Decimal("15"),
+            None,
+        ),
+        staff_id=STAFF_ID,
+    )
+    report = master_data.services.aggregation_reports.get_report(date(2026, 2, 2), date(2026, 2, 3))
+    result = next(item for item in report.periods[0].results if item.target_id == definition_id)
+    assert result.value == Decimal("2.50")
+    assert AggregationCode.MISSING_NO_BASELINE not in result.missing_codes
+    baseline = result.details[0].baseline
+    assert baseline is not None
+    assert baseline.source is AggregationBaselineSource.DEFINITION_INITIAL
+    assert baseline.business_date == date(2026, 2, 1)
+
+
+def test_creation_schedule_context_uses_default_history_and_confirms_discard(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = master_data.services.schedule_defaults
+    later = DailySchedule((ScheduleItem(ReadingSession.SESSION_2200, 0),))
+    defaults.save_schedule(ReadingCycle.DAILY_1X, later, effective_from_date=date(2026, 2, 6))
+    page = master_data.dialog.definition_page
+    page.start_date_edit.setDate(QDate(2026, 2, 7))
+    assert page.creation_schedule_editor.schedule() == later
+    page.creation_schedule_mode.setCurrentIndex(1)
+    editor = page.creation_schedule_editor
+    editor.daily_table.cellWidget(0, 1).setProperty("text", "2")
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No)
+    page.start_date_edit.setDate(QDate(2026, 2, 4))
+    assert page.start_date_edit.date() == QDate(2026, 2, 7)
+    page.cycle_combo.setCurrentIndex(page.cycle_combo.findData(ReadingCycle.WEEKLY.value))
+    assert page.cycle_combo.currentData() == ReadingCycle.DAILY_1X.value
+    assert editor.schedule() == DailySchedule((ScheduleItem(ReadingSession.SESSION_2200, 2),))
+    page.creation_schedule_mode.setCurrentIndex(0)
+    assert page.creation_schedule_mode.currentData() == "custom"
+    assert editor.schedule() == DailySchedule((ScheduleItem(ReadingSession.SESSION_2200, 2),))
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    page.start_date_edit.setDate(QDate(2026, 2, 4))
+    assert editor.schedule() == defaults.get_schedule(ReadingCycle.DAILY_1X, date(2026, 2, 4))
+    page.cycle_combo.setCurrentIndex(page.cycle_combo.findData(ReadingCycle.WEEKLY.value))
+    assert editor.schedule() == defaults.get_schedule(ReadingCycle.WEEKLY, date(2026, 2, 4))
+
+
+def test_creation_offset_validation_uses_past_generation_date(master_data: MasterData) -> None:
+    page = master_data.dialog.definition_page
+    page.location_combo.setCurrentIndex(page.location_combo.findData(LOCATION_ID))
+    page.meter_combo.setCurrentIndex(page.meter_combo.findData(METER_ID))
+    page.name_edit.setText("日付範囲外")
+    page.unit_edit.setText("m3")
+    page.start_date_edit.setDate(QDate(1752, 9, 14))
+    page.creation_schedule_mode.setCurrentIndex(1)
+    page.creation_schedule_editor.daily_table.cellWidget(0, 1).setProperty("text", "-639797")
+    page.save_button.click()
+    assert "日付" in master_data.messages[-1] and "対応範囲外" in master_data.messages[-1]
+    assert all(
+        item.display_name != "日付範囲外"
+        for item in master_data.services.measurement_definitions.list_measurement_definitions()
+    )
+
+
+def test_default_schedule_creation_tracks_later_default_changes(master_data: MasterData) -> None:
+    page = master_data.dialog.definition_page
+    page.location_combo.setCurrentIndex(page.location_combo.findData(LOCATION_ID))
+    page.meter_combo.setCurrentIndex(page.meter_combo.findData(METER_ID))
+    page.name_edit.setText("周期既定")
+    page.unit_edit.setText("m3")
+    page.save_button.click()
+    definition = next(
+        item
+        for item in master_data.services.measurement_definitions.list_measurement_definitions()
+        if item.display_name == "周期既定"
+    )
+    history = master_data.services.measurement_schedules.list_schedule_history(
+        definition.measurement_definition_id
+    )
+    assert history[0].schedule_json is None
+    changed = DailySchedule((ScheduleItem(ReadingSession.SESSION_2200),))
+    master_data.services.schedule_defaults.save_schedule(
+        ReadingCycle.DAILY_1X, changed, effective_from_date=date(2026, 2, 5)
+    )
+    assert (
+        master_data.services.measurement_schedules.get_schedule(
+            definition.measurement_definition_id, ReadingCycle.DAILY_1X, date(2026, 2, 5)
+        )
+        == changed
+    )
+
+
+def test_initial_reading_controls_and_independent_save(master_data: MasterData) -> None:
+    page = master_data.dialog.definition_page
+    page.initial_reading_edit.setText("17")
+    page.method_combo.setCurrentIndex(page.method_combo.findData("raw_only"))
+    assert not page.initial_reading_edit.isEnabled()
+    page.method_combo.setCurrentIndex(page.method_combo.findData("delta"))
+    page.value_combo.setCurrentIndex(page.value_combo.findData("power_factor_percent_phase"))
+    assert not page.initial_reading_edit.isEnabled()
+    page.value_combo.setCurrentIndex(page.value_combo.findData("decimal_string"))
+    assert page.initial_reading_edit.isEnabled()
+    assert page.initial_reading_edit.text() == "17"
+
+    _select_row(page.table, DEFINITION_ID)
+    assert page.initial_reading_edit.isEnabled()
+    page.name_edit.setText("未保存の属性")
+    page.initial_reading_edit.setText("12.34")
+    page.save_button.click()
+    assert "先に" in master_data.messages[-1]
+    assert _definition(master_data, DEFINITION_ID).display_name != "未保存の属性"
+    page.initial_reading_save_button.click()
+    assert page.name_edit.text() == "未保存の属性"
+    assignment = master_data.repository.list_meter_assignments(DEFINITION_ID)[0]
+    assert assignment.initial_reading == Decimal("12.34")
+    page.initial_reading_edit.setText("")
+    page.initial_reading_save_button.click()
+    assert master_data.repository.list_meter_assignments(DEFINITION_ID)[0].initial_reading is None
+
+    page.initial_reading_edit.setText("1.234")
+    page.initial_reading_save_button.click()
+    assert master_data.messages[-1]
+    assert page.initial_reading_edit.text() == "1.234"
+    assert master_data.repository.list_meter_assignments(DEFINITION_ID)[0].initial_reading is None
+
+
+def test_initial_reading_is_read_only_after_measured_result(master_data: MasterData) -> None:
+    service = master_data.services.measurement_definitions
+    service.set_initial_reading(DEFINITION_ID, Decimal("12"))
+    at = datetime(2026, 2, 4, 3, 0, tzinfo=UTC)
+    create_plan(master_data.repository, "initial-ui-slot", at)
+    master_data.services.reading_writer.save_manual_reading(
+        ManualReadingInput("initial-ui-slot", ResultStatus.MEASURED, at, Decimal("13"), None),
+        staff_id=STAFF_ID,
+    )
+    page = master_data.dialog.definition_page
+    _select_row(page.table, DEFINITION_ID)
+    assert page.initial_reading_edit.text() == "12"
+    assert not page.initial_reading_edit.isEnabled()
+    assert not page.initial_reading_save_button.isEnabled()
+    assert "実測後" in page.initial_reading_notice.text()
+
+
+def test_initial_reading_save_rechecks_state_and_keeps_unsaved_value(
+    master_data: MasterData,
+) -> None:
+    page = master_data.dialog.definition_page
+    _select_row(page.table, DEFINITION_ID)
+    page.initial_reading_edit.setText("12")
+    master_data.connection.execute(
+        "INSERT INTO assignment_review_flags "
+        "SELECT measurement_definition_id, meter_id, effective_from, '確認', "
+        "'2026-02-01 00:00:00' FROM meter_assignments WHERE measurement_definition_id = ?",
+        (DEFINITION_ID,),
+    )
+    page.initial_reading_save_button.click()
+    assert "確認待ち" in master_data.messages[-1]
+    assert page.initial_reading_edit.text() == "12"
+    assert master_data.repository.list_meter_assignments(DEFINITION_ID)[0].initial_reading is None
+    page._load_selected()
+    assert not page.initial_reading_edit.isEnabled()
+    assert "確認待ち" in page.initial_reading_notice.text()
+
+
+def test_unsaved_initial_reading_is_not_discarded_on_selection_or_close(
+    master_data: MasterData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = master_data.dialog.definition_page
+    _select_row(page.table, DEFINITION_ID)
+    page.initial_reading_edit.setText("12")
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No)
+    page.new_button.click()
+    assert page.initial_reading_edit.text() == "12"
+    assert page.id_label.text() == DEFINITION_ID
+    master_data.dialog.reject()
+    assert master_data.dialog.isVisible()
+    assert page.initial_reading_edit.text() == "12"
 
 
 def test_initial_meter_is_required_and_only_active_meters_at_selected_location_are_offered(
@@ -887,7 +1135,13 @@ def test_dialog_controls_fit_and_are_reachable_at_150_percent(
     definition.detail_tabs.setCurrentIndex(0)
     form_area = definition.detail_tabs.widget(0)
     assert isinstance(form_area, QScrollArea)
+    _assert_reachable(form_area, definition.initial_reading_edit, master)
+    _assert_reachable(form_area, definition.creation_schedule_mode, master)
+    definition.creation_schedule_mode.setCurrentIndex(1)
+    _assert_reachable(form_area, definition.creation_schedule_editor.add_item_button, master)
     _assert_reachable(form_area, definition.save_button, master)
+    _select_row(definition.table, DEFINITION_ID)
+    _assert_reachable(form_area, definition.initial_reading_save_button, master)
     definition.detail_tabs.setCurrentIndex(1)
     schedule_area = definition.detail_tabs.widget(1)
     assert isinstance(schedule_area, QScrollArea)

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from conftest import SheetBrowser
+from mobile_draft_helpers import export_draft, import_text, open_sheet, reload_and_wait, wait_saved
 from playwright.sync_api import expect
 from reading_service_helpers import (
     DEFINITION_ID,
@@ -119,6 +120,39 @@ def test_sheet_displays_definition_initial_and_exports_calculated_result(
         "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
         ("initial-slot",),
     ).fetchone() == ("10", "6")
+
+
+def test_definition_initial_draft_restores_from_indexeddb_and_json(
+    sheet_browser: SheetBrowser,
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository, multiplier=Decimal("2"))
+    create_plan(repository, "initial-draft", datetime(2026, 2, 4, 4, tzinfo=UTC))
+    MeasurementDefinitionService(
+        repository, repository, repository, transaction_factory=partial(transaction, conn)
+    ).set_initial_reading(DEFINITION_ID, Decimal("10"))
+    html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
+    page = open_sheet(sheet_browser, html=html)
+    page.locator('.tab[data-tab="all"]').click()
+    card = page.locator('.card[data-slot-id="initial-draft"]')
+    card.locator(".raw").fill("13")
+    card.locator(".confirm").click()
+    wait_saved(page)
+    draft = export_draft(page)
+    reload_and_wait(page)
+    assert export_draft(page) == draft
+    expect(card).to_have_attribute("data-previous", "10")
+    expect(card).to_have_attribute("data-usage", "6")
+    restored = open_sheet(sheet_browser, html=html, name="initial-restored.html")
+    import_text(restored, json.dumps(draft))
+    expect(restored.locator("#draft-preview")).to_be_visible()
+    restored.locator("#draft-confirm-import").click()
+    assert export_draft(restored) == draft
+    restored.locator('.tab[data-tab="all"]').click()
+    restored_card = restored.locator('.card[data-slot-id="initial-draft"]')
+    expect(restored_card).to_have_attribute("data-previous", "10")
+    expect(restored_card).to_have_attribute("data-usage", "6")
 
 
 def _extract_data(html: str) -> dict[str, Any]:
