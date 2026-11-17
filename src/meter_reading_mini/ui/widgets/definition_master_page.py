@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QSignalBlocker, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -33,6 +33,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionRecord,
     MeasurementDefinitionUpdateRequest,
 )
+from meter_reading_mini.core.schedule_settings import serialize_schedule
 from meter_reading_mini.ui.error_handling import run_guarded
 from meter_reading_mini.ui.models.reading_overview_model import CATEGORY_LABELS, PURPOSE_LABELS
 from meter_reading_mini.ui.widgets.decimal_line_edit import DecimalLineEdit
@@ -50,7 +51,7 @@ from meter_reading_mini.ui.widgets.master_common import (
     scroll_area,
     selected_id,
 )
-from meter_reading_mini.ui.widgets.schedule_editor import CYCLE_LABELS
+from meter_reading_mini.ui.widgets.schedule_editor import CYCLE_LABELS, ScheduleEditor
 from meter_reading_mini.ui.widgets.schedule_panel import SchedulePanel, ScheduleSubject
 
 VALUE_LABELS = {
@@ -71,6 +72,11 @@ class DefinitionMasterPage(QWidget):
         self._services = services
         self._editing_id: str | None = None
         self._current_meter_id: str | None = None
+        self._loading_form = False
+        self._schedule_dirty = False
+        self._initial_reading_dirty = False
+        self._loaded_cycle: ReadingCycle | None = None
+        self._loaded_start: date | None = None
         layout = QVBoxLayout(self)
         self.show_inactive = QCheckBox("無効な測定定義も表示")
         layout.addWidget(self.show_inactive)
@@ -97,6 +103,16 @@ class DefinitionMasterPage(QWidget):
         self.location_combo.currentIndexChanged.connect(
             lambda *_: run_guarded(self, self._refresh_meters)
         )
+        self.cycle_combo.currentIndexChanged.connect(self._change_creation_schedule_context)
+        self.start_date_edit.dateChanged.connect(self._change_creation_schedule_context)
+        self.value_combo.currentIndexChanged.connect(self._update_initial_reading_availability)
+        self.method_combo.currentIndexChanged.connect(self._update_initial_reading_availability)
+        self.creation_schedule_mode.currentIndexChanged.connect(self._change_creation_schedule_mode)
+        self.creation_schedule_editor.changed.connect(self._mark_creation_schedule_dirty)
+        self.initial_reading_save_button.clicked.connect(
+            lambda: run_guarded(self, self._save_initial_reading)
+        )
+        self.initial_reading_edit.textChanged.connect(self._mark_initial_reading_dirty)
         self.refresh_references()
         self.reload()
         self._new_definition()
@@ -131,10 +147,25 @@ class DefinitionMasterPage(QWidget):
         self.multiplier_edit = DecimalLineEdit("倍率")
         self.rollover_edit = DecimalLineEdit("ロールオーバー値")
         self.warning_edit = DecimalLineEdit("警告閾値")
+        self.initial_reading_edit = DecimalLineEdit("読値初期値")
+        self.initial_reading_notice = QLabel()
+        self.initial_reading_notice.setWordWrap(True)
+        self.initial_reading_save_button = QPushButton("読値初期値を保存")
         self.start_date_edit = QDateEdit()
         self.start_date_edit.setCalendarPopup(True)
         self.start_date_edit.setDisplayFormat("yyyy/MM/dd")
         self.start_date_edit.setDate(qdate(self._today()))
+        self.creation_schedule_widget = QWidget()
+        schedule_layout = QVBoxLayout(self.creation_schedule_widget)
+        schedule_layout.setContentsMargins(0, 0, 0, 0)
+        self.creation_schedule_mode = QComboBox()
+        self.creation_schedule_mode.addItem("周期別既定に従う", "default")
+        self.creation_schedule_mode.addItem("この測定定義で指定", "custom")
+        schedule_layout.addWidget(self.creation_schedule_mode)
+        self.creation_schedule_editor = ScheduleEditor(
+            self._today, creation_base_date=lambda: python_date(self.start_date_edit.date())
+        )
+        schedule_layout.addWidget(self.creation_schedule_editor)
         self.id_label = QLabel("新規登録")
         self.precision_notice = QLabel(
             "過去の読値・使用量は変更されず、新しい入力から適用されます。"
@@ -159,7 +190,11 @@ class DefinitionMasterPage(QWidget):
             ("倍率", self.multiplier_edit),
             ("ロールオーバー値", self.rollover_edit),
             ("警告閾値", self.warning_edit),
+            ("読値初期値", self.initial_reading_edit),
+            ("", self.initial_reading_notice),
+            ("", self.initial_reading_save_button),
             ("生成開始日", self.start_date_edit),
+            ("作成時スケジュール", self.creation_schedule_widget),
             ("", self.assignment_notice),
             ("測定定義 ID", self.id_label),
         ):
@@ -303,8 +338,11 @@ class DefinitionMasterPage(QWidget):
         self.rollover_edit.setReadOnly(immutable)
 
     def _new_definition(self) -> None:
+        if not self._confirm_discard_form_changes():
+            return
         self._editing_id = None
         self._current_meter_id = None
+        self._loading_form = True
         with QSignalBlocker(self.table), QSignalBlocker(self.location_combo):
             self.table.clearSelection()
             self.table.setCurrentCell(-1, -1)
@@ -314,6 +352,7 @@ class DefinitionMasterPage(QWidget):
         self.name_edit.clear()
         self.unit_edit.clear()
         self.warning_edit.clear()
+        self.initial_reading_edit.clear()
         self.multiplier_edit.setText("1")
         self.rollover_edit.clear()
         self.category.setCurrentIndex(0)
@@ -323,12 +362,31 @@ class DefinitionMasterPage(QWidget):
         self.purpose_combo.setCurrentIndex(0)
         self.places_combo.setCurrentIndex(0)
         self.start_date_edit.setDate(qdate(self._today()))
+        self.creation_schedule_mode.setCurrentIndex(0)
+        self.creation_schedule_widget.setVisible(True)
+        self.initial_reading_save_button.setVisible(False)
+        self._loading_form = False
+        self._initial_reading_dirty = False
+        self._load_creation_schedule()
+        self._update_creation_schedule_mode()
+        self._update_initial_reading_availability()
         self.id_label.setText("新規登録")
         self.active_button.setEnabled(False)
 
     def _load_selected(self) -> None:
         definition_id = selected_id(self.table)
         if definition_id is None:
+            return
+        if definition_id != self._editing_id and not self._confirm_discard_form_changes():
+            with QSignalBlocker(self.table):
+                for row in range(self.table.rowCount()):
+                    item = self.table.item(row, 0)
+                    if item is not None and item.data(Qt.ItemDataRole.UserRole) == self._editing_id:
+                        self.table.selectRow(row)
+                        break
+                else:
+                    self.table.setCurrentCell(-1, -1)
+                    self.table.clearSelection()
             return
         definition = self._services.measurement_definitions.get_measurement_definition(
             definition_id
@@ -355,6 +413,7 @@ class DefinitionMasterPage(QWidget):
                 f"測定定義の必須項目がありません: {definition.measurement_definition_id}"
             )
         self._editing_id = definition.measurement_definition_id
+        self._loading_form = True
         self._current_meter_id = definition.meter_id
         self.name_edit.setText(definition.display_name or "")
         self.unit_edit.setText(definition.unit or "")
@@ -381,10 +440,117 @@ class DefinitionMasterPage(QWidget):
                 f"生成開始日が画面で表示できる範囲外です: {definition.generation_start_date}"
             )
         self.start_date_edit.setDate(start)
+        self._loading_form = False
+        self._schedule_dirty = False
+        self.creation_schedule_widget.setVisible(False)
+        self.initial_reading_save_button.setVisible(True)
+        self._refresh_initial_reading()
         self.id_label.setText(definition.measurement_definition_id)
         self.active_button.setText("無効化" if definition.is_active else "再有効化")
         self.active_button.setEnabled(True)
         self._set_immutable(True)
+
+    def _confirm_discard_creation_schedule(self) -> bool:
+        return not self._schedule_dirty or confirm(
+            self,
+            "編集中のスケジュール",
+            "入力したスケジュールの変更を破棄しますか？",
+        )
+
+    def _confirm_discard_form_changes(self) -> bool:
+        if self._editing_id is None:
+            return self._confirm_discard_creation_schedule()
+        return not self._initial_reading_dirty or confirm(
+            self, "編集中の読値初期値", "入力した読値初期値の変更を破棄しますか？"
+        )
+
+    def confirm_discard_changes(self) -> bool:
+        return self._confirm_discard_form_changes()
+
+    def _mark_creation_schedule_dirty(self) -> None:
+        if not self._loading_form and self._editing_id is None:
+            self._schedule_dirty = True
+
+    def _load_creation_schedule(self) -> None:
+        cycle = ReadingCycle(selected_value(self.cycle_combo, "検針周期"))
+        start = python_date(self.start_date_edit.date())
+        schedule = self._services.schedule_defaults.get_schedule(cycle, start)
+        self.creation_schedule_editor.set_schedule(cycle, schedule)
+        self._loaded_cycle = cycle
+        self._loaded_start = start
+        self._schedule_dirty = False
+
+    def _change_creation_schedule_context(self, *_args: object) -> None:
+        if self._loading_form or self._editing_id is not None:
+            return
+        if self._confirm_discard_creation_schedule():
+            succeeded, _ = run_guarded(self, self._load_creation_schedule)
+            if succeeded:
+                return
+        if self._loaded_cycle is not None and self._loaded_start is not None:
+            with QSignalBlocker(self.cycle_combo), QSignalBlocker(self.start_date_edit):
+                select_value(self.cycle_combo, self._loaded_cycle.value, "検針周期")
+                self.start_date_edit.setDate(qdate(self._loaded_start))
+
+    def _update_creation_schedule_mode(self, *_args: object) -> None:
+        self.creation_schedule_editor.setEnabled(
+            self.creation_schedule_mode.currentData() == "custom"
+        )
+
+    def _change_creation_schedule_mode(self, *_args: object) -> None:
+        if (
+            not self._loading_form
+            and self._editing_id is None
+            and self.creation_schedule_mode.currentData() == "default"
+            and self._schedule_dirty
+        ):
+            if self._confirm_discard_creation_schedule():
+                succeeded, _ = run_guarded(self, self._load_creation_schedule)
+                if succeeded:
+                    self._update_creation_schedule_mode()
+                    return
+            with QSignalBlocker(self.creation_schedule_mode):
+                select_value(self.creation_schedule_mode, "custom", "作成時スケジュール")
+        self._update_creation_schedule_mode()
+
+    def _update_initial_reading_availability(self, *_args: object) -> None:
+        if self._loading_form or self._editing_id is not None:
+            return
+        available = (
+            self.value_combo.currentData() == ValueSchema.DECIMAL_STRING.value
+            and self.method_combo.currentData() == CalculationMethod.DELTA.value
+        )
+        self.initial_reading_edit.setEnabled(available)
+        self.initial_reading_notice.setText(
+            "初回実測の基準値です。" if available else "数値・前回との差分の場合に設定できます。"
+        )
+
+    def _refresh_initial_reading(self) -> None:
+        if self._editing_id is None:
+            return
+        state = self._services.measurement_definitions.get_initial_reading_state(self._editing_id)
+        with QSignalBlocker(self.initial_reading_edit):
+            self.initial_reading_edit.set_decimal_value(state.value)
+        self._initial_reading_dirty = False
+        available = state.unavailable_reason is None
+        self.initial_reading_edit.setEnabled(available)
+        self.initial_reading_save_button.setEnabled(available)
+        self.initial_reading_notice.setText(
+            state.unavailable_reason or "初期値は測定定義の属性とは別に保存します。"
+        )
+
+    def _mark_initial_reading_dirty(self, *_args: object) -> None:
+        if not self._loading_form and self._editing_id is not None:
+            self._initial_reading_dirty = True
+
+    def _save_initial_reading(self) -> None:
+        if self._editing_id is None:
+            raise ValidationError("測定定義を選択してください。")
+        self._services.measurement_definitions.set_initial_reading(
+            self._editing_id, self.initial_reading_edit.decimal_value()
+        )
+        self._refresh_initial_reading()
+        self.saved.emit()
 
     def _decimal_places(self) -> int | None:
         value = self.places_combo.currentData()
@@ -393,6 +559,8 @@ class DefinitionMasterPage(QWidget):
         return int(value) if value else None
 
     def _save_definition(self) -> None:
+        if self._editing_id is not None and self._initial_reading_dirty:
+            raise ValidationError("読値初期値は先に「読値初期値を保存」で保存してください。")
         category = Category(selected_value(self.category, "カテゴリ"))
         purpose = Purpose(selected_value(self.purpose_combo, "集計目的"))
         warning = self.warning_edit.decimal_value()
@@ -418,8 +586,17 @@ class DefinitionMasterPage(QWidget):
                     reading_cycle=ReadingCycle(selected_value(self.cycle_combo, "検針周期")),
                     purpose=purpose,
                     generation_start_date=python_date(self.start_date_edit.date()),
-                    initial_schedule_json=None,
+                    initial_schedule_json=(
+                        serialize_schedule(self.creation_schedule_editor.schedule())
+                        if self.creation_schedule_mode.currentData() == "custom"
+                        else None
+                    ),
                     initial_meter_id=selected_value(self.meter_combo, "初期メーター"),
+                    initial_reading=(
+                        self.initial_reading_edit.decimal_value()
+                        if self.initial_reading_edit.isEnabled()
+                        else None
+                    ),
                 )
             )
         else:
@@ -468,6 +645,8 @@ class DefinitionMasterPage(QWidget):
     def _toggle_active(self) -> None:
         if self._editing_id is None:
             raise ValidationError("測定定義を選択してください。")
+        if not self._confirm_discard_form_changes():
+            return
         definition = self._services.measurement_definitions.get_measurement_definition(
             self._editing_id
         )

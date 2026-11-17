@@ -126,10 +126,15 @@ class ScheduleEditor(QWidget):
     changed = Signal()
 
     def __init__(
-        self, current_business_date: Callable[[], date], parent: QWidget | None = None
+        self,
+        current_business_date: Callable[[], date],
+        parent: QWidget | None = None,
+        *,
+        creation_base_date: Callable[[], date] | None = None,
     ) -> None:
         super().__init__(parent)
         self._current_business_date = current_business_date
+        self._creation_base_date = creation_base_date
         self._cycle: ReadingCycle | None = None
         self._loading = False
         layout = QVBoxLayout(self)
@@ -143,9 +148,11 @@ class ScheduleEditor(QWidget):
         today = qdate(current_business_date())
         self.effective_date_edit.setMinimumDate(today)
         self.effective_date_edit.setDate(today)
-        dates = QFormLayout()
+        self.dates_widget = QWidget()
+        dates = QFormLayout(self.dates_widget)
         dates.addRow("適用開始日", self.effective_date_edit)
-        layout.addLayout(dates)
+        self.dates_widget.setVisible(creation_base_date is None)
+        layout.addWidget(self.dates_widget)
 
         self.daily_widget = QWidget()
         daily_layout = QVBoxLayout(self.daily_widget)
@@ -207,11 +214,14 @@ class ScheduleEditor(QWidget):
         monthly_layout.addRow("奇偶月", self.parity)
         layout.addWidget(self.monthly_widget)
 
-        layout.addWidget(QLabel("適用履歴"))
+        self.history_label = QLabel("適用履歴")
+        self.history_label.setVisible(creation_base_date is None)
+        layout.addWidget(self.history_label)
         self.history_text = QPlainTextEdit()
         self.history_text.setObjectName("scheduleHistory")
         self.history_text.setReadOnly(True)
         self.history_text.setMaximumHeight(110)
+        self.history_text.setVisible(creation_base_date is None)
         layout.addWidget(self.history_text)
 
         self.add_item_button.clicked.connect(lambda: self.add_daily_item())
@@ -311,7 +321,11 @@ class ScheduleEditor(QWidget):
         cycle = self._cycle
         if cycle is None:
             raise ValidationError("検針周期を選択してください。")
-        effective = self.effective_date()
+        effective = (
+            self._creation_base_date()
+            if self._creation_base_date is not None
+            else self.effective_date()
+        )
         if cycle in (ReadingCycle.DAILY_1X, ReadingCycle.DAILY_2X, ReadingCycle.DAILY_3X):
             items = []
             for row in range(self.daily_table.rowCount()):

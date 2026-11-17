@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -18,6 +18,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionManagementRepository,
     MeasurementDefinitionRecord,
     MeasurementDefinitionUpdateRequest,
+    MeterAssignmentRecord,
     MeterAssignmentRepository,
     MeterMasterWriteRepository,
 )
@@ -32,6 +33,12 @@ from meter_reading_mini.core.timezone_settings import normalize_to_utc
 logger = logging.getLogger(__name__)
 
 TransactionFactory = Callable[[], AbstractContextManager[object]]
+
+
+@dataclass(frozen=True, slots=True)
+class InitialReadingState:
+    value: Decimal | None
+    unavailable_reason: str | None
 
 
 class MeasurementDefinitionService:
@@ -176,27 +183,51 @@ class MeasurementDefinitionService:
             normalized_meter_id,
         )
 
+    def _initial_reading_state(
+        self, definition: MeasurementDefinitionRecord
+    ) -> tuple[MeterAssignmentRecord | None, str | None]:
+        assignments = self._assignment_repository.list_meter_assignments(
+            definition.measurement_definition_id
+        )
+        assignment = assignments[0] if assignments else None
+        if not definition.is_active:
+            return assignment, "無効な測定定義は変更できません。"
+        if (
+            definition.calculation_method is not CalculationMethod.DELTA
+            or definition.value_schema is not ValueSchema.DECIMAL_STRING
+        ):
+            return assignment, "この測定定義には読値初期値を設定できません。"
+        if len(assignments) != 1 or assignment is None:
+            return assignment, "交換前の初期割当が必要です。"
+        if (
+            assignment.needs_review
+            or self._assignment_repository.has_assignment_measured_readings(assignment)
+            or self._assignment_repository.has_definition_replacement(
+                definition.measurement_definition_id
+            )
+        ):
+            return assignment, "実測後・交換後・割当確認待ちの場合は変更できません。"
+        return assignment, None
+
+    def get_initial_reading_state(self, measurement_definition_id: str) -> InitialReadingState:
+        definition_id = _required(measurement_definition_id, "measurement_definition_id")
+        definition = self._repository.get_measurement_definition(definition_id)
+        if definition is None:
+            raise ValidationError("測定定義が見つかりません。")
+        assignment, reason = self._initial_reading_state(definition)
+        return InitialReadingState(assignment.initial_reading if assignment else None, reason)
+
     def set_initial_reading(self, measurement_definition_id: str, value: Decimal | None) -> None:
         definition_id = _required(measurement_definition_id, "measurement_definition_id")
         with self._transaction_factory():
             definition = self._repository.get_measurement_definition(definition_id)
-            if definition is None or not definition.is_active:
+            if definition is None:
                 raise ValidationError("有効な測定定義が見つかりません。")
-            if (
-                definition.calculation_method is not CalculationMethod.DELTA
-                or definition.value_schema is not ValueSchema.DECIMAL_STRING
-            ):
-                raise ValidationError("この測定定義には読値初期値を設定できません。")
-            assignments = self._assignment_repository.list_meter_assignments(definition_id)
-            if len(assignments) != 1:
+            assignment, reason = self._initial_reading_state(definition)
+            if reason is not None:
+                raise ValidationError(reason)
+            if assignment is None:
                 raise ValidationError("交換前の初期割当が必要です。")
-            assignment = assignments[0]
-            if (
-                assignment.needs_review
-                or self._assignment_repository.has_assignment_measured_readings(assignment)
-                or self._assignment_repository.has_definition_replacement(definition_id)
-            ):
-                raise ValidationError("実測後・交換後・割当確認待ちの場合は変更できません。")
             if value is not None:
                 validate_initial_reading(
                     value,

@@ -54,6 +54,7 @@ from meter_reading_mini.core.meter_replacement_service import (
     MeterReplacementService,
 )
 from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
+from meter_reading_mini.db.bootstrap_seeds import bootstrap_default_settings
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.integrity import check_business_integrity
 from meter_reading_mini.db.migrations import create_schema
@@ -941,6 +942,7 @@ def test_replacement_commit_failure_rolls_back_everything(tmp_path: Path) -> Non
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         create_schema(conn)
+        bootstrap_default_settings(conn)
         repository = SQLiteRepository(conn)
         _, _, service = _setup(conn, repository)
         before = _database_state(conn)
@@ -968,6 +970,7 @@ def test_replacement_correction_commit_failure_rolls_back_everything(tmp_path: P
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         create_schema(conn)
+        bootstrap_default_settings(conn)
         repository = SQLiteRepository(conn)
         _, _, service = _setup(conn, repository)
         event = service.register_replacement(_request())

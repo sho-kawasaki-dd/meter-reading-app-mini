@@ -162,3 +162,24 @@ def test_day_offset_must_produce_a_representable_date(qtbot: QtBot) -> None:
     editor.daily_table.cellWidget(0, 1).setProperty("text", "999999999")
     with pytest.raises(ValidationError, match="日付.*対応範囲外"):
         editor.schedule()
+
+
+def test_creation_uses_generation_date_without_normal_edit_restrictions(qtbot: QtBot) -> None:
+    start = date(1, 1, 1)
+    editor = ScheduleEditor(lambda: TODAY, creation_base_date=lambda: start)
+    qtbot.addWidget(editor)
+    editor.set_schedule(
+        ReadingCycle.DAILY_1X,
+        DailySchedule((ScheduleItem(ReadingSession.SESSION_0800, -1),)),
+    )
+    assert editor.dates_widget.isHidden()
+    assert editor.history_label.isHidden()
+    assert editor.history_text.isHidden()
+    with pytest.raises(ValidationError, match="日付.*対応範囲外"):
+        editor.schedule()
+    start = date(2020, 1, 2)
+    assert editor.schedule() == DailySchedule((ScheduleItem(ReadingSession.SESSION_0800, -1),))
+    editor.effective_date_edit.setMinimumDate(QDate(1900, 1, 1))
+    editor.effective_date_edit.setDate(QDate(2020, 1, 2))
+    with pytest.raises(ValidationError, match="過去"):
+        editor.effective_date()

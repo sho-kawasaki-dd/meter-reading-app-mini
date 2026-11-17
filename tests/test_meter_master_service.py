@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from functools import partial
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from reading_service_helpers import (
@@ -31,6 +32,7 @@ from meter_reading_mini.core.errors import (
     InvalidTimezoneError,
     MasterInUseError,
     MeterAssignmentResolutionError,
+    ScheduleHistoryResolutionError,
     ValidationError,
 )
 from meter_reading_mini.core.measurement_definition_service import (
@@ -618,6 +620,84 @@ def test_definition_initial_reading_creation_validation_and_update(
         repository.list_meter_assignments(created.measurement_definition_id)[0].initial_reading
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("cycle", "schedule", "expected_start"),
+    [
+        (
+            ReadingCycle.DAILY_1X,
+            '{"reading_sessions":[{"reading_session":"14:00","day_offset":-1}]}',
+            date(2026, 1, 31),
+        ),
+        (
+            ReadingCycle.WEEKLY,
+            '{"weekday":"wednesday","reading_session":"14:00","day_offset":-5}',
+            date(2026, 1, 30),
+        ),
+        (
+            ReadingCycle.MONTHLY,
+            '{"selector_type":"day_of_month","day_of_month":10,'
+            '"reading_session":"14:00","day_offset":-2}',
+            date(2026, 2, 1),
+        ),
+    ],
+)
+def test_initial_assignment_covers_first_scheduled_date(
+    file_database_repository: tuple,
+    cycle: ReadingCycle,
+    schedule: str,
+    expected_start: date,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = _definition_service(conn, repository)
+    created = service.create_measurement_definition(
+        replace(
+            _new_definition_request(initial_meter_id=METER_ID, initial_schedule_json=schedule),
+            reading_cycle=cycle,
+            initial_reading=Decimal("10"),
+        )
+    )
+    assignment = repository.list_meter_assignments(created.measurement_definition_id)[0]
+    local_start = assignment.effective_from.astimezone(ZoneInfo("Asia/Tokyo"))
+    assert local_start.date() == expected_start
+    assert local_start.hour == 0
+
+
+def test_initial_assignment_covers_existing_future_default_history(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    repository.save_reading_cycle_schedule_default(
+        ReadingCycle.DAILY_1X,
+        date(2026, 2, 5),
+        '{"reading_sessions":[{"reading_session":"08:00","day_offset":-7}]}',
+        created_at=TEST_NOW,
+    )
+    service = _definition_service(conn, repository)
+    created = service.create_measurement_definition(
+        _new_definition_request(initial_meter_id=METER_ID)
+    )
+    assignment = repository.list_meter_assignments(created.measurement_definition_id)[0]
+    assert assignment.effective_from == datetime(2026, 1, 28, 15, tzinfo=UTC)
+
+
+def test_missing_default_history_rejects_creation_without_partial_data(
+    file_database_repository: tuple,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    service = _definition_service(conn, repository, id_provider=lambda: "missing-default")
+    conn.execute(
+        "DELETE FROM reading_cycle_schedule_defaults WHERE reading_cycle = ?",
+        (ReadingCycle.DAILY_1X.value,),
+    )
+    with pytest.raises(ScheduleHistoryResolutionError):
+        service.create_measurement_definition(_new_definition_request(initial_meter_id=METER_ID))
+    assert repository.get_measurement_definition("missing-default") is None
+    assert repository.list_meter_assignments("missing-default") == []
 
 
 @pytest.mark.parametrize("condition", ["inactive", "no_assignment", "needs_review", "raw_only"])
