@@ -12,6 +12,7 @@ from PySide6.QtCore import QDate, QTime
 from PySide6.QtWidgets import QMessageBox
 from pytestqt.qtbot import QtBot
 from reading_service_helpers import (
+    DEFINITION_ID,
     LOCATION_ID,
     METER_ID,
     STAFF_ID,
@@ -127,6 +128,34 @@ def test_direct_input_previews_without_writes_and_recalculates_following_reading
         "SELECT last_reading, usage_delta FROM reading_transactions "
         "WHERE planned_reading_id = 'following'"
     ).fetchone() == ("110", "200")
+
+
+def test_direct_input_displays_and_saves_definition_initial(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    qtbot: QtBot,
+    confirmed_messages: list[str],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, multiplier=Decimal("2"))
+    create_plan(repository, "first", _at(5))
+    services = create_app_context(conn, clock=lambda: NOW)
+    services.measurement_definitions.set_initial_reading(DEFINITION_ID, Decimal("10"))
+    data = DirectData(conn, repository, writer, services)
+    dialog = _dialog(data, qtbot, "first")
+    before = tuple(conn.iterdump())
+
+    dialog.value_edit.setText("13")
+
+    assert "前回値: 10 （測定定義の初期値）" in dialog.preview_text.toPlainText()
+    assert "使用量: 6" in dialog.preview_text.toPlainText()
+    assert dialog.save_button.isEnabled()
+    assert tuple(conn.iterdump()) == before
+    dialog.save_button.click()
+    assert confirmed_messages == []
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        ("first",),
+    ).fetchone() == ("10", "6")
 
 
 def test_direct_correction_invalidates_bad_input_and_recalculates_later_results(

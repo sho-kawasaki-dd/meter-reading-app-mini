@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -497,6 +498,42 @@ def test_cutoff_boundary_uses_local_time_across_daylight_saving_transition(
         )
         == expected_through
     )
+
+
+@pytest.mark.parametrize(
+    ("current_datetime", "previous_day_state"),
+    [
+        (datetime(2026, 3, 8, 6, 59, 59, tzinfo=ZoneInfo("America/New_York")), "open"),
+        (datetime(2026, 3, 8, 7, 0, tzinfo=ZoneInfo("America/New_York")), "auto_closed"),
+    ],
+)
+def test_past_custom_schedule_backfills_across_dst_and_cutoff(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    current_datetime: datetime,
+    previous_day_state: str,
+) -> None:
+    conn, repository = file_database_repository
+    context = create_app_context(conn, clock=lambda: current_datetime.astimezone(UTC))
+    context.timezone_settings.save_timezone("America/New_York")
+    _create_definition(
+        conn,
+        repository,
+        definition_id="definition-dst",
+        generation_start_date=date(2026, 3, 6),
+    )
+
+    context.planned_reading_maintenance.refresh()
+
+    assert context.cutoff_settings.get_cutoff_time() == time(7)
+    assert conn.execute(
+        "SELECT business_date, reading_session, scheduled_at, task_state FROM planned_readings "
+        "WHERE measurement_definition_id = ? ORDER BY business_date",
+        ("definition-dst",),
+    ).fetchall() == [
+        ("2026-03-06", "08:00", "2026-03-06 13:00:00", "auto_closed"),
+        ("2026-03-07", "08:00", "2026-03-07 13:00:00", previous_day_state),
+        ("2026-03-08", "08:00", "2026-03-08 12:00:00", "open"),
+    ]
 
 
 def test_work_package_generation_and_auto_close_roll_back_after_late_chunk_failure(

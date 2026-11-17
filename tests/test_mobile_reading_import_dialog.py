@@ -906,6 +906,42 @@ def test_replacement_previous_source_is_displayed(
     assert messages.warnings == messages.errors == []
 
 
+def test_definition_initial_source_is_displayed_in_mobile_preview_and_commit(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    qtbot: QtBot,
+    messages: Messages,
+) -> None:
+    writer, sync = build_services(memory_conn, sqlite_repository, multiplier=Decimal("2"))
+    create_plan(sqlite_repository, "initial", _at(8))
+    services = create_app_context(memory_conn, clock=lambda: NOW)
+    services.measurement_definitions.set_initial_reading(DEFINITION_ID, Decimal("10"))
+    data = ImportData(memory_conn, sqlite_repository, writer, sync, services)
+    dialog = _dialog(data, qtbot)
+    _select_staff(dialog)
+    before = tuple(memory_conn.iterdump())
+
+    _preview(dialog, _payload(_entry("initial", "13", 8)))
+
+    assert tuple(memory_conn.iterdump()) == before
+    assert dialog.commit_button.isEnabled()
+    assert _cell(dialog, 0, "入力計算時の前回値・出所") == "10（測定定義の初期値）"
+    assert _cell(dialog, 0, "最終見込の前回値・出所") == "10（測定定義の初期値）"
+    assert "使用量: 6" in _cell(dialog, 0, "入力結果")
+    assert "使用量: 6" in _cell(dialog, 0, "最終見込結果")
+    assert "前回値: 10" in _cell(dialog, 0, "最終見込結果")
+
+    dialog.commit_button.click()
+
+    assert messages.warnings == messages.errors == []
+    assert len(messages.information) == 1
+    assert memory_conn.execute(
+        "SELECT last_reading, usage_delta, device_id, result_source FROM reading_transactions "
+        "WHERE planned_reading_id = ?",
+        ("initial",),
+    ).fetchone() == ("10", "6", SHEET_ID, "mobile_html")
+
+
 @pytest.mark.parametrize("source", ["mr1", "json"])
 def test_generated_html_round_trip_through_dialog_and_database(
     persistent_import_data: ImportData,

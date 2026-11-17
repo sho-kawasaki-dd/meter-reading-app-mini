@@ -244,6 +244,53 @@ def test_disabled_version_and_partial_application_remain_visible_in_csv(
     assert "2026-03-01 以上 2026-03-02 未満" in window.detail_text.toPlainText()
 
 
+def test_dashboard_and_csv_display_definition_initial(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scenario = Scenario(memory_conn)
+    scenario.definition("initial")
+    scenario.context.measurement_definitions.set_initial_reading("initial", Decimal("10"))
+    scenario.plan("first", "initial", date(2026, 3, 1), value="15")
+    errors: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda _parent, _title, text, *args: errors.append(text)
+    )
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda _parent, _title, text, *args: errors.append(text)
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: QMessageBox.StandardButton.Ok)
+    window = DashboardWindow(scenario.context, StaffSelectionMemory())
+    qtbot.addWidget(window)
+    window.show()
+    window.start_date.setDate(QDate(2026, 3, 1))
+    window.end_date.setDate(QDate(2026, 3, 1))
+    window.refresh()
+    index = window.target_combo.findData("definition:initial")
+    assert index >= 0
+    window.target_combo.setCurrentIndex(index)
+
+    assert _cell(window.period_table, 0, 3) == "5"
+    assert _cell(window.details_table, 0, 5) == "測定定義の初期値"
+    assert _cell(window.details_table, 0, 6) == "initial"
+    assert _cell(window.details_table, 0, 7) == "10"
+
+    csv_path = tmp_path / "initial.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(csv_path), ""))
+    window.csv_button.click()
+    rows = list(csv.DictReader(io.StringIO(csv_path.read_text(encoding="utf-8-sig"), newline="")))
+    detail = next(row for row in rows if row["行種別"] == "明細")
+    assert (detail["基準元"], detail["基準ID"], detail["基準読値_無丸め"]) == (
+        "測定定義の初期値",
+        "initial",
+        "10",
+    )
+    assert not errors
+
+
 def test_dashboard_csv_and_png_outputs_and_cancel(
     dashboard_data: DashboardData, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

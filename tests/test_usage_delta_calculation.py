@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
@@ -66,6 +66,15 @@ def test_definition_initial_is_used_only_without_previous_or_boundary() -> None:
         definition, build_request(raw_reading="3"), None, definition_initial_reading=Decimal("0")
     )
     assert (initial.last_reading, initial.usage_delta) == (Decimal("0"), Decimal("6"))
+    measured_initial = service.calculate_measured_reading(
+        definition, Decimal("3"), None, definition_initial_reading=Decimal("0")
+    )
+    assert (measured_initial.last_reading, measured_initial.usage_delta) == (
+        Decimal("0"),
+        Decimal("6"),
+    )
+    no_initial = service.calculate_measured_reading(definition, Decimal("3"), None)
+    assert (no_initial.last_reading, no_initial.usage_delta) == (None, Decimal("0"))
     rollover = service.calculate_measured_reading(
         definition, Decimal("3"), None, definition_initial_reading=Decimal("95")
     )
@@ -92,6 +101,36 @@ def test_definition_initial_is_used_only_without_previous_or_boundary() -> None:
         service.calculate_measured_reading(
             no_rollover, Decimal("3"), None, definition_initial_reading=Decimal("10")
         )
+
+
+def test_definition_initial_calculation_keeps_exact_decimal_precision() -> None:
+    service = UsageDeltaCalculationService()
+    initial = Decimal("123456789012345678901234567890.000001")
+    raw = Decimal("123456789012345678901234567890.000003")
+    definition = MeasurementDefinitionRecord(
+        measurement_definition_id="md-001",
+        value_schema=ValueSchema.DECIMAL_STRING,
+        calculation_method=CalculationMethod.DELTA,
+        multiplier=Decimal("0.1234567890123456789"),
+    )
+
+    with localcontext() as context:
+        context.prec = 6
+        calculated = service.calculate(
+            definition,
+            build_request(raw_reading=str(raw)),
+            None,
+            definition_initial_reading=initial,
+        )
+        measured = service.calculate_measured_reading(
+            definition, raw, None, definition_initial_reading=initial
+        )
+
+    assert calculated == measured
+    assert (calculated.last_reading, calculated.usage_delta) == (
+        initial,
+        Decimal("0.0000002469135780246913578"),
+    )
 
 
 def test_calculator_subtracts_previous_measured_reading() -> None:

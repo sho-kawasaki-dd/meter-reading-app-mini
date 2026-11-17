@@ -99,7 +99,7 @@ def test_initial_reading_survives_preview_write_and_first_reading_removal(
         repository, repository, repository, transaction_factory=partial(transaction, conn)
     )
     definitions.set_initial_reading(DEFINITION_ID, Decimal("10"))
-    for name, hour in (("initial-first", 4), ("initial-second", 5)):
+    for name, hour in (("initial-first", 4), ("initial-second", 5), ("initial-third", 6)):
         create_plan(repository, name, _recorded_at(hour))
     first = ManualReadingInput(
         "initial-first", ResultStatus.MEASURED, _recorded_at(4), Decimal("12"), None
@@ -125,6 +125,26 @@ def test_initial_reading_survives_preview_write_and_first_reading_removal(
         ),
         staff_id=STAFF_ID,
     )
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "initial-third", ResultStatus.MEASURED, _recorded_at(6), Decimal("18"), None
+        ),
+        staff_id=STAFF_ID,
+    )
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "initial-first", ResultStatus.MEASURED, _recorded_at(4), Decimal("13"), None
+        ),
+        staff_id=STAFF_ID,
+    )
+    assert conn.execute(
+        "SELECT planned_reading_id, last_reading, usage_delta FROM reading_transactions "
+        "ORDER BY planned_reading_id"
+    ).fetchall() == [
+        ("initial-first", "10", "6"),
+        ("initial-second", "13", "4"),
+        ("initial-third", "15", "6"),
+    ]
     with pytest.raises(ValidationError):
         definitions.set_initial_reading(DEFINITION_ID, Decimal("9"))
     writer.save_manual_reading(
@@ -132,9 +152,13 @@ def test_initial_reading_survives_preview_write_and_first_reading_removal(
         staff_id=STAFF_ID,
     )
     assert conn.execute(
-        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
-        ("initial-second",),
-    ).fetchone() == ("10", "10")
+        "SELECT planned_reading_id, last_reading, usage_delta FROM reading_transactions "
+        "ORDER BY planned_reading_id"
+    ).fetchall() == [
+        ("initial-first", None, None),
+        ("initial-second", "10", "10"),
+        ("initial-third", "15", "6"),
+    ]
 
 
 def test_manual_write_generates_pc_signature_and_monotonic_update_time(

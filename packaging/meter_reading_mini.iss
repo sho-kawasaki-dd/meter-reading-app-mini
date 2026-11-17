@@ -17,6 +17,9 @@
 AppId={{E78AA3AE-60B5-47C4-9EFA-32AE6BDF0C44}
 AppName={#AppName}
 AppVersion={#AppVersion}
+#ifdef VerificationOnly
+AppVerName={#AppName} {#AppVersion}（検証用）
+#endif
 VersionInfoVersion={#AppVersion}
 DefaultDirName={localappdata}\Programs\meter-reading-mini
 DisableDirPage=yes

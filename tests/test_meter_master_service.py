@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -46,7 +47,6 @@ from meter_reading_mini.core.meter_master_service import (
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
     MeasurementDefinitionCreateInput,
-    MeasurementDefinitionCreateRequest,
     MeasurementDefinitionUpdateRequest,
     MeterMasterCreateInput,
     MeterMasterCreateRequest,
@@ -815,20 +815,35 @@ def test_measurement_definition_service_sets_initial_assignment_and_reactivation
     assert restored_plan.task_state.value == "superseded"
 
 
+@pytest.mark.parametrize("fail_after", ["measurement_definition_schedules", "meter_assignments"])
 def test_measurement_definition_service_rolls_back_create_after_partial_repository_write(
     file_database_repository: tuple,
     monkeypatch: pytest.MonkeyPatch,
+    fail_after: str,
 ) -> None:
     conn, repository = file_database_repository
     build_services(conn, repository)
     service = _definition_service(conn, repository, id_provider=lambda: "definition-rollback")
-    original_create = repository.create_measurement_definition
+    before = tuple(conn.iterdump())
+    original_execute = repository._execute
 
-    def create_then_fail(request: MeasurementDefinitionCreateRequest) -> None:
-        original_create(request)
-        raise RuntimeError("初期履歴保存後の障害")
+    def execute_then_fail(sql: str, parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
+        cursor = original_execute(sql, parameters)
+        if sql.startswith(f"INSERT INTO {fail_after} "):
+            assert conn.in_transaction
+            assert conn.execute(
+                "SELECT COUNT(*) FROM measurement_definition_schedules "
+                "WHERE measurement_definition_id = 'definition-rollback'"
+            ).fetchone() == (1,)
+            assignment = conn.execute(
+                "SELECT initial_reading FROM meter_assignments "
+                "WHERE measurement_definition_id = 'definition-rollback'"
+            ).fetchone()
+            assert assignment == (("3",) if fail_after == "meter_assignments" else None)
+            raise RuntimeError("初期履歴保存後の障害")
+        return cursor
 
-    monkeypatch.setattr(repository, "create_measurement_definition", create_then_fail)
+    monkeypatch.setattr(repository, "_execute", execute_then_fail)
     with pytest.raises(RuntimeError, match="初期履歴保存後の障害"):
         service.create_measurement_definition(
             replace(
@@ -838,6 +853,8 @@ def test_measurement_definition_service_rolls_back_create_after_partial_reposito
     assert repository.get_measurement_definition("definition-rollback") is None
     assert repository.list_measurement_definition_schedule_history("definition-rollback") == []
     assert repository.list_meter_assignments("definition-rollback") == []
+    assert tuple(conn.iterdump()) == before
+    assert not conn.in_transaction
 
 
 def test_measurement_definition_service_rolls_back_when_readback_fails(

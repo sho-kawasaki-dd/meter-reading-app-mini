@@ -89,6 +89,7 @@ _internal/meter_reading_mini/core/mobile_reading_assets/sheet.js
 _internal/meter_reading_mini/db/schema.sql
 _internal/meter_reading_mini/db/schema_v1.sql
 _internal/meter_reading_mini/db/schema_v3.sql
+_internal/meter_reading_mini/db/schema_v4.sql
 _internal/pydantic-2.14.1.dist-info/INSTALLER
 _internal/pydantic-2.14.1.dist-info/METADATA
 _internal/pydantic-2.14.1.dist-info/RECORD

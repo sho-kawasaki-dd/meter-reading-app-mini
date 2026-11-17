@@ -151,8 +151,15 @@ def _database_state(conn: sqlite3.Connection) -> tuple[list[tuple], ...]:
     )
 
 
+@pytest.mark.parametrize(
+    ("new_initial", "expected_last", "expected_delta"),
+    [(None, None, "0"), ("5", "5", "60")],
+)
 def test_replacement_before_first_reading_uses_definition_initial(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    new_initial: str | None,
+    expected_last: str | None,
+    expected_delta: str,
 ) -> None:
     conn, repository = file_database_repository
     writer, _ = build_services(conn, repository, multiplier=Decimal("10"))
@@ -163,7 +170,9 @@ def test_replacement_before_first_reading_uses_definition_initial(
     definitions.set_initial_reading(DEFINITION_ID, Decimal("100"))
     service = _service(conn, repository, writer)
     create_plan(repository, "after-replacement", _at(6))
-    request = replace(_request(), new_initial_reading=None)
+    request = replace(
+        _request(), new_initial_reading=Decimal(new_initial) if new_initial is not None else None
+    )
     preview = service.preview_replacement(request)
     assert preview.can_register
     assert preview.definitions[0].old_usage_delta == Decimal("200")
@@ -182,7 +191,7 @@ def test_replacement_before_first_reading_uses_definition_initial(
     assert conn.execute(
         "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
         (successor,),
-    ).fetchone() == (None, "0")
+    ).fetchone() == (expected_last, expected_delta)
     assert check_business_integrity(conn) == []
     with pytest.raises(ValidationError):
         definitions.set_initial_reading(DEFINITION_ID, Decimal("90"))

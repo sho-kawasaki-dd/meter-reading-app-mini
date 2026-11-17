@@ -413,9 +413,16 @@ def test_unsupported_versions_are_rejected(
     assert not _backup_path(harness).exists()
 
 
-@pytest.mark.parametrize("value", ["-1", "10", "1e2"])
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        ("-1", "meter_assignments.initial_reading"),
+        ("10", "ロールオーバー"),
+        ("1e2", "meter_assignments.initial_reading"),
+    ],
+)
 def test_restore_rejects_invalid_assignment_initial_reading(
-    harness: RestoreHarness, tmp_path: Path, value: str
+    harness: RestoreHarness, tmp_path: Path, value: str, reason: str
 ) -> None:
     source = tmp_path / "invalid-initial.db"
     _create_source(source)
@@ -424,10 +431,65 @@ def test_restore_rejects_invalid_assignment_initial_reading(
         conn.execute(
             "UPDATE meter_assignments SET initial_reading = ?, rollover_value = '10'", (value,)
         )
-    with pytest.raises(InvalidBackupError):
+    source_before = hashlib.sha256(source.read_bytes()).digest()
+    current_before = tuple(harness.conn.iterdump())
+    with pytest.raises(InvalidBackupError, match=reason):
         harness.service.preview_restore(source)
     _assert_no_workspace(harness)
     assert not _backup_path(harness).exists()
+    assert hashlib.sha256(source.read_bytes()).digest() == source_before
+    assert tuple(harness.conn.iterdump()) == current_before
+
+
+@pytest.mark.parametrize(
+    ("invalid", "reason"),
+    [
+        ("later_assignment", "最初の割当"),
+        ("raw_only", "測定方式"),
+        ("power_factor", "測定方式"),
+    ],
+)
+def test_restore_rejects_initial_reading_on_ineligible_assignment(
+    harness: RestoreHarness, tmp_path: Path, invalid: str, reason: str
+) -> None:
+    source = tmp_path / "ineligible-initial.db"
+    _create_source(source)
+    with closing(connect(source)) as conn:
+        _seed_formula(conn)
+        if invalid == "later_assignment":
+            conn.execute(
+                "INSERT INTO physical_meters "
+                "(meter_id, location_id, location_name, meter_name, category) "
+                "VALUES ('later', 'location', '試験場所', '交換後', 'water')"
+            )
+            conn.execute(
+                "UPDATE meter_assignments SET effective_to = '2026-01-02 00:00:00' "
+                "WHERE measurement_definition_id = 'definition'"
+            )
+            conn.execute(
+                "INSERT INTO meter_assignments "
+                "(measurement_definition_id, meter_id, effective_from, multiplier, "
+                "initial_reading) "
+                "VALUES ('definition', 'later', '2026-01-02 00:00:00', '1', '1')"
+            )
+        else:
+            conn.execute("UPDATE meter_assignments SET initial_reading = '1'")
+            if invalid == "raw_only":
+                conn.execute("UPDATE measurement_definitions SET calculation_method = 'raw_only'")
+            else:
+                conn.execute(
+                    "UPDATE measurement_definitions SET value_schema = 'power_factor_percent_phase'"
+                )
+    source_before = hashlib.sha256(source.read_bytes()).digest()
+    current_before = tuple(harness.conn.iterdump())
+
+    with pytest.raises(InvalidBackupError, match=reason):
+        harness.service.preview_restore(source)
+
+    _assert_no_workspace(harness)
+    assert not _backup_path(harness).exists()
+    assert hashlib.sha256(source.read_bytes()).digest() == source_before
+    assert tuple(harness.conn.iterdump()) == current_before
 
 
 def test_corrupt_database_and_schema_are_rejected(harness: RestoreHarness, tmp_path: Path) -> None:
