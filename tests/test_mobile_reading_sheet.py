@@ -17,6 +17,7 @@ from reading_service_helpers import (
     LOCATION_ID,
     METER_ID,
     SHEET_ID,
+    STAFF_ID,
     build_services,
     confirmation_context,
     create_plan,
@@ -59,12 +60,14 @@ from meter_reading_mini.core.mobile_reading import (
     encode_mr1_envelope,
     parse_mobile_reading_result,
 )
+from meter_reading_mini.core.mobile_reading_import import MobileReadingImportService
 from meter_reading_mini.core.mobile_reading_sheet import (
     EmptySheetError,
     FutureSheetBusinessDateError,
     MobileReadingSheetService,
     build_sheet_filename,
 )
+from meter_reading_mini.core.previous_reading import PreviousReadingSource
 from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
 from meter_reading_mini.core.schedule_settings import ReleaseOffsetSettingsService
 from meter_reading_mini.core.timeutil import parse_utc
@@ -119,6 +122,50 @@ def test_sheet_displays_definition_initial_and_exports_calculated_result(
     assert conn.execute(
         "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
         ("initial-slot",),
+    ).fetchone() == ("10", "6")
+
+
+def test_sheet_exported_before_initial_is_recalculated_on_import(
+    sheet_browser: SheetBrowser,
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, sync = build_services(conn, repository, multiplier=Decimal("2"))
+    create_plan(repository, "old-sheet", datetime(2026, 2, 4, 4, tzinfo=UTC))
+    html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
+    MeasurementDefinitionService(
+        repository, repository, repository, transaction_factory=partial(transaction, conn)
+    ).set_initial_reading(DEFINITION_ID, Decimal("10"))
+
+    page = sheet_browser.open_html(html)
+    page.locator('.tab[data-tab="all"]').click()
+    card = page.locator('.card[data-slot-id="old-sheet"]')
+    card.locator(".raw").fill("13")
+    card.locator(".confirm").click()
+    expect(card).to_have_attribute("data-previous", "")
+    expect(card).to_have_attribute("data-usage", "0")
+    page.evaluate(
+        """() => Object.defineProperty(navigator, "clipboard", {
+          configurable: true, value: { writeText: () => Promise.reject(new Error("unavailable")) }
+        })"""
+    )
+    page.locator("#result-copy").click()
+    result = parse_mobile_reading_result(page.locator("#result-export-text").input_value())
+    importer = MobileReadingImportService(
+        repository, sync_service=sync, transaction_factory=partial(transaction, conn)
+    )
+    preview = importer.preview(result)
+    calculation = preview.rows[0].input_calculation
+    assert calculation is not None
+    assert calculation.previous.source is PreviousReadingSource.DEFINITION_INITIAL
+    assert (calculation.previous.reading, calculation.usage_delta) == (Decimal("10"), Decimal("6"))
+
+    committed = importer.commit(result, preview, staff_id=STAFF_ID)
+
+    assert committed.summary.confirmed == 1
+    assert conn.execute(
+        "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
+        ("old-sheet",),
     ).fetchone() == ("10", "6")
 
 

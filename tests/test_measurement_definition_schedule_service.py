@@ -17,9 +17,11 @@ from meter_reading_mini.core.contract_models import (
     ValueSchema,
 )
 from meter_reading_mini.core.errors import ScheduleHistoryResolutionError, ScheduleValidationError
+from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     DailySchedule,
     EveryTwoMonthsSchedule,
+    MeasurementDefinitionCreateInput,
     MeasurementDefinitionCreateRequest,
     MeterMasterCreateRequest,
     MonthlySchedule,
@@ -27,6 +29,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MonthParity,
     PlannedReadingCreateRequest,
     ScheduleItem,
+    ScheduleSettings,
     WeeklySchedule,
 )
 from meter_reading_mini.core.schedule_settings import (
@@ -170,6 +173,169 @@ def test_default_schedule_histories_round_trip(
     assert (
         deserialize_schedule(cycle, serialize_schedule(DEFAULT_SCHEDULES[cycle]))
         == (DEFAULT_SCHEDULES[cycle])
+    )
+
+
+@pytest.mark.parametrize(
+    ("cycle", "schedule", "through", "expected"),
+    [
+        pytest.param(
+            ReadingCycle.DAILY_1X,
+            DailySchedule((ScheduleItem(ReadingSession.SESSION_1400, -1),)),
+            date(2026, 2, 2),
+            [
+                ("2026-02-01", "14:00", "2026-01-31 05:00:00"),
+                ("2026-02-02", "14:00", "2026-02-01 05:00:00"),
+            ],
+            id="daily-1",
+        ),
+        pytest.param(
+            ReadingCycle.DAILY_2X,
+            DailySchedule(
+                (
+                    ScheduleItem(ReadingSession.SESSION_0600),
+                    ScheduleItem(ReadingSession.SESSION_2200),
+                )
+            ),
+            date(2026, 2, 2),
+            [
+                ("2026-02-01", "06:00", "2026-01-31 21:00:00"),
+                ("2026-02-01", "22:00", "2026-02-01 13:00:00"),
+                ("2026-02-02", "06:00", "2026-02-01 21:00:00"),
+                ("2026-02-02", "22:00", "2026-02-02 13:00:00"),
+            ],
+            id="daily-2",
+        ),
+        pytest.param(
+            ReadingCycle.DAILY_3X,
+            DailySchedule(
+                (
+                    ScheduleItem(ReadingSession.SESSION_0000),
+                    ScheduleItem(ReadingSession.SESSION_0800),
+                    ScheduleItem(ReadingSession.SESSION_1700),
+                )
+            ),
+            date(2026, 2, 2),
+            [
+                ("2026-02-01", "00:00", "2026-01-31 15:00:00"),
+                ("2026-02-01", "08:00", "2026-01-31 23:00:00"),
+                ("2026-02-01", "17:00", "2026-02-01 08:00:00"),
+                ("2026-02-02", "00:00", "2026-02-01 15:00:00"),
+                ("2026-02-02", "08:00", "2026-02-01 23:00:00"),
+                ("2026-02-02", "17:00", "2026-02-02 08:00:00"),
+            ],
+            id="daily-3",
+        ),
+        pytest.param(
+            ReadingCycle.WEEKLY,
+            WeeklySchedule(weekday=2, reading_session=ReadingSession.SESSION_1400, day_offset=1),
+            date(2026, 2, 12),
+            [
+                ("2026-02-04", "14:00", "2026-02-05 05:00:00"),
+                ("2026-02-11", "14:00", "2026-02-12 05:00:00"),
+            ],
+            id="weekly",
+        ),
+        pytest.param(
+            ReadingCycle.MONTHLY,
+            MonthlySchedule(
+                selector_type=MonthlyScheduleSelectorType.DAY_OF_MONTH,
+                day_of_month=31,
+                reading_session=ReadingSession.SESSION_1700,
+            ),
+            date(2026, 3, 31),
+            [
+                ("2026-02-28", "17:00", "2026-02-28 08:00:00"),
+                ("2026-03-31", "17:00", "2026-03-31 08:00:00"),
+            ],
+            id="monthly-day",
+        ),
+        pytest.param(
+            ReadingCycle.MONTHLY,
+            MonthlySchedule(
+                selector_type=MonthlyScheduleSelectorType.NTH_WEEKDAY,
+                nth=2,
+                nth_weekday=0,
+                reading_session=ReadingSession.SESSION_0600,
+            ),
+            date(2026, 3, 10),
+            [
+                ("2026-02-09", "06:00", "2026-02-08 21:00:00"),
+                ("2026-03-09", "06:00", "2026-03-08 21:00:00"),
+            ],
+            id="monthly-nth-weekday",
+        ),
+        pytest.param(
+            ReadingCycle.EVERY_TWO_MONTHS,
+            EveryTwoMonthsSchedule(
+                selector_type=MonthlyScheduleSelectorType.DAY_OF_MONTH,
+                month_parity=MonthParity.EVEN,
+                day_of_month=10,
+                reading_session=ReadingSession.SESSION_2200,
+            ),
+            date(2026, 4, 10),
+            [
+                ("2026-02-10", "22:00", "2026-02-10 13:00:00"),
+                ("2026-04-10", "22:00", "2026-04-10 13:00:00"),
+            ],
+            id="every-two-months",
+        ),
+    ],
+)
+def test_created_definition_generates_its_custom_schedule(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    cycle: ReadingCycle,
+    schedule: ScheduleSettings,
+    through: date,
+    expected: list[tuple[str, str, str]],
+) -> None:
+    repository = sqlite_repository
+    repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="meter-created",
+            location_id="location-created",
+            location_name="試験場所",
+            meter_name="試験メーター",
+            category=Category.ELECTRICITY,
+        )
+    )
+    service = MeasurementDefinitionService(
+        repository,
+        repository,
+        repository,
+        transaction_factory=_transaction_factory(memory_conn),
+        id_provider=lambda: "definition-created",
+    )
+    service.create_measurement_definition(
+        MeasurementDefinitionCreateInput(
+            location_id="location-created",
+            display_name="試験測定対象",
+            category=Category.ELECTRICITY,
+            unit="kWh",
+            value_schema=ValueSchema.DECIMAL_STRING,
+            multiplier=Decimal("1"),
+            decimal_places=2,
+            warning_threshold=None,
+            rollover_value=None,
+            calculation_method=CalculationMethod.DELTA,
+            reading_cycle=cycle,
+            purpose=Purpose.OPERATIONAL,
+            generation_start_date=date(2026, 2, 1),
+            initial_schedule_json=serialize_schedule(schedule),
+            initial_meter_id="meter-created",
+        )
+    )
+
+    _generate_through(memory_conn, repository, through)
+
+    assert (
+        memory_conn.execute(
+            "SELECT business_date, reading_session, scheduled_at FROM planned_readings "
+            "WHERE measurement_definition_id = ? ORDER BY business_date, reading_session",
+            ("definition-created",),
+        ).fetchall()
+        == expected
     )
 
 

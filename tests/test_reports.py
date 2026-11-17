@@ -82,6 +82,7 @@ class Scenario:
         purpose: Purpose = Purpose.OPERATIONAL,
         calculation: CalculationMethod = CalculationMethod.DELTA,
         schema: ValueSchema = ValueSchema.DECIMAL_STRING,
+        assign_meter: bool = True,
     ) -> None:
         location, meter = f"location-{definition_id}", f"meter-{definition_id}"
         self.meter(meter, location)
@@ -102,7 +103,7 @@ class Scenario:
                 purpose=purpose,
                 generation_start_date=date(2025, 1, 1),
                 initial_schedule_json=None,
-                initial_meter_id=meter,
+                initial_meter_id=meter if assign_meter else None,
             )
         )
         self.locations[definition_id] = location
@@ -325,6 +326,112 @@ def test_definition_initial_baseline_and_first_reading_gap(scenario: Scenario) -
     result = scenario.result("a", date(2026, 2, 1), date(2026, 2, 2))
     assert result.value == Decimal("2")
     assert AggregationCode.MISSING_NO_BASELINE not in result.missing_codes
+
+
+def test_definition_initial_aggregation_keeps_purposes_separate(scenario: Scenario) -> None:
+    for purpose in Purpose:
+        scenario.definition(purpose.value, purpose=purpose)
+        scenario.context.measurement_definitions.set_initial_reading(purpose.value, Decimal("10"))
+        scenario.plan(f"{purpose.value}-first", purpose.value, date(2026, 2, 10), value="15")
+
+    for purpose in Purpose:
+        report = scenario.context.aggregation_reports.get_report(
+            date(2026, 2, 10), date(2026, 2, 11), purpose=purpose
+        )
+        assert [item.target_id for item in report.periods[0].results] == [purpose.value]
+        result = report.periods[0].results[0]
+        assert result.value == Decimal("5")
+        assert not result.is_reference
+        assert AggregationCode.MISSING_NO_BASELINE not in result.missing_codes
+        assert result.details[0].baseline is not None
+        assert result.details[0].baseline.source is AggregationBaselineSource.DEFINITION_INITIAL
+
+
+def test_later_initial_assignment_uses_its_local_date_as_baseline(scenario: Scenario) -> None:
+    scenario.definition("a", assign_meter=False)
+    assigned_at = datetime(2026, 2, 1, 15, tzinfo=UTC)
+    scenario.context.measurement_definitions.set_initial_meter_assignment(
+        "a", scenario.meters["a"], assigned_at
+    )
+    scenario.context.measurement_definitions.set_initial_reading("a", Decimal("10"))
+    scenario.plan("first", "a", date(2026, 2, 10), value="15")
+
+    result = scenario.result("a", date(2026, 2, 10), date(2026, 2, 11))
+    baseline = result.details[0].baseline
+    assert baseline is not None
+    assert (baseline.source, baseline.source_id, baseline.at, baseline.business_date) == (
+        AggregationBaselineSource.DEFINITION_INITIAL,
+        "a",
+        assigned_at,
+        date(2026, 2, 2),
+    )
+    assert baseline.reading == Decimal("10")
+    assert result.value == Decimal("5")
+    assert AggregationCode.INFO_CARRYOVER in result.information_codes
+    assert AggregationCode.MISSING_NO_BASELINE not in result.missing_codes
+
+
+@pytest.mark.parametrize("event", ["reading", "replacement"])
+@pytest.mark.parametrize("matching_period", [False, True])
+def test_initial_baseline_and_formula_period_survive_reactivation(
+    scenario: Scenario, event: str, matching_period: bool
+) -> None:
+    for definition_id in ("a", "b"):
+        scenario.definition(definition_id, cycle=ReadingCycle.MONTHLY)
+        effective = (
+            "2026-02-01 15:00:00"
+            if definition_id == "a" or matching_period
+            else "2026-02-02 15:00:00"
+        )
+        scenario.conn.execute(
+            "UPDATE meter_assignments SET effective_from = ? WHERE measurement_definition_id = ?",
+            (effective, definition_id),
+        )
+        scenario.context.measurement_definitions.set_initial_reading(
+            definition_id, Decimal("10") if definition_id == "a" else Decimal("20")
+        )
+
+    if event == "reading":
+        scenario.plan("a-first", "a", date(2026, 2, 10), value="15")
+    else:
+        scenario.meter("new", "location-a")
+        scenario.context.meter_replacement.register_replacement(
+            MeterReplacementInput(
+                old_meter_id="meter-a",
+                new_meter_id="new",
+                replaced_at=datetime(2026, 2, 10, 3, tzinfo=UTC),
+                old_final_reading=Decimal("15"),
+                new_initial_reading=Decimal("0"),
+                staff_id=scenario.staff_id,
+            )
+        )
+    scenario.plan("b-first", "b", date(2026, 2, 10), value="25")
+    scenario.formula(
+        "monthly",
+        (("a", "1"), ("b", "1")),
+        cycle=AggregationCycleGroup.MONTHLY,
+    )
+    start, end = date(2026, 2, 10), date(2026, 2, 11)
+    direct = scenario.result("a", start, end)
+    formula = scenario.result("monthly", start, end)
+    baseline = direct.details[0].baseline
+    assert baseline is not None
+    assert (baseline.source, baseline.business_date) == (
+        AggregationBaselineSource.DEFINITION_INITIAL,
+        date(2026, 2, 2),
+    )
+    assert direct.value == Decimal("5") and formula.value == Decimal("10")
+    assert AggregationCode.INFO_CARRYOVER in direct.information_codes
+    assert AggregationCode.INFO_CARRYOVER in formula.information_codes
+    assert (AggregationCode.WARN_PERIOD_MISMATCH in formula.warning_codes) is not matching_period
+
+    scenario.context.measurement_definitions.deactivate_measurement_definition("a")
+    scenario.context.measurement_definitions.activate_measurement_definition("a")
+
+    reactivated = scenario.context.measurement_definitions.get_measurement_definition("a")
+    assert reactivated is not None and reactivated.generation_start_date == date(2026, 3, 15)
+    assert scenario.result("a", start, end) == direct
+    assert scenario.result("monthly", start, end) == formula
 
 
 def test_initial_baseline_for_replacement_and_reactivation_is_stable(scenario: Scenario) -> None:

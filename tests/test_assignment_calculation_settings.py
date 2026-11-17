@@ -29,6 +29,7 @@ from meter_reading_mini.core.contract_models import (
     ResultStatus,
 )
 from meter_reading_mini.core.errors import InactiveMasterError, ValidationError
+from meter_reading_mini.core.measurement_definition_service import MeasurementDefinitionService
 from meter_reading_mini.core.meter_reading_sync import MeterReadingSyncService
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     CalculatedUsageUpdate,
@@ -230,6 +231,43 @@ def test_preview_and_correction_preserve_audit_and_use_each_period(
         "SELECT old_meter_usage_delta FROM replacement_boundaries "
         "WHERE replacement_event_id = 'replace-1'"
     ).fetchone() == ("240",)
+
+
+def test_correction_preview_and_recalculation_use_definition_initial(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, multiplier=Decimal("2"))
+    MeasurementDefinitionService(
+        repository, repository, repository, transaction_factory=partial(transaction, conn)
+    ).set_initial_reading(DEFINITION_ID, Decimal("10"))
+    for slot, hour, raw in (("first", 4, "13"), ("second", 5, "15")):
+        create_plan(repository, slot, _at(hour))
+        writer.save_manual_reading(
+            ManualReadingInput(slot, ResultStatus.MEASURED, _at(hour), Decimal(raw), None),
+            staff_id=STAFF_ID,
+        )
+
+    service = _service(conn, repository)
+    request = _request(repository, METER_ID, "3", None)
+    before = _state(conn)
+    preview = service.preview_correction(request)
+
+    assert preview.can_apply
+    assert _state(conn) == before
+    assert [
+        (item.planned_reading_id, item.new_last_reading, item.new_usage_delta)
+        for item in preview.readings
+    ] == [
+        ("first", Decimal("10"), Decimal("9")),
+        ("second", Decimal("13"), Decimal("6")),
+    ]
+
+    service.correct_assignment(request)
+    assert conn.execute(
+        "SELECT planned_reading_id, last_reading, usage_delta FROM reading_transactions "
+        "ORDER BY planned_reading_id"
+    ).fetchall() == [("first", "10", "9"), ("second", "13", "6")]
 
 
 def test_assignment_correction_clears_legacy_review_flag(
