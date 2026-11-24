@@ -13,6 +13,10 @@ from meter_reading_mini.ui.error_handling import run_guarded
 logger = logging.getLogger(__name__)
 
 
+def escape_csv_text(value: str) -> str:
+    return "'" + value if value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
+
+
 def _choose_export_path(
     parent: QWidget,
     label: str,

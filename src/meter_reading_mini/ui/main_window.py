@@ -51,6 +51,7 @@ from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDia
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
 from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDialog
+from meter_reading_mini.ui.dialogs.reading_history_dialog import ReadingHistoryDialog
 from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.error_handling import run_guarded
 from meter_reading_mini.ui.models.reading_overview_model import (
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         self._staff_memory = StaffSelectionMemory()
         self._sheet_save_directory_memory = SheetSaveDirectoryMemory()
         self._dashboard: DashboardWindow | None = None
+        self._reading_history: ReadingHistoryDialog | None = None
         self._all_readings: tuple[ReadingOverviewRecord, ...] = ()
         self._review_assignments: tuple[_ReviewAssignment, ...] = ()
         self._view_loaded = False
@@ -157,6 +159,7 @@ class MainWindow(QMainWindow):
         self.master_action = QAction("マスタ管理", self)
         self.replacement_action = QAction("メーター交換", self)
         self.dashboard_action = QAction("使用量集計", self)
+        self.reading_history_action = QAction("検針履歴", self)
         self.settings_action = QAction("設定", self)
         self.backup_restore_action = QAction("バックアップ・復元", self)
         self.database_path_action = QAction("データベースの保存先", self)
@@ -173,6 +176,7 @@ class MainWindow(QMainWindow):
             self.master_action,
             self.replacement_action,
             self.dashboard_action,
+            self.reading_history_action,
             self.settings_action,
         ):
             toolbar.addAction(action)
@@ -280,6 +284,9 @@ class MainWindow(QMainWindow):
         self.master_action.triggered.connect(lambda: self._guard(self._open_master))
         self.replacement_action.triggered.connect(lambda: self._guard(self._open_replacement))
         self.dashboard_action.triggered.connect(lambda: self._guard(self._open_dashboard))
+        self.reading_history_action.triggered.connect(
+            lambda: self._guard(self._open_reading_history)
+        )
         self.settings_action.triggered.connect(lambda: self._guard(self._open_settings))
         self.backup_restore_action.triggered.connect(lambda: self._guard(self._open_backup_restore))
         self.database_path_action.triggered.connect(lambda: self._guard(self._show_database_path))
@@ -368,6 +375,8 @@ class MainWindow(QMainWindow):
     def _refresh_and_reload(self, boundary: _ClockBoundary, *, follow_today: bool = False) -> None:
         if self._dashboard is not None:
             self._dashboard.invalidate()
+        if self._reading_history is not None:
+            self._reading_history.invalidate_for_reload()
         self._services.planned_reading_maintenance.refresh()
         previous_date = _python_date(self.date_edit.date())
         with QSignalBlocker(self.date_edit):
@@ -626,6 +635,21 @@ class MainWindow(QMainWindow):
             dialog.exec()
         finally:
             self._dashboard = None
+
+    def _open_reading_history(self) -> None:
+        reading = self._selected_reading()
+        dialog = ReadingHistoryDialog(
+            self._services,
+            self._staff_memory,
+            self,
+            definition_id=reading.measurement_definition_id if reading is not None else None,
+        )
+        self._reading_history = dialog
+        dialog.data_changed.connect(self.notify_dialog_saved)
+        try:
+            dialog.exec()
+        finally:
+            self._reading_history = None
 
     def _open_backup_restore(self) -> None:
         service = self._backup_restore_service

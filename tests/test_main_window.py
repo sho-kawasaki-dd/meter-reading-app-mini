@@ -50,9 +50,11 @@ from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDia
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
 from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDialog
+from meter_reading_mini.ui.dialogs.reading_history_dialog import ReadingHistoryDialog
 from meter_reading_mini.ui.dialogs.settings_dialog import SettingsDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.main_window import MainWindow, _ReviewAssignment
+from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 from meter_reading_mini.ui.widgets.dashboard import DashboardWindow
 
 DAY = date(2026, 2, 4)
@@ -247,6 +249,67 @@ def test_dashboard_opens_and_is_invalidated_on_data_refresh(
     window.dashboard_action.trigger()
     assert opened == [True]
     assert window._dashboard is None
+
+
+def test_history_action_selects_reading_and_invalidates_on_timer_and_save(
+    overview_data: OverviewData, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _select(window, "plan-4")
+    events: list[str] = []
+
+    def show(dialog: ReadingHistoryDialog) -> int:
+        assert dialog.definition_combo.currentData() == DEFINITION_ID
+        dialog.refresh()
+        assert dialog.csv_button.isEnabled()
+        overview_data.clock.value = datetime(2026, 2, 5, 3, tzinfo=UTC)
+        window._check_clock_boundary()
+        assert dialog.end_date.maximumDate() == QDate(2026, 2, 5)
+        assert not dialog.csv_button.isEnabled() and dialog.table_model.rowCount() == 0
+        dialog.refresh()
+        window.notify_dialog_saved()
+        assert not dialog.csv_button.isEnabled()
+        events.append("done")
+        return 0
+
+    monkeypatch.setattr(ReadingHistoryDialog, "exec", show)
+    window.reading_history_action.trigger()
+    assert events == ["done"]
+    assert window._reading_history is None
+
+
+def test_history_correction_saves_then_requires_refresh(
+    overview_data: OverviewData, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _insert_review_flag(overview_data)
+    dialog = ReadingHistoryDialog(
+        overview_data.services, StaffSelectionMemory(), definition_id=DEFINITION_ID
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.refresh()
+    assert dialog.correction_button.isEnabled()
+    assert "旧倍率が実測値と矛盾" in dialog.pending_reason.text()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    changed: list[bool] = []
+    dialog.data_changed.connect(lambda: changed.append(True))
+
+    def correct(master: MasterDialog) -> int:
+        page = master.correction_page
+        assert page.definition_combo.currentData() == DEFINITION_ID
+        page.staff_combo.setCurrentIndex(page.staff_combo.findData(STAFF_ID))
+        page.reason_edit.setText("旧条件を確認")
+        page.preview_button.click()
+        assert page.apply_button.isEnabled()
+        page.apply_button.click()
+        return 0
+
+    monkeypatch.setattr(MasterDialog, "exec", correct)
+    dialog.correction_button.click()
+    assert changed == [True]
+    assert not dialog.csv_button.isEnabled() and dialog.table_model.rowCount() == 0
+    assert "未取得" in dialog.status_label.text()
+    dialog.refresh()
+    assert dialog.csv_button.isEnabled() and not dialog.correction_button.isEnabled()
 
 
 def test_database_path_action_displays_the_absolute_path(
@@ -1135,6 +1198,31 @@ def test_dashboard_action_is_reachable_at_150_percent(
 
     qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
 
+    assert opened == [True]
+
+
+def test_history_action_is_reachable_at_150_percent(
+    overview_data: OverviewData,
+    qtbot: QtBot,
+    restore_app_font: QFont,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apply_display_settings(DisplaySettings(None, 150))
+    window = MainWindow(overview_data.services)
+    qtbot.addWidget(window)
+    window.resize(1280, 680)
+    window.show()
+    QApplication.processEvents()
+    toolbar = window.findChild(QToolBar, "mainToolbar")
+    assert toolbar is not None
+    button = toolbar.widgetForAction(window.reading_history_action)
+    assert button is not None and button.isVisible() and button.isEnabled()
+    center = button.mapToGlobal(button.rect().center())
+    assert toolbar.rect().contains(toolbar.mapFromGlobal(center))
+    assert window.rect().contains(window.mapFromGlobal(center))
+    opened: list[bool] = []
+    monkeypatch.setattr(ReadingHistoryDialog, "exec", lambda _dialog: opened.append(True) or 0)
+    qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
     assert opened == [True]
 
 

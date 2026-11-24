@@ -141,13 +141,16 @@ src/meter_reading_mini/ui/dialogs/direct_reading_dialog.py
 src/meter_reading_mini/ui/dialogs/master_dialog.py
 src/meter_reading_mini/ui/dialogs/meter_replacement_dialog.py
 src/meter_reading_mini/ui/dialogs/mobile_reading_dialog.py
+src/meter_reading_mini/ui/dialogs/reading_history_dialog.py
 src/meter_reading_mini/ui/dialogs/settings_dialog.py
 src/meter_reading_mini/ui/display_settings.py
 src/meter_reading_mini/ui/error_handling.py
 src/meter_reading_mini/ui/main_window.py
 src/meter_reading_mini/ui/models/__init__.py
 src/meter_reading_mini/ui/models/mobile_reading_preview_model.py
+src/meter_reading_mini/ui/models/reading_history_model.py
 src/meter_reading_mini/ui/models/reading_overview_model.py
+src/meter_reading_mini/ui/reading_history_export.py
 src/meter_reading_mini/ui/sheet_save_directory_memory.py
 src/meter_reading_mini/ui/single_instance.py
 src/meter_reading_mini/ui/staff_selection_memory.py
@@ -223,6 +226,7 @@ tests/test_previous_reading.py
 tests/test_qt_charts_smoke.py
 tests/test_reading_comparison.py
 tests/test_reading_history.py
+tests/test_reading_history_ui.py
 tests/test_reading_overview.py
 tests/test_reading_overview_model.py
 tests/test_reading_preview.py
