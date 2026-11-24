@@ -735,6 +735,36 @@ class SQLiteRepository:
                 raise ValidationError(f"集計対象の交換境界が不正です: {row[0]}") from exc
         return boundaries
 
+    def list_reading_history_definitions(
+        self, *, show_inactive: bool = False
+    ) -> list[MeasurementDefinitionRecord]:
+        rows = self._conn.execute(
+            "SELECT measurement_definition_id, value_schema, calculation_method, location_id, "
+            "display_name, category, unit, purpose, is_active FROM measurement_definitions "
+            "WHERE (? = 1 OR is_active = 1) "
+            "ORDER BY location_id, display_name, measurement_definition_id",
+            (int(show_inactive),),
+        ).fetchall()
+        definitions: list[MeasurementDefinitionRecord] = []
+        for row in rows:
+            try:
+                definitions.append(
+                    MeasurementDefinitionRecord(
+                        measurement_definition_id=_history_text(row[0]),
+                        value_schema=ValueSchema(_history_text(row[1])),
+                        calculation_method=CalculationMethod(_history_text(row[2])),
+                        location_id=_history_text(row[3]),
+                        display_name=_history_text(row[4]),
+                        category=Category(_history_text(row[5])),
+                        unit=_history_text(row[6]),
+                        purpose=Purpose(_history_text(row[7])),
+                        is_active=_history_bool(row[8]),
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"履歴の測定定義が不正です: {row[0]}") from exc
+        return definitions
+
     def list_reading_history_readings(
         self, measurement_definition_id: str
     ) -> list[ReadingHistoryReadingRecord]:

@@ -19,6 +19,7 @@ from meter_reading_mini.core.meter_replacement_service import MeterReplacementSe
 from meter_reading_mini.core.mobile_reading_import import MobileReadingImportService
 from meter_reading_mini.core.mobile_reading_sheet import MobileReadingSheetService
 from meter_reading_mini.core.planned_reading_maintenance import PlannedReadingMaintenanceService
+from meter_reading_mini.core.reading_history import ReadingHistoryService
 from meter_reading_mini.core.reading_overview import ReadingOverviewQueryService
 from meter_reading_mini.core.reading_preview import ReadingPreviewService
 from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
@@ -52,6 +53,7 @@ class AppContext:
     measurement_definitions: MeasurementDefinitionService
     aggregation_formulas: AggregationFormulaService
     aggregation_reports: AggregationReportService
+    reading_history: ReadingHistoryService
     staff: StaffService
     reading_preview: ReadingPreviewService
     reading_writer: ReadingWriteOrchestrationService
@@ -188,6 +190,12 @@ def create_app_context(
             clock=clock,
         ),
         aggregation_reports=AggregationReportService(
+            repository,
+            read_transaction_factory=partial(read_transaction, connection),
+            current_business_date_provider=business_date,
+            timezone_provider=timezone_settings.get_timezone,
+        ),
+        reading_history=ReadingHistoryService(
             repository,
             read_transaction_factory=partial(read_transaction, connection),
             current_business_date_provider=business_date,

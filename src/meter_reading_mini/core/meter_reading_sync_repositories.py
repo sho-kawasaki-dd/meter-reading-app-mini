@@ -1097,7 +1097,7 @@ class AggregationReportRepository(Protocol):
 
 
 class ReadingHistoryRepository(Protocol):
-    def list_measurement_definitions(
+    def list_reading_history_definitions(
         self, *, show_inactive: bool = False
     ) -> list[MeasurementDefinitionRecord]: ...
 

@@ -99,6 +99,8 @@ src/meter_reading_mini/core/mobile_reading_sheet.py
 src/meter_reading_mini/core/planned_reading_maintenance.py
 src/meter_reading_mini/core/previous_reading.py
 src/meter_reading_mini/core/reading_comparison.py
+src/meter_reading_mini/core/reading_history.py
+src/meter_reading_mini/core/reading_history_contracts.py
 src/meter_reading_mini/core/reading_overview.py
 src/meter_reading_mini/core/reading_preview.py
 src/meter_reading_mini/core/reading_signature.py
@@ -220,6 +222,7 @@ tests/test_mobile_reading_storage_faults.py
 tests/test_previous_reading.py
 tests/test_qt_charts_smoke.py
 tests/test_reading_comparison.py
+tests/test_reading_history.py
 tests/test_reading_overview.py
 tests/test_reading_overview_model.py
 tests/test_reading_preview.py
