@@ -5,10 +5,11 @@ from __future__ import annotations
 import csv
 import io
 import re
+import unicodedata
 from datetime import tzinfo
 from pathlib import Path
 
-from meter_reading_mini.core.errors import FileOutputError
+from meter_reading_mini.core.errors import FileOutputError, ValidationError
 from meter_reading_mini.core.reading_history_contracts import ReadingHistory
 from meter_reading_mini.ui.atomic_write import atomic_write_text
 from meter_reading_mini.ui.csv_export import escape_csv_text
@@ -48,9 +49,34 @@ CSV_HEADERS = (
 _NUMERIC_COLUMNS = frozenset({14, 15, 18, 19, 20})
 
 
-def history_filename_prefix(definition_id: str) -> str:
-    safe = re.sub(r"[^0-9A-Za-z_-]", "_", definition_id).strip("._-")[:80]
-    return f"meter_history_{safe}" if safe else "meter_history"
+def _safe_filename_component(value: str) -> str:
+    value = re.sub(r"^[\s.]+|[\s.]+$", "", value)
+    value = "".join(
+        "_" if char in '\\/:*?"<>|' or unicodedata.category(char) == "Cc" else char
+        for char in value
+    )
+    return re.sub(r"[\s_]+", "_", value)[:40].rstrip(" .")
+
+
+def _usable_filename_component(value: str) -> bool:
+    first = value.split(".", 1)[0].rstrip(" ").upper()
+    return bool(value) and re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", first) is None
+
+
+def history_filename_prefix(history: ReadingHistory) -> str:
+    definition = history.definition
+    safe = _safe_filename_component(definition.display_name)
+    if not _usable_filename_component(definition.display_name.strip()) or not (
+        _usable_filename_component(safe)
+    ):
+        safe = _safe_filename_component(definition.measurement_definition_id)
+        if not _usable_filename_component(definition.measurement_definition_id.strip()):
+            raise ValidationError("測定定義のファイル名を生成できません。")
+    if not _usable_filename_component(safe):
+        raise ValidationError("測定定義のファイル名を生成できません。")
+    start = history.query.start_date.strftime("%Y%m%d")
+    end = history.query.end_date.strftime("%Y%m%d")
+    return f"meter_reading_history_{safe}_{start}-{end}"
 
 
 def reading_history_csv(history: ReadingHistory, timezone: tzinfo) -> str:
