@@ -122,12 +122,15 @@ db/repositories.py                     (標準 sqlite3 の読取クエリ)
 @dataclass(frozen=True, slots=True)
 class ReadingHistoryQuery:
     measurement_definition_id: str
-    start_date: date          # 含む
-    end_date: date            # 含む (内部で翌日の半開区間へ変換)
+    start_date: date  # 含む
+    end_date: date  # 含む (内部で翌日の半開区間へ変換)
     include_superseded: bool = False
 
+
 class ReadingHistoryService:
-    def list_definitions(self, *, include_inactive: bool) -> tuple[ReadingHistoryDefinitionOption, ...]: ...
+    def list_definitions(
+        self, *, include_inactive: bool
+    ) -> tuple[ReadingHistoryDefinitionOption, ...]: ...
     def get_history(self, query: ReadingHistoryQuery) -> ReadingHistory: ...
 ```
 
