@@ -41,22 +41,22 @@
 - 2 行とも `replacement_boundaries` (測定定義ごとの境界) を正本とする。`replacement_events` の旧読値列は参照しない。
 - 行の位置は交換日時 `replaced_at` とする。同じ時点の予定枠より前に置き、「旧メーター最終 → 新メーター開始」の順に並べる。割当は半開区間 `[effective_from, effective_to)` のため、交換日時ちょうどの予定枠は新メーター側の枠となる。
 - 期間判定には境界の `business_date` を使い、予定日時・記録日時から業務日を逆算しない。2 行は同じ業務日に属するため、期間の端で分断されない。
-- 「旧メーター最終」行の前回値の出所は、`previous_measured_planned_reading_id` があれば `measured` (参照先の予定枠 ID を表示)、なく最初の割当に読値初期値があれば `definition_initial`、どちらもなければ `none` とする。
+- 「旧メーター最終」行の前回値は、旧割当内の直前実測、旧割当を開始させた直前交換境界、最初の割当の読値初期値、なしの順に解決する。直前実測があれば `measured` (参照元は予定枠 ID)、直前交換境界があれば新初期値の有無に応じて `replacement_initial` / `replacement_no_initial` (参照元は交換 ID)、最初の割当の初期値があれば `definition_initial` (参照元は測定定義 ID)、いずれもなければ `none` とする。連続交換では直前交換境界が優先され、定義初期値へ戻らない。
 - 「新メーター開始」行は読値を新初期値とし、前回値・使用量は空欄とする。新初期値が未指定の場合は読値を空欄のまま `HIST_REPLACEMENT_INITIAL_MISSING` を付ける。
 - 交換後の初回実測行の前回値の出所は、新初期値があれば `replacement_initial`、なければ `replacement_no_initial` (保存済み使用量 0 を維持し、基準不明を情報として示す) とする。
-- 使用量列は「実測行の `usage_delta`」と「旧メーター最終行の `old_meter_usage_delta`」だけが値を持つ。通常の整合した `delta` 定義で `superseded` を非表示とし、確認待ち割当がない場合は、期間内の使用量合計が同期間・同定義の直接集計と一致することをテストする。確認待ちや不整合などで集計の採用条件が異なる場合は一致を保証せず、履歴の保存値と警告を示す。`raw_only` は使用量合計なしとする。
+- 使用量列は「実測行の `usage_delta`」と「旧メーター最終行の `old_meter_usage_delta`」だけが値を持つ。期間内使用量合計は `delta` かつ `decimal_string` の定義について、`superseded` を除く表示対象の保存済み使用量を `exact_add` で丸めずに加算する。確認待ち・警告行も保存値があれば含め、「保存済み使用量の単純合計」であることを画面に注記する。`raw_only` と力率は合計を `None` とし、「集計対象外」と表示する。通常の整合した `delta` 定義で `superseded` を非表示とし、確認待ち割当がない場合は、期間内の合計が同期間・同定義の直接集計と一致することをテストする。確認待ちや不整合などで集計の採用条件が異なる場合は一致を保証せず、履歴の保存値と警告を示す。
 
 ### 2.2 その他の前提 (計画として採用)
 
-- 期間は業務日の開始日・終了日を入力し、終了日を含める。内部では半開区間 `[開始日, 終了日 + 1 日)` で `business_date` を検索する。未来日は選択できず、既定は「現在業務日の 1 か月前の翌日〜現在業務日」とする。
-- 並び順は後続再計算と同じ `scheduled_at, planned_reading_id` とし、交換行は 2.1 の位置に挿入する。期間による絞り込みは `business_date` で行う。
-- 期間先頭行の前回値は保存済みの `last_reading` を表示し、期間外の参照も出所として示す。前回値の出所と整合性検査のため、Service は選択した定義の終了日までの履歴全体を読み取り、表示時に期間で切り出す。
+- 期間は業務日の開始日・終了日を入力し、終了日を含める。内部では半開区間 `[開始日, 終了日 + 1 日)` で `business_date` を検索する。未来日は選択できない。既定の開始日は「現在業務日の前月の同日 (前月に存在しない場合は前月末日) の翌日」とし、終了日は現在業務日とする (例: `2026-05-15` は `2026-04-16`、`2026-03-31` は `2026-03-01`、`2026-01-31` は `2026-01-01`)。
+- 並び順は `(時点, 行種別順, 行 ID)` とする。時点は予定枠の `scheduled_at` または交換の `replaced_at`、行種別順は `replacement_old_final`、`replacement_new_initial`、`reading` の順、行 ID は交換行では交換 ID、検針行では予定枠 ID とする。交換行は同じ時点の予定枠より前に並び、交換行同士は旧最終、新開始の順とする。期間による絞り込みは `business_date` で行う。
+- 期間先頭行の前回値は保存済みの `last_reading` を表示し、期間外の参照も出所として示す。前回値の出所と整合性検査のため、Repository は選択した定義の予定枠・交換境界・割当・確認待ち情報を全件読み取り、Service が全時系列で基準解決・警告判定を行った後、`business_date` で期間内の表示行に切り出す。`business_date` で SQL 絞り込みすると負の `day_offset` で時系列順の前回実測を取りこぼすため、期間条件による先行絞り込みはしない。
 - 読値・前回値・倍率・使用量は保存済みの Decimal を plain decimal 文字列のまま表示・出力する。`decimal_places` による丸め・0 埋めはしない (桁数変更で過去値を変換しない 5.1 の規則と整合させる)。
 - 倍率・ロールオーバー値は、予定日時から解決した割当 (`meter_assignments`) の値を表示する。交換や条件訂正で行ごとに条件が変わることを確認できるようにする。
-- 力率 (`structured_payload_json`) は既存の表示形式 (% と位相) で表示し、使用量は空欄で「集計対象外」とする。`raw_only` も使用量は空欄とする。
+- 力率 (`structured_payload_json`) は既存の表示形式 (% と位相) で表示し、数値読値・前回値・使用量は空欄で「集計対象外」とする。`raw_only` は保存された数値読値を表示し、前回値の基準整合性は検査しない。いずれも使用量は空欄とする。
 - 時刻は業務タイムゾーンのローカル時刻で表示・出力する。取得・変換は `core/timeutil.py`・`core/timezone_settings.py` の既存ヘルパーを使う。
 - 論理削除済みの測定定義・メーターも選択・表示できる (定義の選択欄に「無効化済みを含む」切替を設ける)。
-- 履歴の取得は 1 回の読取スナップショット (既存の読取トランザクションの仕組み) で行い、枠・結果・境界・割当・確認待ちの整合を保つ。
+- 履歴の取得は 1 回の読取スナップショット (既存の読取トランザクションの仕組み) で行い、枠・結果・境界・割当・確認待ちの整合を保つ。`AppContext` に `ReadingHistoryService` を追加し、読取トランザクション、現在業務日 Provider、タイムゾーン Provider を注入する。
 
 ## 3. 行種別と警告コード
 
@@ -74,19 +74,19 @@
 
 | 種類 | コード | 条件 |
 | --- | --- | --- |
-| 警告 | `HIST_STATE_MISMATCH` | 状態と値が整合しない (例: `completed` かつ `measured` で `delta` なのに使用量がない、`completed` なのに結果がない、未完了なのに結果がある、負の値) |
-| 警告 | `HIST_BASELINE_MISMATCH` | 保存済みの前回値が、時系列から解決した基準 (直前実測・交換初期値・定義初期値) と一致しない |
-| 警告 | `HIST_ASSIGNMENT_UNRESOLVED` | 予定日時から割当を一意に解決できない |
-| 警告 | `HIST_ASSIGNMENT_PENDING` | 割当の計算条件が確認待ちである |
-| 警告 | `HIST_REPLACEMENT_FINAL_MISSING` | 交換境界の旧最終値がない |
-| 警告 | `HIST_REPLACEMENT_INITIAL_MISSING` | 交換境界の新初期値がない |
-| 情報 | `HIST_NO_BASELINE` | 交換後初回で新初期値がなく、使用量 0 は基準不明である |
-| 情報 | `HIST_ROLLOVER` | 前回値より今回値が小さく、ロールオーバー補正を含む |
+| 警告 | `HIST_STATE_MISMATCH` | 状態と値が整合しない (例: `completed` なのに結果がない、未完了なのに結果がある、負の値、計算方式に応じた必須値がない、非実測結果に値がある、力率 JSON が不正) |
+| 警告 | `HIST_BASELINE_MISMATCH` | `delta` かつ `decimal_string` の行で、保存済みの前回値が時系列から解決した基準 (直前実測・交換初期値・定義初期値) と一致しない |
+| 警告 | `HIST_ASSIGNMENT_UNRESOLVED` | 予定日時から割当を一意に解決できない、または割当メーターと行のメーターが不一致。交換境界と旧・新割当が不整合の場合も含む |
+| 警告 | `HIST_ASSIGNMENT_PENDING` | 割当の計算条件が確認待ちである。確認待ちフラグまたは理由の欠落も警告として表示し、履歴閲覧を止めない |
+| 警告 | `HIST_REPLACEMENT_FINAL_MISSING` | `delta` かつ `decimal_string` の交換境界で旧最終値がなく、旧最終行の使用量基準が欠ける |
+| 警告 | `HIST_REPLACEMENT_INITIAL_MISSING` | `delta` かつ `decimal_string` の交換境界で新初期値がなく、交換後初回実測の基準が不明 |
+| 情報 | `HIST_NO_BASELINE` | `delta` かつ `decimal_string` の実測行で前回基準がなく、保存済み使用量 0 は基準不明である (初回実測・交換後初回の両方) |
+| 情報 | `HIST_ROLLOVER` | `delta` かつ `decimal_string` の読値で前回値より今回値が小さく、設定済みロールオーバー補正を含む |
 | 情報 | `HIST_BASELINE_OUTSIDE_PERIOD` | 前回基準が期間開始前にある |
-| 情報 | `HIST_INACTIVE_MASTER` | 論理削除済みの測定定義・メーターを含む |
+| 情報 | `HIST_INACTIVE_MASTER` | 測定定義が無効、または行の物理メーターが無効。該当する各行に付与する |
 | 情報 | `HIST_SUPERSEDED` | 差替え済み (`superseded`) の枠である (表示切替時のみ) |
 
-警告の判定に使う基準の解決は、既存の `PreviousReadingSource`・前回値解決 (`core/previous_reading.py`) の規則と同じ優先順位 (未消費の交換境界 → 同じ割当内の直前実測 → 最初の割当の読値初期値) で行い、別規則を作らない。使用量の再計算は行わず、保存値をそのまま表示する。
+`delta` かつ `decimal_string` の前回基準は、既存の `PreviousReadingSource`・前回値解決 (`core/previous_reading.py`) の規則と同じ優先順位 (未消費の交換境界 → 同じ割当内の直前実測 → 最初の割当の読値初期値) で行い、別規則を作らない。旧メーター最終行の基準は 2.1 の順序で解決する。実測行に基準がなく、既存ルールによる保存済み使用量が 0 の場合は `HIST_NO_BASELINE` を付与する。正常な `delta` / `decimal_string` 実測行は数値の `raw_reading` と `usage_delta` を持ち、`last_reading` は基準の有無に応じて値または NULL となる。正常な `raw_only` 実測行は数値の `raw_reading` を持ち、`last_reading`・`usage_delta`・構造化値は NULL となる。正常な力率実測行は `raw_reading`・`last_reading`・`usage_delta` が NULL で、妥当な `structured_payload_json` を持つ。これらの方式別正常形を外れた状態・値の組合せは `HIST_STATE_MISMATCH` とする。`raw_only` と力率は前回基準・ロールオーバー・基準不明の判定対象外とする。`raw_only` の交換読値は保存・表示するが、使用量がないこと自体を不整合としない。力率の交換読値は既存仕様で入力できないため、欠損警告の対象外とする。力率 JSON の形式不正は `HIST_STATE_MISMATCH` として行表示を継続する。DB 値の型・文字列表現が壊れていて Repository が解析できない場合は `ValidationError` とし取得を中断するが、読み取れた値の業務上の不整合は行警告とする。使用量の再計算は行わず、保存値をそのまま表示する。
 
 ## 4. 設計
 
@@ -106,9 +106,10 @@ db/repositories.py                     (標準 sqlite3 の読取クエリ)
 ```
 
 - `core/`・`db/` は PySide6 を import しない。契約は Service・UI・DB 実装へ依存しない。
-- Repository の読取レコードは集計用の `AggregationReadingRecord` を拡張せず、履歴専用の `ReadingHistoryReadingRecord` を追加する (記録日時・担当者・取込元・備考・メーター名・製造番号を含む)。集計クエリと性能・意味を分離する。
-- 交換境界は既存の `AggregationBoundaryRecord` 相当の項目で足りるため、共通化できる場合は既存の読取を再利用する。
-- DB は変更しない。インデックス `idx_planned_readings_def_sched` で定義ごとの時系列読取を行う。
+- Repository の読取レコードは集計用の `AggregationReadingRecord` を拡張せず、履歴専用の `ReadingHistoryReadingRecord` を追加する (記録日時・担当者・取込元・備考・メーター名・製造番号・メーター有効状態を含む)。集計クエリと性能・意味を分離する。
+- 交換境界にも履歴専用の `ReadingHistoryBoundaryRecord` を用いる。`replacement_boundaries` の値に加え、対応する `replacement_events` の `updated_by`・`note` と旧・新メーターの `meter_name`・`meter_serial`・`is_active` を取得する。交換行の「記録日時」と「取込元」は空欄とし、交換日時は予定日時列、担当者と備考は交換イベントの値を用いる (`replacement_events` に `created_at` はない)。
+- 新しい `reading_history_contracts.py` は契約モジュールとして扱い、`PreviousReadingSource` は契約モジュール (`contract_models.py`) に配置する。既存呼出しとの互換性のため `previous_reading.py` から再公開する。契約境界テストの対象ファイル・モジュール一覧も更新する。
+- DB は変更しない。予定枠はインデックス `idx_planned_readings_def_sched` で定義ごとの時系列全件を読み、期間条件で先行絞り込みしない。
 
 ### 4.2 Service 契約 (案)
 
@@ -125,15 +126,15 @@ class ReadingHistoryService:
     def get_history(self, query: ReadingHistoryQuery) -> ReadingHistory: ...
 ```
 
-- `ReadingHistory` は定義情報 (名称・場所・単位・カテゴリ・目的・計算方式・無効化状態)、期間、行の tuple、期間内使用量合計 (値のある行の Decimal 合計、値がなければ `None`)、警告件数を持つ。
+- `ReadingHistory` は定義情報 (名称・場所・単位・カテゴリ・目的・計算方式・無効化状態)、期間、行の tuple、期間内使用量合計 (`delta` / `decimal_string` の場合に `superseded` を除いた保存済み使用量を `exact_add` で加算し、値がなければ `None`)、警告件数を持つ。確認待ち・警告のある行の保存値も合計に含める。`raw_only`・力率は合計を `None` とする。
 - 未来日・開始日 > 終了日・存在しない定義は `ValidationError` とする。
-- 例外は握りつぶさない。行単位の不整合は警告コードとし、Repository の低レベル例外は既存の `DomainError` 派生へ変換する。
+- 例外は握りつぶさない。条件不正と DB 値の型・形式破損は `ValidationError` 等の既存 `DomainError` 派生で通知する。読み取れた業務データの状態・値・参照・割当の不整合は警告コードにし、閲覧を継続する。
 
 ### 4.3 CSV
 
 - 既存の集計 CSV と同じく UTF-8 BOM・固定列・一時ファイルへの書込完了後の置換・成功通知とし、`ui/csv_export.py` の共通処理を使う。
-- 文字列セルが `=`・`+`・`-`・`@`・タブ・CR で始まる場合は `'` を付ける。数値列 (読値・前回値・倍率・ロールオーバー値・使用量) は対象外とする。
-- ファイル名は `meter_reading_history_<測定定義名を安全化>_YYYYMMDD-YYYYMMDD_<出力時刻>.csv` とし、出力時刻は既存の `local_timestamp_for_filename` を使う。
+- 文字列セルが `=`・`+`・`-`・`@`・タブ・CR で始まる場合は `'` を付ける。数値列は読値・前回値・倍率・ロールオーバー値・使用量に限定し、それ以外の文字列列と力率表示列は数式注入対策の対象とする。
+- ファイル名は `meter_reading_history_<測定定義名を安全化>_YYYYMMDD-YYYYMMDD_<出力時刻>.csv` とし、出力時刻は既存の `local_timestamp_for_filename` を使う。測定定義名は Windows 禁止文字 `\ / : * ? " < > |` と制御文字を `_` に置換し、連続する空白・`_` を畳み、前後の空白・ドットを除去して 40 文字以内にする。空になった場合や、拡張子の有無によらず先頭要素が Windows 予約名 (`CON`・`PRN`・`AUX`・`NUL`・`COM1`〜`COM9`・`LPT1`〜`LPT9`) の場合は測定定義 ID を同じ規則で安全化して使う。
 - 列 (固定順):
 
 | 列 | 内容 |
@@ -143,22 +144,23 @@ class ReadingHistoryService:
 | 業務日 / 検針時間 / 予定日時 | 予定枠の値。交換行は交換日時を予定日時列に出力し、検針時間は空欄 |
 | 枠状態 / 結果状態 | `task_state` / `result_status` (交換行は空欄) |
 | メーターID / メーター名 / 製造番号 | 行の物理メーター |
-| 読値 / 前回値 / 前回値の出所 / 前回値の参照元 | 出所は `PreviousReadingSource` の値。参照元は予定枠 ID または交換 ID |
+| 読値 / 前回値 / 前回値の出所 / 前回値の参照元 | 出所は `PreviousReadingSource` の値。`measured` は予定枠 ID、`replacement_initial` / `replacement_no_initial` は交換 ID、`definition_initial` は測定定義 ID、`none` は空欄 |
 | 倍率 / ロールオーバー値 | 解決した割当の値 |
 | 使用量 | 保存値 (無丸め) |
-| 力率 | 構造化入力の表示値 |
-| 記録日時 / 担当者 / 取込元 / 備考 | D4 の監査列。交換行は交換イベントの担当者・備考 |
+| 力率 | 構造化入力の表示値。力率行の読値・前回値は空欄 |
+| 記録日時 / 担当者 / 取込元 / 備考 | D4 の監査列。検針行は結果の監査値。交換行は記録日時・取込元を空欄、交換イベントの担当者・備考を出力 |
 | 交換ID / 予定枠ID | 追跡用 |
 | 警告・情報コード | `;` 区切りの固定コード |
 
-- 表示中の条件・結果をそのまま出力する。条件変更・取得失敗時は出力対象を破棄し、出力ボタンを無効化する。
+- 表示中の条件・結果をそのまま出力する。CSV 数値は無丸めである一方、表計算ソフトで数値として開くと精度が失われる場合がある旨を画面に表示する。条件変更・取得失敗時は出力対象を破棄し、出力ボタンを無効化する。
 
 ### 4.4 画面 (`ReadingHistoryDialog`)
 
 - 条件: 場所・カテゴリによる絞り込み → 測定定義 (1 件)、「無効化済みを含む」、開始日・終了日 (未来日不可)、「差替え済みの枠を表示」、「表示」ボタン。
-- 一覧: 3.1 の行種別ごとに色・アイコンで交換行を区別し、警告行を強調する。警告のある行にはツールチップで日本語の説明を表示する。下部に件数・期間内使用量合計・警告件数を表示する。
-- 確認待ち割当がある場合は理由と「計算条件の訂正」への導線を示す (既存の集計画面と同じ導線を再利用する)。
-- 条件を変更したら、古い一覧と出力対象を破棄する。メイン画面で入力・交換・訂正・取込・復元があった場合に再表示を求めるため、集計画面と同じ無効化の仕組みに接続する。
+- 一覧: 3.1 の行種別ごとに色・アイコンで交換行を区別し、警告行を強調する。警告のある行にはツールチップで日本語の説明を表示する。下部に件数・期間内使用量合計・警告件数を表示し、確認待ち・警告行も合計に含む場合は「保存済み使用量の単純合計」である旨を注記する。
+- 確認待ち割当が複数ある場合に対応する候補コンボと「計算条件の訂正」ボタンを設け、選択した割当の理由を表示する (既存の集計画面と同じ導線を再利用する)。
+- 場所・カテゴリ・無効化済み表示の変更後も選択中の測定定義が候補に残る場合は選択を維持する。候補から外れた場合は選択をクリアする。条件変更時はいずれの場合も古い一覧と出力対象を破棄する。
+- メイン画面のモーダル表示中に業務日境界タイマーによる再読込があった場合、および履歴画面から開いた「計算条件の訂正」を保存した場合は、履歴ダイアログを無効化し、最大業務日を更新する。訂正後は利用者が履歴を再取得する。
 - 予期しない例外は既存の `run_guarded` でログに記録し、汎用エラーダイアログで通知する。
 
 ## 5. タスク
@@ -171,36 +173,47 @@ class ReadingHistoryService:
 
 - [ ] `core/reading_history_contracts.py` に条件・行・行種別・警告コード・結果の契約を定義する
 - [ ] `ReadingHistoryRepository` Protocol と `ReadingHistoryReadingRecord` を `core/meter_reading_sync_repositories.py` に追加する
-- [ ] `db/repositories.py` に定義単位・終了日までの予定枠＋結果＋メーター名の読取と、交換境界＋交換イベント監査情報の読取を実装する (プレースホルダ使用)
+- [ ] `db/repositories.py` に選択定義の予定枠・結果・メーター情報と交換境界・イベント監査情報・旧新メーター情報の全件読取を実装する (プレースホルダ使用)。期間で SQL 絞り込みせず、時系列順に取得する
 - [ ] `core/reading_history.py` に `ReadingHistoryService` を実装する (時系列の合成、2.1 の交換行展開、前回値の出所解決、割当解決、警告判定、期間の切り出し、合計)
-- [ ] 層依存・PySide6 非依存・現在時刻取得の禁止を既存のアーキテクチャテストで満たすことを確認する
+- [ ] `PreviousReadingSource` を `core/contract_models.py` へ移し、`core/previous_reading.py` から再公開する。新契約を `tests/test_contract_boundaries.py` の `CONTRACT_FILES` / `CONTRACT_MODULES` に追加する
+- [ ] `AppContext` に `ReadingHistoryService` を追加し、読取トランザクション・現在業務日 Provider・タイムゾーン Provider を注入する
+- [ ] 層依存・契約独立性・PySide6 非依存・現在時刻取得の禁止を既存のアーキテクチャテストで満たすことを確認する
 - [ ] 新規ソース・テストを `packaging/source-files.txt` の許可リストへ追加し、関連する配布検査を実行する
 - [ ] テスト (`:memory:`、時刻固定) を追加する
   - [ ] 交換なしの通常履歴、未入力・非実測・`auto_closed` の行、`superseded` の表示切替
-  - [ ] 交換の 2 行展開と位置 (交換日時ちょうどの予定枠より前)、新初期値あり / なし、最初の割当で実測前の交換 (定義初期値基準)、同一定義の複数回交換
+  - [ ] 交換の 2 行展開と位置 (交換日時ちょうどの予定枠より前)、新初期値あり / なし、最初の割当で実測前の交換 (定義初期値基準)、同一定義の複数回交換、および実測を挟まない連続交換 (新初期値あり / なし)
   - [ ] 交換後初回実測の出所 (`replacement_initial` / `replacement_no_initial`)、期間先頭の `HIST_BASELINE_OUTSIDE_PERIOD`
   - [ ] 期間端: 終了日を含むこと、交換日が開始日・終了日に一致する場合、未来日・開始日 > 終了日の拒否
   - [ ] 期間内使用量合計が、同期間・同定義の使用量集計 (直接集計) の合計と一致すること (交換あり・ロールオーバーあり)
   - [ ] Decimal の無丸め表示 (桁数変更後の過去値)、ロールオーバー補正の情報コード
-  - [ ] 不整合データ (使用量欠落・前回値不一致・割当欠落 / 重複・確認待ち) で例外にならず警告になること
-  - [ ] 力率・`raw_only` の使用量空欄、論理削除済みマスタの表示
+  - [ ] 不整合データ (状態と値の不整合・使用量欠落・前回値不一致・境界参照の片欠け / 不一致・割当欠落 / 重複・確認待ち・場所不一致・力率 JSON 破損) は警告として表示継続し、DB 値の型 / 形式破損は `ValidationError` になること
+  - [ ] 力率・`raw_only` の基準警告対象外と使用量空欄、論理削除済み定義 / メーターの行別表示
+  - [ ] 負の `day_offset` で `business_date` と時系列順が逆転しても、前回基準を取りこぼさないこと
+  - [ ] `superseded` 行を表示した場合でも合計に含めないこと、警告・確認待ち行を含む単純合計と `exact_add` の精度を検証すること
+  - [ ] 既定期間の月末・年末・閏年 (例: `2026-03-31` → `2026-03-01`、`2024-03-31` → `2024-03-01`) を検証すること
   - [ ] 業務タイムゾーン・夏時間を含むローカル時刻表示と業務日の境界
-- [ ] `uv run ruff check` / `uv run ruff format --check` / `uv run pyright` / 対象テスト / カバレッジ 90% 以上を確認する
+- [ ] `uv run ruff check` / `uv run ruff format --check` / `uv run pyright` / 対象テストと、全体・`core/`・`db/`・`core/` + `db/` の各カバレッジ 90% 以上を確認する
+  - [ ] `uv run coverage report --fail-under=90`
+  - [ ] `uv run coverage report --include="*/meter_reading_mini/core/*" --fail-under=90`
+  - [ ] `uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90`
+  - [ ] `uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90`
 
 ### PR-2 UI・CSV
 
 ブランチ: `feature/v0.2.0-history-ui`
 
 - [ ] `ui/models/reading_history_model.py` (表示文字列・色・ツールチップ)
-- [ ] `ui/reading_history_export.py` (4.3 の固定列・数式注入対策・UTF-8 BOM)
+- [ ] `ui/reading_history_export.py` (4.3 の固定列・列別数式注入対策・UTF-8 BOM・ファイル名安全化)
 - [ ] `ui/dialogs/reading_history_dialog.py` (4.4 の条件入力・表示・破棄・CSV 保存)
-- [ ] `MainWindow` のツールバーに「検針履歴」を追加し、書込系操作後の無効化に接続する
+- [ ] `MainWindow` のツールバーに「検針履歴」を追加し、書込系操作後および業務日境界タイマー再読込時の無効化に接続する。選択中の予定枠があればその測定定義を初期選択する
 - [ ] 新規ソース・テストを `packaging/source-files.txt` の許可リストへ追加し、関連する配布検査を実行する
 - [ ] テスト (`QT_QPA_PLATFORM=offscreen`、`METER_READING_MINI_DATA_DIR` は `tmp_path`)
-  - [ ] CSV の列順・BOM・数式注入対策 (数値列は対象外)・交換 2 行の出力・警告コードの出力
-  - [ ] 条件変更・取得失敗で一覧と出力対象を破棄すること、未来日を選べないこと
+  - [ ] CSV の列順・BOM・列別数式注入対策・ファイル名安全化・交換 2 行の監査列・警告コードの出力
+  - [ ] 条件変更・取得失敗で一覧と出力対象を破棄すること、候補に残る測定定義の選択維持、未来日を選べないこと
+  - [ ] 履歴画面からの計算条件訂正後に一覧・出力対象を無効化し、再取得を求めること
   - [ ] 書込失敗時に成功を通知しないこと
 - [ ] 品質ゲート一式と Windows / Ubuntu の必須 CI 成功を確認する
+  - [ ] PR-1 と同じ全体・`core/`・`db/`・`core/` + `db/` の各カバレッジ 90% 以上を確認する
 
 ### PR-3 版数・文書
 
@@ -208,6 +221,7 @@ class ReadingHistoryService:
 
 - [ ] `pyproject.toml` を `0.2.0` に更新し、`uv lock` で `uv.lock` を更新する。差分と `uv lock --check` の結果を確認する
 - [ ] アプリ版数を参照するテスト・表示・配布設定・文書を確認し、必要な箇所を更新する。スキーマ v5 と `SCHEMA_VERSION` は変更しない
+- [ ] 本計画書の追加・`implemented/` への移動を含め `packaging/source-files.txt` を同期し、`tests/test_distribution_build.py` の検証を実行する
 - [ ] 開発計画書に「5.3.8 検針履歴の閲覧・出力」を追加し、2 章・3 章の確定事項を統合する
 - [ ] 開発計画書 5.3.1 のツールバー一覧と 6.1 の画面一覧に「検針履歴」を追加する
 - [ ] README の機能一覧・操作手順・版数と、必要な Phase 5 計画の版数前提を更新する。正式配布・実地確認を完了済みと記載しない
@@ -227,6 +241,7 @@ PR-1〜3 の必須 CI 成功と `main` へのマージを確認した後、そ�
 - [ ] ビルド対象コミット、成果物の場所・SHA256、実施した検査と未実施事項を 7 章に記録する。利用者へ成果物と Sandbox / VM の確認手順を伝える
 - [ ] 実データのない Sandbox / VM でのインストール・初回起動、v0.1.1 からの更新とデータ保持、履歴表示・CSV 出力、アンインストール後のデータ保持を利用者に案内し、確認結果を受領した場合のみ記録する
 - [ ] Windows / Ubuntu の必須 CI を確認し、完了条件を満たした後、本書を完了 (凍結) として `docs/plan/implemented/` へ `git mv` し、相対リンクを修正する。マージ確認が後続作業となる場合は、その結果を確認してから別途凍結する
+- [ ] `git mv` 後のパスを `packaging/source-files.txt` に反映し、`tests/test_distribution_build.py` を再実行する
 
 ## 6. 完了条件
 
