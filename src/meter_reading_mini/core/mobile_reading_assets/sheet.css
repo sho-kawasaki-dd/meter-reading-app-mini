@@ -194,18 +194,31 @@ body {
 
 .card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
 }
 
 .card-title {
   flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
   margin: 0;
   font-size: 1.05rem;
 }
 
 .card-session {
   color: var(--muted);
+  white-space: nowrap;
+}
+
+.card-cycle {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #e4e7eb;
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .card-state {

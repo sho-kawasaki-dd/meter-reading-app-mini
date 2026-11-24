@@ -265,7 +265,11 @@ class SheetBrowser:
         self.page_errors: list[str] = []
 
     def new_context(
-        self, *, viewport: tuple[int, int] = (360, 640), mobile: bool = False
+        self,
+        *,
+        viewport: tuple[int, int] = (360, 640),
+        mobile: bool = False,
+        timezone_id: str | None = None,
     ) -> BrowserContext:
         context = self._browser.new_context(
             viewport={"width": viewport[0], "height": viewport[1]},
@@ -273,6 +277,7 @@ class SheetBrowser:
             accept_downloads=True,
             is_mobile=mobile,
             has_touch=mobile,
+            timezone_id=timezone_id,
         )
         context.route(_EXTERNAL_URL_PATTERN, self._block_external)
         context.add_init_script(_STORAGE_GUARD_SCRIPT)
@@ -291,10 +296,11 @@ class SheetBrowser:
         name: str = "sheet.html",
         context: BrowserContext | None = None,
         viewport: tuple[int, int] = (360, 640),
+        timezone_id: str | None = None,
     ) -> Page:
         path = self._directory / name
         path.write_text(html, encoding="utf-8")
-        return self.open_file(path, context=context, viewport=viewport)
+        return self.open_file(path, context=context, viewport=viewport, timezone_id=timezone_id)
 
     def open_file(
         self,
@@ -302,8 +308,9 @@ class SheetBrowser:
         *,
         context: BrowserContext | None = None,
         viewport: tuple[int, int] = (360, 640),
+        timezone_id: str | None = None,
     ) -> Page:
-        page = (context or self.new_context(viewport=viewport)).new_page()
+        page = (context or self.new_context(viewport=viewport, timezone_id=timezone_id)).new_page()
         console_errors: list[str] = []
         page.on("pageerror", lambda error: self.page_errors.append(str(error)))
         page.on(
