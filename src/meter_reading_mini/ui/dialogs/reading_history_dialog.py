@@ -308,7 +308,7 @@ class ReadingHistoryDialog(QDialog):
         path = export_csv_with_dialog(
             self,
             "検針履歴",
-            history_filename_prefix(history.definition.measurement_definition_id),
+            history_filename_prefix(history),
             export,
         )
         if path is not None:

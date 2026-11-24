@@ -144,12 +144,42 @@ def test_csv_columns_injection_replacements_and_atomic_bom(tmp_path: Path) -> No
     assert reading_history_csv(history, ZONE).startswith("\ufeff")
 
 
-@pytest.mark.parametrize("value", ["../CON:*?<>|", "日本語", "", "a" * 300])
-def test_filename_prefix_is_safe(value: str) -> None:
-    name = history_filename_prefix(value)
-    assert name.startswith("meter_history")
-    assert len(name) <= 94
-    assert all(char.isascii() and (char.isalnum() or char in "_-") for char in name)
+@pytest.mark.parametrize(
+    ("value", "safe"),
+    [
+        ("  水道 / 主__計器:*?<>|  ", "水道_主_計器_"),
+        ("CON.txt", "definition-id"),
+        (" lpt9 .csv ", "definition-id"),
+        ("... ", "definition-id"),
+        (" . . 名\t称. . ", "名_称"),
+        ("電" * 41, "電" * 40),
+        ("x" * 39 + ".y", "x" * 39),
+    ],
+)
+def test_filename_prefix_is_safe(value: str, safe: str) -> None:
+    history = _mismatched_history()
+    history = replace(
+        history,
+        definition=replace(
+            history.definition, display_name=value, measurement_definition_id="definition-id"
+        ),
+    )
+    start = history.query.start_date.strftime("%Y%m%d")
+    end = history.query.end_date.strftime("%Y%m%d")
+    assert history_filename_prefix(history) == f"meter_reading_history_{safe}_{start}-{end}"
+
+
+@pytest.mark.parametrize("definition_id", ["..", "CON.txt"])
+def test_filename_prefix_rejects_unusable_fallback(definition_id: str) -> None:
+    history = _mismatched_history()
+    history = replace(
+        history,
+        definition=replace(
+            history.definition, display_name="NUL", measurement_definition_id=definition_id
+        ),
+    )
+    with pytest.raises(ValidationError, match="ファイル名"):
+        history_filename_prefix(history)
 
 
 @pytest.fixture
@@ -243,10 +273,25 @@ def test_saved_reading_to_display_and_csv(
     assert "保存済み使用量の単純合計: 0" in dialog.status_label.text()
     path = tmp_path / "history.csv"
     messages: list[str] = []
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(path), ""))
+    suggested: list[str] = []
+
+    def choose(_parent: object, _title: str, default: str, _filter: str) -> tuple[str, str]:
+        suggested.append(default)
+        return str(path), ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    monkeypatch.setattr(
+        "meter_reading_mini.ui.csv_export.local_timestamp_for_filename",
+        lambda: "20260204_123456",
+    )
     monkeypatch.setattr(QMessageBox, "information", lambda *_args: messages.append("success"))
     dialog.csv_button.click()
     assert messages == ["success"]
+    assert dialog._history is not None
+    assert suggested == [
+        f"meter_reading_history_{dialog._history.definition.display_name}_"
+        "20260105-20260204_20260204_123456.csv"
+    ]
     with path.open(encoding="utf-8-sig", newline="") as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 1
