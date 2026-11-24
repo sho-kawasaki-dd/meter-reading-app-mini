@@ -147,6 +147,58 @@ class AggregationBoundaryRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ReadingHistoryReadingRecord:
+    planned_reading_id: str
+    measurement_definition_id: str
+    meter_id: str
+    location_id: str
+    business_date: date
+    reading_session: ReadingSession
+    scheduled_at: datetime
+    task_state: PlannedReadingTaskState
+    close_reason: PlannedReadingCloseReason | None
+    superseded_by_planned_reading_id: str | None
+    result_status: ResultStatus | None
+    raw_reading: Decimal | None
+    last_reading: Decimal | None
+    usage_delta: Decimal | None
+    structured_payload_json: str | None
+    recorded_at: datetime | None
+    updated_by: str | None
+    result_source: str | None
+    note: str | None
+    meter_name: str
+    meter_serial: str | None
+    meter_is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingHistoryBoundaryRecord:
+    replacement_event_id: str
+    measurement_definition_id: str
+    location_id: str
+    business_date: date
+    old_meter_id: str
+    new_meter_id: str
+    replaced_at: datetime
+    old_assignment_effective_from: datetime
+    new_assignment_effective_from: datetime
+    previous_measured_reading: Decimal | None
+    previous_measured_planned_reading_id: str | None
+    old_final_reading: Decimal | None
+    old_meter_usage_delta: Decimal | None
+    new_initial_reading: Decimal | None
+    updated_by: str
+    note: str | None
+    old_meter_name: str
+    old_meter_serial: str | None
+    old_meter_is_active: bool
+    new_meter_name: str
+    new_meter_serial: str | None
+    new_meter_is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class MeasurementDefinitionScheduleRecord:
     measurement_definition_id: str
     effective_from_date: date
@@ -1042,6 +1094,28 @@ class AggregationReportRepository(Protocol):
     def list_aggregation_boundaries(
         self, measurement_definition_ids: Collection[str]
     ) -> list[AggregationBoundaryRecord]: ...
+
+
+class ReadingHistoryRepository(Protocol):
+    def list_measurement_definitions(
+        self, *, show_inactive: bool = False
+    ) -> list[MeasurementDefinitionRecord]: ...
+
+    def list_meter_locations(self) -> list[MeterLocationRecord]: ...
+
+    def list_meter_assignments(
+        self, measurement_definition_id: str
+    ) -> list[MeterAssignmentRecord]: ...
+
+    def list_assignment_review_flags(self) -> list[AssignmentReviewFlagRecord]: ...
+
+    def list_reading_history_readings(
+        self, measurement_definition_id: str
+    ) -> list[ReadingHistoryReadingRecord]: ...
+
+    def list_reading_history_boundaries(
+        self, measurement_definition_id: str
+    ) -> list[ReadingHistoryBoundaryRecord]: ...
 
 
 class MeasurementDefinitionQueryRepository(Protocol):

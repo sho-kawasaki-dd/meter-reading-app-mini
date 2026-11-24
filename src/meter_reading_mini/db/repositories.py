@@ -78,6 +78,8 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingRecord,
     PlannedReadingTaskState,
     ReadingCycleScheduleDefaultRecord,
+    ReadingHistoryBoundaryRecord,
+    ReadingHistoryReadingRecord,
     ReadingOverviewRecord,
     ReadingSessionReleaseOffsetRecord,
     ReadingUpsertRequest,
@@ -144,6 +146,22 @@ def _read_decimal(value: str | None) -> Decimal | None:
     if not parsed.is_finite() or format(parsed, "f") != value:
         raise ValidationError(f"DB の Decimal 値が plain decimal 形式ではありません: {value}")
     return parsed
+
+
+def _history_text(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValidationError("履歴の文字列列の型が不正です。")
+    return value
+
+
+def _history_optional_text(value: object) -> str | None:
+    return None if value is None else _history_text(value)
+
+
+def _history_bool(value: object) -> bool:
+    if type(value) is not int or value not in (0, 1):
+        raise ValidationError("履歴の有効状態が不正です。")
+    return value == 1
 
 
 def _read_aggregation_formula(row: tuple[Any, ...]) -> AggregationFormulaRecord:
@@ -715,6 +733,118 @@ class SQLiteRepository:
                 )
             except (TypeError, ValueError) as exc:
                 raise ValidationError(f"集計対象の交換境界が不正です: {row[0]}") from exc
+        return boundaries
+
+    def list_reading_history_readings(
+        self, measurement_definition_id: str
+    ) -> list[ReadingHistoryReadingRecord]:
+        rows = self._conn.execute(
+            "SELECT p.planned_reading_id, p.measurement_definition_id, p.meter_id, "
+            "p.location_id, p.business_date, p.reading_session, p.scheduled_at, p.task_state, "
+            "p.close_reason, p.superseded_by_planned_reading_id, r.result_status, "
+            "r.raw_reading, r.last_reading, r.usage_delta, r.structured_payload_json, "
+            "r.recorded_at, r.updated_by, r.result_source, r.note, "
+            "m.meter_name, m.meter_serial, m.is_active "
+            "FROM planned_readings AS p "
+            "LEFT JOIN reading_transactions AS r ON r.planned_reading_id = p.planned_reading_id "
+            "LEFT JOIN physical_meters AS m ON m.meter_id = p.meter_id "
+            "WHERE p.measurement_definition_id = ? "
+            "ORDER BY p.scheduled_at, p.planned_reading_id",
+            (measurement_definition_id,),
+        ).fetchall()
+        readings: list[ReadingHistoryReadingRecord] = []
+        for row in rows:
+            try:
+                readings.append(
+                    ReadingHistoryReadingRecord(
+                        planned_reading_id=_history_text(row[0]),
+                        measurement_definition_id=_history_text(row[1]),
+                        meter_id=_history_text(row[2]),
+                        location_id=_history_text(row[3]),
+                        business_date=_read_date(_history_text(row[4])),
+                        reading_session=ReadingSession(_history_text(row[5])),
+                        scheduled_at=parse_utc(_history_text(row[6])),
+                        task_state=PlannedReadingTaskState(_history_text(row[7])),
+                        close_reason=(
+                            PlannedReadingCloseReason(_history_text(row[8]))
+                            if row[8] is not None
+                            else None
+                        ),
+                        superseded_by_planned_reading_id=_history_optional_text(row[9]),
+                        result_status=(
+                            ResultStatus(_history_text(row[10])) if row[10] is not None else None
+                        ),
+                        raw_reading=_read_decimal(_history_optional_text(row[11])),
+                        last_reading=_read_decimal(_history_optional_text(row[12])),
+                        usage_delta=_read_decimal(_history_optional_text(row[13])),
+                        structured_payload_json=_history_optional_text(row[14]),
+                        recorded_at=(
+                            parse_utc(_history_text(row[15])) if row[15] is not None else None
+                        ),
+                        updated_by=_history_optional_text(row[16]),
+                        result_source=(
+                            ResultSource(_history_text(row[17])) if row[17] is not None else None
+                        ),
+                        note=_history_optional_text(row[18]),
+                        meter_name=_history_text(row[19]),
+                        meter_serial=_history_optional_text(row[20]),
+                        meter_is_active=_history_bool(row[21]),
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"履歴の予定枠が不正です: {row[0]}") from exc
+        return readings
+
+    def list_reading_history_boundaries(
+        self, measurement_definition_id: str
+    ) -> list[ReadingHistoryBoundaryRecord]:
+        rows = self._conn.execute(
+            "SELECT b.replacement_event_id, b.measurement_definition_id, b.location_id, "
+            "b.business_date, b.old_meter_id, b.new_meter_id, b.replaced_at, "
+            "b.old_assignment_effective_from, b.new_assignment_effective_from, "
+            "b.previous_measured_reading, b.previous_measured_planned_reading_id, "
+            "b.old_final_reading, b.old_meter_usage_delta, b.new_initial_reading, "
+            "e.updated_by, e.note, old.meter_name, old.meter_serial, old.is_active, "
+            "new.meter_name, new.meter_serial, new.is_active "
+            "FROM replacement_boundaries AS b "
+            "LEFT JOIN replacement_events AS e ON e.replacement_event_id = b.replacement_event_id "
+            "LEFT JOIN physical_meters AS old ON old.meter_id = b.old_meter_id "
+            "LEFT JOIN physical_meters AS new ON new.meter_id = b.new_meter_id "
+            "WHERE b.measurement_definition_id = ? "
+            "ORDER BY b.replaced_at, b.replacement_event_id",
+            (measurement_definition_id,),
+        ).fetchall()
+        boundaries: list[ReadingHistoryBoundaryRecord] = []
+        for row in rows:
+            try:
+                boundaries.append(
+                    ReadingHistoryBoundaryRecord(
+                        replacement_event_id=_history_text(row[0]),
+                        measurement_definition_id=_history_text(row[1]),
+                        location_id=_history_text(row[2]),
+                        business_date=_read_date(_history_text(row[3])),
+                        old_meter_id=_history_text(row[4]),
+                        new_meter_id=_history_text(row[5]),
+                        replaced_at=parse_utc(_history_text(row[6])),
+                        old_assignment_effective_from=parse_utc(_history_text(row[7])),
+                        new_assignment_effective_from=parse_utc(_history_text(row[8])),
+                        previous_measured_reading=_read_decimal(_history_optional_text(row[9])),
+                        previous_measured_planned_reading_id=_history_optional_text(row[10]),
+                        old_final_reading=_read_decimal(_history_optional_text(row[11])),
+                        old_meter_usage_delta=_read_decimal(_history_optional_text(row[12])),
+                        new_initial_reading=_read_decimal(_history_optional_text(row[13])),
+                        updated_by=_history_text(row[14]),
+                        note=_history_optional_text(row[15]),
+                        old_meter_name=_history_text(row[16]),
+                        old_meter_serial=_history_optional_text(row[17]),
+                        old_meter_is_active=_history_bool(row[18]),
+                        new_meter_name=_history_text(row[19]),
+                        new_meter_serial=_history_optional_text(row[20]),
+                        new_meter_is_active=_history_bool(row[21]),
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"履歴の交換境界が不正です: {row[0]}") from exc
         return boundaries
 
     def create_aggregation_formula(self, formula: AggregationFormulaRecord) -> None:

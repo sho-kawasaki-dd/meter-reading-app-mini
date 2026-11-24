@@ -150,6 +150,16 @@ class ValueSchema(StrEnum):
     POWER_FACTOR_PERCENT_PHASE = "power_factor_percent_phase"
 
 
+class PreviousReadingSource(StrEnum):
+    """前回値の由来。値はシートデータの `previous_source` と一致する。"""
+
+    MEASURED = "measured"
+    REPLACEMENT_INITIAL = "replacement_initial"
+    REPLACEMENT_NO_INITIAL = "replacement_no_initial"
+    DEFINITION_INITIAL = "definition_initial"
+    NONE = "none"
+
+
 class Purpose(StrEnum):
     """measurement definition の検針目的。集計時の用途別フィルタに用いる。"""
 

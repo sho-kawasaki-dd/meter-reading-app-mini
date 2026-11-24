@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from meter_reading_mini.core.contract_models import PreviousReadingSource as ContractPreviousSource
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     HistoricalMeasuredReadingRecord,
@@ -21,6 +22,10 @@ from meter_reading_mini.core.previous_reading import (
 
 SCHEDULED_AT = datetime(2026, 2, 4, 6, 0, tzinfo=UTC)
 PREVIOUS_AT = datetime(2026, 2, 4, 5, 0, tzinfo=UTC)
+
+
+def test_previous_reading_source_is_reexported_from_contract() -> None:
+    assert PreviousReadingSource is ContractPreviousSource
 
 
 class FakeHistory:

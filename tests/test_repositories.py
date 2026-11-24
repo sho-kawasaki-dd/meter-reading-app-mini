@@ -67,6 +67,187 @@ from meter_reading_mini.db.repositories import (
 READ_AT = datetime(2026, 2, 4, 8, 0, tzinfo=UTC)
 
 
+def test_history_repository_reads_complete_timeline_and_audit(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("later", definition_id, meter_id, scheduled_at=READ_AT + timedelta(days=1))
+    )
+    sqlite_repository.create_planned_reading_if_missing(
+        _planned("earlier", definition_id, meter_id)
+    )
+    memory_conn.execute(
+        "INSERT INTO reading_transactions "
+        "(planned_reading_id, result_status, recorded_at, client_updated_at, raw_reading, "
+        "last_reading, usage_delta, updated_by, signature, note, result_source) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "earlier",
+            "measured",
+            "2026-02-04 08:00:00",
+            "2026-02-04 08:00:00",
+            "12.3400",
+            "10.000",
+            "2.3400",
+            "担当",
+            "署名",
+            "備考",
+            "manual",
+        ),
+    )
+    readings = sqlite_repository.list_reading_history_readings(definition_id)
+
+    assert [row.planned_reading_id for row in readings] == ["earlier", "later"]
+    assert readings[0].raw_reading == Decimal("12.3400")
+    assert readings[0].raw_reading is not None
+    assert format(readings[0].raw_reading, "f") == "12.3400"
+    assert readings[0].updated_by == "担当"
+    assert readings[0].note == "備考"
+    assert readings[0].meter_name == "試験用電力量計"
+    assert readings[0].meter_serial == "TEST-001"
+    assert readings[1].result_status is None
+    assert sqlite_repository.list_reading_history_readings("not-a-definition") == []
+    assert sqlite_repository.list_reading_history_readings("' OR 1=1 --") == []
+
+    memory_conn.execute(
+        "UPDATE reading_transactions SET raw_reading = ? WHERE planned_reading_id = ?",
+        (b"12", "earlier"),
+    )
+    with pytest.raises(ValidationError):
+        sqlite_repository.list_reading_history_readings(definition_id)
+
+
+def test_history_repository_rejects_missing_meter_instead_of_skipping_row(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_planned_reading_if_missing(_planned("orphan", definition_id, meter_id))
+    memory_conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        memory_conn.execute("DELETE FROM physical_meters WHERE meter_id = ?", (meter_id,))
+        with pytest.raises(ValidationError):
+            sqlite_repository.list_reading_history_readings(definition_id)
+    finally:
+        memory_conn.execute("PRAGMA foreign_keys = ON")
+
+
+def test_history_repository_reads_boundary_not_event_values(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    sample_master: tuple[str, str],
+) -> None:
+    meter_id, definition_id = sample_master
+    sqlite_repository.create_meter_master(
+        MeterMasterCreateRequest(
+            meter_id="new-meter",
+            location_id="location-test-001",
+            location_name="架空の試験棟",
+            meter_name="新メーター",
+            category=Category.ELECTRICITY,
+            meter_serial="NEW-001",
+        )
+    )
+    old_start = memory_conn.execute(
+        "SELECT effective_from FROM meter_assignments WHERE measurement_definition_id = ?",
+        (definition_id,),
+    ).fetchone()[0]
+    replaced_at = "2026-02-05 08:00:00"
+    memory_conn.execute(
+        "UPDATE meter_assignments SET effective_to = ? WHERE measurement_definition_id = ?",
+        (replaced_at, definition_id),
+    )
+    memory_conn.execute(
+        "INSERT INTO meter_assignments "
+        "(measurement_definition_id, meter_id, effective_from, multiplier) VALUES (?, ?, ?, ?)",
+        (definition_id, "new-meter", replaced_at, "2"),
+    )
+    memory_conn.execute(
+        "INSERT INTO replacement_events "
+        "(replacement_event_id, location_id, old_meter_id, new_meter_id, replaced_at, "
+        "old_final_reading, client_updated_at, updated_by, note) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "replacement",
+            "location-test-001",
+            meter_id,
+            "new-meter",
+            replaced_at,
+            "999",
+            replaced_at,
+            "交換担当",
+            "交換備考",
+        ),
+    )
+    memory_conn.execute(
+        "INSERT INTO replacement_boundaries "
+        "(replacement_event_id, measurement_definition_id, location_id, business_date, "
+        "old_meter_id, new_meter_id, replaced_at, old_assignment_effective_from, "
+        "new_assignment_effective_from, old_final_reading, old_meter_usage_delta, "
+        "new_initial_reading, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "replacement",
+            definition_id,
+            "location-test-001",
+            "2026-02-05",
+            meter_id,
+            "new-meter",
+            replaced_at,
+            old_start,
+            replaced_at,
+            "123.00",
+            "23.00",
+            "1.00",
+            replaced_at,
+            replaced_at,
+        ),
+    )
+
+    boundaries = sqlite_repository.list_reading_history_boundaries(definition_id)
+    assert len(boundaries) == 1
+    boundary = boundaries[0]
+    assert boundary.old_final_reading == Decimal("123.00")
+    assert boundary.old_meter_usage_delta == Decimal("23.00")
+    assert boundary.new_initial_reading == Decimal("1.00")
+    assert boundary.updated_by == "交換担当"
+    assert boundary.note == "交換備考"
+    assert boundary.old_meter_name == "試験用電力量計"
+    assert boundary.new_meter_name == "新メーター"
+    assert boundary.new_meter_serial == "NEW-001"
+    assert sqlite_repository.list_reading_history_boundaries("not-a-definition") == []
+
+    memory_conn.execute(
+        "UPDATE physical_meters SET is_active = 0 WHERE meter_id = ?", ("new-meter",)
+    )
+    boundary = sqlite_repository.list_reading_history_boundaries(definition_id)[0]
+    assert not boundary.new_meter_is_active
+    memory_conn.execute(
+        "UPDATE replacement_boundaries SET old_final_reading = ? WHERE replacement_event_id = ?",
+        ("not-decimal", "replacement"),
+    )
+    with pytest.raises(ValidationError):
+        sqlite_repository.list_reading_history_boundaries(definition_id)
+
+    memory_conn.execute(
+        "UPDATE replacement_boundaries SET old_final_reading = ? WHERE replacement_event_id = ?",
+        ("123.00", "replacement"),
+    )
+    memory_conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        memory_conn.execute(
+            "DELETE FROM replacement_events WHERE replacement_event_id = ?", ("replacement",)
+        )
+        with pytest.raises(ValidationError):
+            sqlite_repository.list_reading_history_boundaries(definition_id)
+    finally:
+        memory_conn.execute("PRAGMA foreign_keys = ON")
+
+
 def _planned(
     planned_reading_id: str,
     definition_id: str,

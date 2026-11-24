@@ -1,7 +1,7 @@
 # v0.2.0 検針履歴閲覧・CSV 出力 実装計画
 
 - 作成日: 2026-11-24
-- ステータス: 計画中 (未着手)
+- ステータス: PR-1 作業中
 - アプリ版数: 本改修で `0.2.0` に更新する。DB スキーマ版数は独立して管理し、本改修では v5 のまま変更しない
 - ブランチ: `feature/v0.2.0-<内容>`
 - 対象: リポジトリ直下 (`src/`・`tests/`・`docs/`・`README.md`)
@@ -180,8 +180,8 @@ class ReadingHistoryService:
 ブランチ: `feature/v0.2.0-history-core`
 
 - [ ] `core/reading_history_contracts.py` に条件・行・行種別・警告コード・結果の契約を定義する
-- [ ] `ReadingHistoryRepository` Protocol と `ReadingHistoryReadingRecord` を `core/meter_reading_sync_repositories.py` に追加する
-- [ ] `db/repositories.py` に選択定義の予定枠・結果・メーター情報と交換境界・イベント監査情報・旧新メーター情報の全件読取を実装する (プレースホルダ使用)。期間で SQL 絞り込みせず、時系列順に取得する
+- [x] `ReadingHistoryRepository` Protocol と `ReadingHistoryReadingRecord` を `core/meter_reading_sync_repositories.py` に追加する
+- [x] `db/repositories.py` に選択定義の予定枠・結果・メーター情報と交換境界・イベント監査情報・旧新メーター情報の全件読取を実装する (プレースホルダ使用)。期間で SQL 絞り込みせず、時系列順に取得する
 - [ ] `core/reading_history.py` に `ReadingHistoryService` を実装する (時系列の合成、2.1 の交換行展開、前回値の出所解決、割当解決、警告判定、期間の切り出し、合計)
 - [ ] `PreviousReadingSource` を `core/contract_models.py` へ移し、`core/previous_reading.py` から再公開する。新契約を `tests/test_contract_boundaries.py` の `CONTRACT_FILES` / `CONTRACT_MODULES` に追加する
 - [ ] `AppContext` に `ReadingHistoryService` を追加し、読取トランザクション・現在業務日 Provider・タイムゾーン Provider を注入する
@@ -265,7 +265,9 @@ PR-1〜3 の必須 CI 成功と `main` へのマージを確認した後、そ�
 
 ## 7. 検証記録
 
-各 PR の実施時に、対象コミット、実行した検査・結果、未実施項目と理由を記録する。現時点では実装・ビルド・実地確認とも未実施。
+各 PR の実施時に、対象コミット、実行した検査・結果、未実施項目と理由を記録する。PR-1 は作業中であり、PR-2 以降の実装・ビルド・実地確認は未実施。
+
+- PR-1 作業途中 (基点 `7d3351d`、未コミット): 履歴 Repository の全件読取と前回値の出所 enum の移動を実施。Repository・前回値・契約境界・配布検査の 78 テストが成功。履歴契約・Service・AppContext・網羅的テスト・カバレッジおよび CI の確認は未実施。
 
 ## 8. 注意事項
 
