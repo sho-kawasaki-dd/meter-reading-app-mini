@@ -98,7 +98,7 @@ def test_current_schema_is_included_in_source_and_bundle_allowlists() -> None:
 
 
 def test_current_history_plan_is_included_in_source_snapshot() -> None:
-    assert "docs/plan/検針履歴閲覧・CSV出力計画.md" in builder.snapshot_source_files()
+    assert "docs/plan/implemented/検針履歴閲覧・CSV出力計画.md" in builder.snapshot_source_files()
 
 
 def test_project_version_is_read_from_pyproject(
