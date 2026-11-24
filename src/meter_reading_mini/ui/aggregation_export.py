@@ -27,6 +27,7 @@ from meter_reading_mini.ui.aggregation_display import (
     result_state,
 )
 from meter_reading_mini.ui.atomic_write import atomic_write_text
+from meter_reading_mini.ui.csv_export import escape_csv_text as _text
 from meter_reading_mini.ui.models.reading_overview_model import CATEGORY_LABELS, PURPOSE_LABELS
 
 CSV_HEADERS = (
@@ -61,10 +62,6 @@ CSV_HEADERS = (
     "基準読値_無丸め",
     "集計状態",
 )
-
-
-def _text(value: str) -> str:
-    return "'" + value if value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
 
 
 def _common(period: AggregationPeriod, result: AggregationResult) -> list[str]:
