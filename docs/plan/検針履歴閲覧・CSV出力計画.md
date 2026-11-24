@@ -1,7 +1,7 @@
 # v0.2.0 検針履歴閲覧・CSV 出力 実装計画
 
 - 作成日: 2026-11-24
-- ステータス: 計画中 (未着手)
+- ステータス: PR-1 作業中
 - アプリ版数: 本改修で `0.2.0` に更新する。DB スキーマ版数は独立して管理し、本改修では v5 のまま変更しない
 - ブランチ: `feature/v0.2.0-<内容>`
 - 対象: リポジトリ直下 (`src/`・`tests/`・`docs/`・`README.md`)
@@ -179,35 +179,35 @@ class ReadingHistoryService:
 
 ブランチ: `feature/v0.2.0-history-core`
 
-- [ ] `core/reading_history_contracts.py` に条件・行・行種別・警告コード・結果の契約を定義する
-- [ ] `ReadingHistoryRepository` Protocol と `ReadingHistoryReadingRecord` を `core/meter_reading_sync_repositories.py` に追加する
-- [ ] `db/repositories.py` に選択定義の予定枠・結果・メーター情報と交換境界・イベント監査情報・旧新メーター情報の全件読取を実装する (プレースホルダ使用)。期間で SQL 絞り込みせず、時系列順に取得する
-- [ ] `core/reading_history.py` に `ReadingHistoryService` を実装する (時系列の合成、2.1 の交換行展開、前回値の出所解決、割当解決、警告判定、期間の切り出し、合計)
-- [ ] `PreviousReadingSource` を `core/contract_models.py` へ移し、`core/previous_reading.py` から再公開する。新契約を `tests/test_contract_boundaries.py` の `CONTRACT_FILES` / `CONTRACT_MODULES` に追加する
-- [ ] `AppContext` に `ReadingHistoryService` を追加し、読取トランザクション・現在業務日 Provider・タイムゾーン Provider を注入する
-- [ ] 層依存・契約独立性・PySide6 非依存・現在時刻取得の禁止を既存のアーキテクチャテストで満たすことを確認する
-- [ ] 新規ソース・テストを `packaging/source-files.txt` の許可リストへ追加し、関連する配布検査を実行する
-- [ ] テスト (`:memory:`、時刻固定) を追加する
-  - [ ] 交換なしの通常履歴、未入力・非実測・`auto_closed` の行、`superseded` の表示切替
-  - [ ] 計器故障結果を保持した交換差替えの旧枠に、状態・割当の誤警告が出ないこと。後継枠の参照切れには警告を付け、表示切替で後続行の前回基準や期間合計が変わらないこと
-  - [ ] 交換の 2 行展開と位置 (交換日時ちょうどの予定枠より前)、新初期値あり / なし、最初の割当で実測前の交換 (定義初期値基準)、同一定義の複数回交換、および実測を挟まない連続交換 (新初期値あり / なし)
-  - [ ] 旧・新の倍率とロールオーバー値が異なるとき、交換 2 行にそれぞれの条件を表示し、交換日時ちょうどの検針行には新割当の条件を表示すること。境界が指す割当が不整合なら該当行の計算条件を空欄にして警告すること
-  - [ ] 交換後初回実測の出所 (`replacement_initial` / `replacement_no_initial`)、開始日前の基準に対する `HIST_BASELINE_OUTSIDE_PERIOD`
-  - [ ] 保存済みの前回値 `100` と解決した基準 `120` が不一致なら、保存値を維持し、推定した枠 ID を出所にしないこと。旧最終行では境界の保存済み前回値・参照 ID を上書きしないこと
-  - [ ] 期間端: 終了日を含むこと、交換日が開始日・終了日に一致する場合、未来日・開始日 > 終了日の拒否
-  - [ ] 期間内使用量合計が、同期間・同定義の使用量集計 (直接集計) の合計と一致すること (交換あり・ロールオーバーあり)
-  - [ ] Decimal の無丸め表示 (桁数変更後の過去値)、ロールオーバー補正の情報コード
-  - [ ] 不整合データ (状態と値の不整合・使用量欠落・前回値不一致・境界参照の片欠け / 不一致・割当欠落 / 重複・確認待ち・場所不一致・力率 JSON 破損) は警告として表示継続し、DB 値の型 / 形式破損は `ValidationError` になること
-  - [ ] 力率・`raw_only` の基準警告対象外と使用量空欄、論理削除済み定義 / メーターの行別表示
-  - [ ] 負の `day_offset` で時系列上の直前実測が終了日の翌業務日に属する場合も、その参照を維持して `HIST_BASELINE_OUTSIDE_PERIOD` を付けること
-  - [ ] 警告・確認待ち行を含む単純合計と `exact_add` の精度を検証すること
-  - [ ] 既定期間の月末・年末・閏年 (例: `2026-03-31` → `2026-03-01`、`2024-03-31` → `2024-03-01`) を検証すること
-  - [ ] 業務タイムゾーン・夏時間を含むローカル時刻表示と業務日の境界
-- [ ] `uv run ruff check` / `uv run ruff format --check` / `uv run pyright` / 対象テストと、全体・`core/`・`db/`・`core/` + `db/` の各カバレッジ 90% 以上を確認する
-  - [ ] `uv run coverage report --fail-under=90`
-  - [ ] `uv run coverage report --include="*/meter_reading_mini/core/*" --fail-under=90`
-  - [ ] `uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90`
-  - [ ] `uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90`
+- [x] `core/reading_history_contracts.py` に条件・行・行種別・警告コード・結果の契約を定義する
+- [x] `ReadingHistoryRepository` Protocol と `ReadingHistoryReadingRecord` を `core/meter_reading_sync_repositories.py` に追加する
+- [x] `db/repositories.py` に選択定義の予定枠・結果・メーター情報と交換境界・イベント監査情報・旧新メーター情報の全件読取を実装する (プレースホルダ使用)。期間で SQL 絞り込みせず、時系列順に取得する
+- [x] `core/reading_history.py` に `ReadingHistoryService` を実装する (時系列の合成、2.1 の交換行展開、前回値の出所解決、割当解決、警告判定、期間の切り出し、合計)
+- [x] `PreviousReadingSource` を `core/contract_models.py` へ移し、`core/previous_reading.py` から再公開する。新契約を `tests/test_contract_boundaries.py` の `CONTRACT_FILES` / `CONTRACT_MODULES` に追加する
+- [x] `AppContext` に `ReadingHistoryService` を追加し、読取トランザクション・現在業務日 Provider・タイムゾーン Provider を注入する
+- [x] 層依存・契約独立性・PySide6 非依存・現在時刻取得の禁止を既存のアーキテクチャテストで満たすことを確認する
+- [x] 新規ソース・テストを `packaging/source-files.txt` の許可リストへ追加し、関連する配布検査を実行する
+- [x] テスト (`:memory:`、時刻固定) を追加する
+  - [x] 交換なしの通常履歴、未入力・非実測・`auto_closed` の行、`superseded` の表示切替
+  - [x] 計器故障結果を保持した交換差替えの旧枠に、状態・割当の誤警告が出ないこと。後継枠の参照切れには警告を付け、表示切替で後続行の前回基準や期間合計が変わらないこと
+  - [x] 交換の 2 行展開と位置 (交換日時ちょうどの予定枠より前)、新初期値あり / なし、最初の割当で実測前の交換 (定義初期値基準)、同一定義の複数回交換、および実測を挟まない連続交換 (新初期値あり / なし)
+  - [x] 旧・新の倍率とロールオーバー値が異なるとき、交換 2 行にそれぞれの条件を表示し、交換日時ちょうどの検針行には新割当の条件を表示すること。境界が指す割当が不整合なら該当行の計算条件を空欄にして警告すること
+  - [x] 交換後初回実測の出所 (`replacement_initial` / `replacement_no_initial`)、開始日前の基準に対する `HIST_BASELINE_OUTSIDE_PERIOD`
+  - [x] 保存済みの前回値 `100` と解決した基準 `120` が不一致なら、保存値を維持し、推定した枠 ID を出所にしないこと。旧最終行では境界の保存済み前回値・参照 ID を上書きしないこと
+  - [x] 期間端: 終了日を含むこと、交換日が開始日・終了日に一致する場合、未来日・開始日 > 終了日の拒否
+  - [x] 期間内使用量合計が、同期間・同定義の使用量集計 (直接集計) の合計と一致すること (交換あり・ロールオーバーあり)
+  - [x] Decimal の無丸め表示 (桁数変更後の過去値)、ロールオーバー補正の情報コード
+  - [x] 不整合データ (状態と値の不整合・使用量欠落・前回値不一致・境界参照の片欠け / 不一致・割当欠落 / 重複・確認待ち・場所不一致・力率 JSON 破損) は警告として表示継続し、DB 値の型 / 形式破損は `ValidationError` になること
+  - [x] 力率・`raw_only` の基準警告対象外と使用量空欄、論理削除済み定義 / メーターの行別表示
+  - [x] 負の `day_offset` で時系列上の直前実測が終了日の翌業務日に属する場合も、その参照を維持して `HIST_BASELINE_OUTSIDE_PERIOD` を付けること
+  - [x] 警告・確認待ち行を含む単純合計と `exact_add` の精度を検証すること
+  - [x] 既定期間の月末・年末・閏年 (例: `2026-03-31` → `2026-03-01`、`2024-03-31` → `2024-03-01`) を検証すること
+  - [x] 業務タイムゾーン・夏時間を含むローカル時刻表示と業務日の境界
+- [x] `uv run ruff check` / `uv run ruff format --check` / `uv run pyright` / 対象テストと、全体・`core/`・`db/`・`core/` + `db/` の各カバレッジ 90% 以上を確認する
+  - [x] `uv run coverage report --fail-under=90`
+  - [x] `uv run coverage report --include="*/meter_reading_mini/core/*" --fail-under=90`
+  - [x] `uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90`
+  - [x] `uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90`
 
 ### PR-2 UI・CSV
 
@@ -265,7 +265,10 @@ PR-1〜3 の必須 CI 成功と `main` へのマージを確認した後、そ�
 
 ## 7. 検証記録
 
-各 PR の実施時に、対象コミット、実行した検査・結果、未実施項目と理由を記録する。現時点では実装・ビルド・実地確認とも未実施。
+各 PR の実施時に、対象コミット、実行した検査・結果、未実施項目と理由を記録する。PR-1 は作業中であり、PR-2 以降の実装・ビルド・実地確認は未実施。
+
+- PR-1 作業途中 (基点 `7d3351d`、未コミット): 履歴 Repository の全件読取と前回値の出所 enum の移動を実施。Repository・前回値・契約境界・配布検査の 78 テストが成功。履歴契約・Service・AppContext・網羅的テスト・カバレッジおよび CI の確認は未実施。
+- PR-1 ローカル検証 (基点 `5802e74`、未コミット): 履歴契約・Service・AppContext を実装し、実 DB と読取スナップショットを含む履歴テストを追加。Windows の通常 Qt 設定で全 1611 テスト成功、1 件スキップ (`time.tzset()` が Windows 非対応)。全体 95%・core 96%・db 91%・core + db 95%。Ruff・Pyright・配布検査成功。Windows の offscreen 設定では Qt テスト中にプロセスが異常終了したため、通常 Qt 設定で再実行した。必須 CI・PR・マージおよび PR-2 以降は未実施。
 
 ## 8. 注意事項
 

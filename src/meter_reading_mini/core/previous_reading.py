@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from enum import StrEnum
 
+from meter_reading_mini.core.contract_models import PreviousReadingSource
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     HistoricalMeasuredReadingLookupRepository,
@@ -15,16 +15,6 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReplacementBoundaryLookupRepository,
     ReplacementBoundaryRecord,
 )
-
-
-class PreviousReadingSource(StrEnum):
-    """前回値の由来。値はシートデータの `previous_source` と一致する。"""
-
-    MEASURED = "measured"
-    REPLACEMENT_INITIAL = "replacement_initial"
-    REPLACEMENT_NO_INITIAL = "replacement_no_initial"
-    DEFINITION_INITIAL = "definition_initial"
-    NONE = "none"
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,6 +26,7 @@ CONTRACT_FILES = (
     "errors.py",
     "meter_reading_sync_repositories.py",
     "reading_comparison.py",
+    "reading_history_contracts.py",
     "reading_values.py",
 )
 CONTRACT_MODULES = {
@@ -35,6 +36,7 @@ CONTRACT_MODULES = {
     "meter_reading_mini.core.errors",
     "meter_reading_mini.core.meter_reading_sync_repositories",
     "meter_reading_mini.core.reading_comparison",
+    "meter_reading_mini.core.reading_history_contracts",
     "meter_reading_mini.core.reading_values",
 }
 DATABASE_CORE_IMPORTS = CONTRACT_MODULES | {"meter_reading_mini.core.timeutil"}

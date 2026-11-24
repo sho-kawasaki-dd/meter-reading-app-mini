@@ -46,6 +46,11 @@ from meter_reading_mini.core.meter_replacement_service import (
     MeterReplacementCorrectionInput,
     MeterReplacementInput,
 )
+from meter_reading_mini.core.reading_history_contracts import (
+    ReadingHistoryCode,
+    ReadingHistoryQuery,
+    ReadingHistoryRowKind,
+)
 from meter_reading_mini.core.reports import AggregationReportService
 from meter_reading_mini.db.connection import connect, read_transaction, transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
@@ -863,6 +868,195 @@ def test_consecutive_replacements_use_initial_baselines_and_recalculate(
         )
     )
     assert scenario.result("a", start, end).value == 16
+
+
+def test_history_matches_direct_aggregation_with_consecutive_replacements(
+    scenario: Scenario,
+) -> None:
+    scenario.definition("a")
+    scenario.meter("new", "location-a")
+    scenario.meter("third", "location-a")
+    scenario.plan("before", "a", date(2026, 2, 9), value="100")
+    first = scenario.context.meter_replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="meter-a",
+            new_meter_id="new",
+            replaced_at=datetime(2026, 2, 10, 3, tzinfo=UTC),
+            old_final_reading=Decimal("110"),
+            new_initial_reading=Decimal("5"),
+            staff_id=scenario.staff_id,
+        )
+    )
+    scenario.context.meter_replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="new",
+            new_meter_id="third",
+            replaced_at=datetime(2026, 2, 10, 5, tzinfo=UTC),
+            old_final_reading=Decimal("9"),
+            new_initial_reading=Decimal("1"),
+            staff_id=scenario.staff_id,
+        )
+    )
+    scenario.plan(
+        "after",
+        "a",
+        date(2026, 2, 10),
+        at=datetime(2026, 2, 10, 6, tzinfo=UTC),
+        meter_id="third",
+        value="4",
+    )
+    day = date(2026, 2, 10)
+    history = scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+    assert history.total_usage == scenario.result("a", day, day + timedelta(days=1)).value == 17
+    assert [row.row_kind for row in history.rows] == [
+        ReadingHistoryRowKind.REPLACEMENT_OLD_FINAL,
+        ReadingHistoryRowKind.REPLACEMENT_NEW_INITIAL,
+        ReadingHistoryRowKind.REPLACEMENT_OLD_FINAL,
+        ReadingHistoryRowKind.REPLACEMENT_NEW_INITIAL,
+        ReadingHistoryRowKind.READING,
+    ]
+    assert history.rows[2].previous_reference_id == first.replacement_event_id
+    assert ReadingHistoryCode.BASELINE_OUTSIDE_PERIOD in {
+        issue.code for issue in history.rows[0].issues
+    }
+    assert history.warning_count == 0
+
+
+def test_history_matches_direct_aggregation_with_rollover_and_replacement(
+    scenario: Scenario,
+) -> None:
+    scenario.definition("a")
+    scenario.meter("new", "location-a")
+    scenario.conn.execute(
+        "UPDATE meter_assignments SET rollover_value = ? WHERE measurement_definition_id = ?",
+        ("1000", "a"),
+    )
+    scenario.plan("before", "a", date(2026, 2, 9), value="990")
+    scenario.plan("rollover", "a", date(2026, 2, 10), value="5")
+    scenario.context.meter_replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="meter-a",
+            new_meter_id="new",
+            replaced_at=datetime(2026, 2, 10, 4, tzinfo=UTC),
+            old_final_reading=Decimal("7"),
+            new_initial_reading=Decimal("1"),
+            staff_id=scenario.staff_id,
+        )
+    )
+    scenario.plan(
+        "after",
+        "a",
+        date(2026, 2, 10),
+        at=datetime(2026, 2, 10, 5, tzinfo=UTC),
+        meter_id="new",
+        value="4",
+    )
+    day = date(2026, 2, 10)
+    history = scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+    assert history.total_usage == scenario.result("a", day, day + timedelta(days=1)).value == 20
+    assert ReadingHistoryCode.ROLLOVER in {issue.code for issue in history.rows[0].issues}
+    assert history.warning_count == 0
+
+
+def test_history_raw_only_replacement_allows_previous_measured_value(scenario: Scenario) -> None:
+    scenario.definition("a", calculation=CalculationMethod.RAW_ONLY)
+    scenario.meter("new", "location-a")
+    scenario.plan("before", "a", date(2026, 2, 9), value="100")
+    scenario.context.meter_replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="meter-a",
+            new_meter_id="new",
+            replaced_at=datetime(2026, 2, 10, 3, tzinfo=UTC),
+            old_final_reading=Decimal("110"),
+            new_initial_reading=Decimal("5"),
+            staff_id=scenario.staff_id,
+        )
+    )
+    day = date(2026, 2, 10)
+    history = scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+    assert history.total_usage is None
+    assert history.warning_count == 0
+    assert history.rows[0].raw_reading == Decimal("110")
+    assert history.rows[0].last_reading is None
+
+
+def test_history_reports_overlapping_assignments_without_aborting(scenario: Scenario) -> None:
+    scenario.definition("a")
+    scenario.meter("other", "location-a")
+    scenario.plan("planned", "a", date(2026, 2, 10), value="100")
+    scenario.conn.execute(
+        "INSERT INTO meter_assignments "
+        "(measurement_definition_id, meter_id, effective_from, multiplier) VALUES (?, ?, ?, ?)",
+        ("a", "other", "2026-02-01 00:00:00", "1"),
+    )
+    day = date(2026, 2, 10)
+    history = scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+    assert history.warning_count == 1
+    assert ReadingHistoryCode.ASSIGNMENT_UNRESOLVED in {
+        issue.code for issue in history.rows[0].issues
+    }
+    assert history.rows[0].multiplier is None
+
+
+def test_history_preserves_superseded_fault_result(scenario: Scenario) -> None:
+    scenario.definition("a")
+    scenario.meter("new", "location-a")
+    scenario.plan("before", "a", date(2026, 2, 9), value="100")
+    scenario.plan(
+        "fault",
+        "a",
+        date(2026, 2, 10),
+        at=datetime(2026, 2, 10, 4, tzinfo=UTC),
+        status=ResultStatus.METER_FAULT,
+    )
+    scenario.context.meter_replacement.register_replacement(
+        MeterReplacementInput(
+            old_meter_id="meter-a",
+            new_meter_id="new",
+            replaced_at=datetime(2026, 2, 10, 3, tzinfo=UTC),
+            old_final_reading=Decimal("110"),
+            new_initial_reading=Decimal("1"),
+            staff_id=scenario.staff_id,
+        )
+    )
+    day = date(2026, 2, 10)
+    history = scenario.context.reading_history.get_history(
+        ReadingHistoryQuery("a", day, day, include_superseded=True)
+    )
+    fault = next(row for row in history.rows if row.planned_reading_id == "fault")
+    assert fault.result_status is ResultStatus.METER_FAULT
+    assert fault.note == "試験"
+    assert {issue.code for issue in fault.issues} == {ReadingHistoryCode.SUPERSEDED}
+    assert fault.multiplier is None
+    assert history.warning_count == 0
+
+
+def test_history_rejects_malformed_database_decimal(scenario: Scenario) -> None:
+    scenario.definition("a")
+    scenario.plan("bad", "a", date(2026, 2, 10), value="100")
+    scenario.conn.execute(
+        "UPDATE reading_transactions SET raw_reading = ? WHERE planned_reading_id = ?",
+        ("not-decimal", "bad"),
+    )
+    day = date(2026, 2, 10)
+    with pytest.raises(ValidationError):
+        scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+
+
+def test_history_preserves_original_precision_after_decimal_places_change(
+    scenario: Scenario,
+) -> None:
+    scenario.definition("a")
+    scenario.plan("reading", "a", date(2026, 2, 10), value="12.3400")
+    scenario.conn.execute(
+        "UPDATE measurement_definitions SET decimal_places = ? WHERE measurement_definition_id = ?",
+        (0, "a"),
+    )
+    day = date(2026, 2, 10)
+    history = scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+    value = history.rows[0].raw_reading
+    assert value is not None
+    assert format(value, "f") == "12.3400"
 
 
 def test_replacement_and_nonmeasured_gap_coexist(scenario: Scenario) -> None:
