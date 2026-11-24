@@ -13,6 +13,7 @@ from meter_reading_mini.core.assignment_calculation import resolve_planned_calcu
 from meter_reading_mini.core.contract_models import (
     MeasurementDefinitionData,
     MeterMasterData,
+    PreviousReadingSource,
 )
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
@@ -146,7 +147,7 @@ class MobileReadingSheetService:
                 )
                 if _matches_filter(slot, sheet_filter)
             ]
-            sheet_body = self._build_sheet_body(slots) if slots else None
+            sheet_body = self._build_sheet_body(slots, business_timezone) if slots else None
         if sheet_body is None:
             raise EmptySheetError(target_business_date)
 
@@ -169,7 +170,9 @@ class MobileReadingSheetService:
             slot_count=len(slots),
         )
 
-    def _build_sheet_body(self, slots: Sequence[SheetPlannedReadingRecord]) -> dict[str, object]:
+    def _build_sheet_body(
+        self, slots: Sequence[SheetPlannedReadingRecord], business_timezone: tzinfo
+    ) -> dict[str, object]:
         meters = self._master_repository.list_sheet_meters({slot.meter_id for slot in slots})
         definitions = self._master_repository.list_sheet_measurement_definitions(
             {slot.measurement_definition_id for slot in slots}
@@ -183,13 +186,18 @@ class MobileReadingSheetService:
             "meters": [_meter_json(meter) for meter in meters],
             "definitions": [_definition_json(definition) for definition in definitions],
             "slots": [
-                self._slot_json(slot, definitions_by_id[slot.measurement_definition_id])
+                self._slot_json(
+                    slot, definitions_by_id[slot.measurement_definition_id], business_timezone
+                )
                 for slot in slots
             ],
         }
 
     def _slot_json(
-        self, slot: SheetPlannedReadingRecord, definition: MeasurementDefinitionData
+        self,
+        slot: SheetPlannedReadingRecord,
+        definition: MeasurementDefinitionData,
+        business_timezone: tzinfo,
     ) -> dict[str, object]:
         assignment, context = resolve_planned_calculation_context(
             self._assignment_repository,
@@ -213,11 +221,20 @@ class MobileReadingSheetService:
             "rollover_value": _decimal_json(assignment.rollover_value),
             "reading_session": slot.reading_session.value,
             "scheduled_at": utc_now_str(slot.scheduled_at),
+            "scheduled_local_date": slot.scheduled_at.astimezone(business_timezone)
+            .date()
+            .isoformat(),
             "reading_cycle": slot.reading_cycle.value,
             "task_state": slot.task_state.value,
             "initial_last_reading": _decimal_json(initial.reading),
             "initial_previous_scheduled_at": (
                 None if initial.scheduled_at is None else utc_now_str(initial.scheduled_at)
+            ),
+            "initial_previous_scheduled_local": (
+                initial.scheduled_at.astimezone(business_timezone).strftime("%Y-%m-%d %H:%M")
+                if initial.source is PreviousReadingSource.MEASURED
+                and initial.scheduled_at is not None
+                else None
             ),
             "initial_previous_planned_reading_id": initial.planned_reading_id,
             "previous_source": initial.source.value,
