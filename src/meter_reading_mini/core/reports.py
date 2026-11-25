@@ -144,7 +144,7 @@ def _applications(
     return tuple(applications)
 
 
-def _period_boundaries(day: date, unit: AggregationPeriodUnit) -> tuple[date, date]:
+def period_boundaries(day: date, unit: AggregationPeriodUnit) -> tuple[date, date]:
     try:
         if unit is AggregationPeriodUnit.DAY:
             return day, day + timedelta(days=1)
@@ -913,7 +913,7 @@ class AggregationReportService:
                     "業務タイムゾーンは IANA タイムゾーンで指定してください。"
                 )
             today = generated_at.astimezone(timezone).date()
-            start, nominal_end = _period_boundaries(spec.anchor, unit)
+            start, nominal_end = period_boundaries(spec.anchor, unit)
             if start > today:
                 raise ValidationError("未来の集計期間は出力できません。")
             try:
@@ -951,7 +951,7 @@ class AggregationReportService:
         periods: list[AggregationPeriod] = []
         cursor = start
         while cursor < end:
-            _, nominal_end = _period_boundaries(cursor, unit)
+            _, nominal_end = period_boundaries(cursor, unit)
             period_end = min(end, nominal_end)
             periods.append(self._build_period(data, cursor, period_end, today, unit))
             cursor = period_end
@@ -1062,7 +1062,7 @@ class AggregationReportService:
         today: date,
         unit: AggregationPeriodUnit,
     ) -> AggregationPeriod:
-        nominal_start, nominal_end = _period_boundaries(start, unit)
+        nominal_start, nominal_end = period_boundaries(start, unit)
         results = [
             _definition_result(
                 data.histories.get(definition.measurement_definition_id), definition, start, end

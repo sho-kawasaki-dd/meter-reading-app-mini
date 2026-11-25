@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import sqlite3
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,14 +17,22 @@ from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, Q
 from pytestqt.qtbot import QtBot
 from test_reports import Scenario
 
+from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.aggregation_contracts import AggregationPeriodUnit
+from meter_reading_mini.core.aggregation_export_contracts import (
+    AggregationExportPeriodSpec,
+    AggregationExportSnapshot,
+)
 from meter_reading_mini.core.assignment_calculation_settings import (
     AssignmentCalculationCorrectionInput,
 )
 from meter_reading_mini.core.contract_models import Purpose
 from meter_reading_mini.core.errors import FileOutputError, ValidationError
 from meter_reading_mini.db.repositories import SQLiteRepository
-from meter_reading_mini.ui import aggregation_export
+from meter_reading_mini.ui import aggregation_export, atomic_write
+from meter_reading_mini.ui.dialogs.aggregation_json_export_dialog import (
+    AggregationJsonExportDialog,
+)
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
@@ -88,6 +97,295 @@ def _cell(table: QTableWidget, row: int, column: int) -> str:
     item = table.item(row, column)
     assert item is not None
     return item.text()
+
+
+def _json_dialog(data: DashboardData, qtbot: QtBot) -> AggregationJsonExportDialog:
+    dialog = AggregationJsonExportDialog(data.scenario.context, data.window)
+    qtbot.addWidget(dialog)
+    return dialog
+
+
+def _json_unit(dialog: AggregationJsonExportDialog, unit: AggregationPeriodUnit) -> None:
+    dialog.unit_combo.setCurrentIndex(dialog.unit_combo.findData(unit.value))
+
+
+def test_json_button_opens_independent_dialog_without_a_report(
+    dashboard_data: DashboardData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window = dashboard_data.window
+    window.purpose_combo.setCurrentIndex(window.purpose_combo.findData(Purpose.BILLING.value))
+    window.invalidate()
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        AggregationJsonExportDialog,
+        "exec",
+        lambda dialog: (
+            opened.append((dialog.unit_combo.currentData(), dialog.period_label.text()))
+            or QDialog.DialogCode.Rejected
+        ),
+    )
+    assert window.json_button.isEnabled()
+    window.json_button.click()
+    assert opened == [("day", "2026-03-15 〜 2026-03-15 (2026-03-15)")]
+
+
+def test_json_period_controls_and_future_limits(
+    dashboard_data: DashboardData, qtbot: QtBot
+) -> None:
+    dialog = _json_dialog(dashboard_data, qtbot)
+    assert dialog.day_edit.date() == QDate(2026, 3, 15)
+    assert dialog.day_edit.maximumDate() == QDate(2026, 3, 15)
+    assert "締め前" in dialog.notice_label.text()
+    dialog.day_edit.setDate(QDate(2026, 3, 16))
+    assert dialog.day_edit.date() == QDate(2026, 3, 15)
+    dialog.day_edit.setDate(QDate(2026, 3, 14))
+    assert not dialog.notice_label.text()
+
+    _json_unit(dialog, AggregationPeriodUnit.MONTH)
+    assert dialog.month_edit.date() == QDate(2026, 3, 1)
+    assert dialog.month_edit.maximumDate() == QDate(2026, 3, 1)
+    assert dialog.period_label.text() == "2026-03-01 〜 2026-03-31 (2026年3月)"
+    assert "途中値" in dialog.notice_label.text()
+    dialog.month_edit.setDate(QDate(2026, 4, 1))
+    assert dialog.month_edit.date() == QDate(2026, 3, 1)
+    dialog.month_edit.setDate(QDate(2026, 2, 1))
+    assert dialog.period_label.text() == "2026-02-01 〜 2026-02-28 (2026年2月)"
+    assert not dialog.notice_label.text()
+
+    _json_unit(dialog, AggregationPeriodUnit.CALENDAR_YEAR)
+    assert dialog.year_edit.maximum() == dialog.year_edit.value() == 2026
+    assert dialog.period_label.text() == "2026-01-01 〜 2026-12-31 (2026年)"
+    assert "途中値" in dialog.notice_label.text()
+    dialog.year_edit.setValue(2027)
+    assert dialog.year_edit.value() == 2026
+
+    _json_unit(dialog, AggregationPeriodUnit.FISCAL_YEAR)
+    assert dialog.fiscal_year_edit.maximum() == dialog.fiscal_year_edit.value() == 2025
+    assert dialog.period_label.text() == "2025-04-01 〜 2026-03-31 (2025年度)"
+    assert "途中値" in dialog.notice_label.text()
+    dialog.fiscal_year_edit.setValue(2026)
+    assert dialog.fiscal_year_edit.value() == 2025
+
+
+def test_json_fiscal_year_defaults_to_current_year_from_april(
+    dashboard_data: DashboardData, qtbot: QtBot
+) -> None:
+    dashboard_data.scenario.context = create_app_context(
+        dashboard_data.scenario.conn, clock=lambda: datetime(2026, 4, 1, tzinfo=UTC)
+    )
+    dialog = _json_dialog(dashboard_data, qtbot)
+    _json_unit(dialog, AggregationPeriodUnit.FISCAL_YEAR)
+    assert dialog.fiscal_year_edit.value() == 2026
+    assert dialog.period_label.text() == "2026-04-01 〜 2027-03-31 (2026年度)"
+    assert "途中値" in dialog.notice_label.text()
+
+
+def test_json_cancel_and_extension_overwrite_refusal_do_not_read_or_write(
+    dashboard_data: DashboardData, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dialog = _json_dialog(dashboard_data, qtbot)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        dashboard_data.scenario.context.aggregation_reports,
+        "get_export_snapshot",
+        lambda spec: calls.append(spec),
+    )
+    names: list[str] = []
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda _parent, _title, default, _filter: (names.append(default) or "", ""),
+    )
+    dialog.save_button.click()
+    assert names == ["meter-usage-day-2026-03-15-20260315_210000.json"]
+    assert calls == [] and list(tmp_path.iterdir()) == [] and dashboard_data.messages == []
+
+    target = tmp_path / "data.json"
+    target.write_text("元データ", encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(tmp_path / "data"), ""))
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.No)
+    dialog.save_button.click()
+    assert calls == [] and target.read_text(encoding="utf-8") == "元データ"
+    assert dashboard_data.messages == []
+
+
+def test_json_extension_completion_confirms_before_replacing_existing_file(
+    dashboard_data: DashboardData, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dialog = _json_dialog(dashboard_data, qtbot)
+    target = tmp_path / "existing.json"
+    target.write_text("元データ", encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *_args: (str(target.with_suffix("")), "")
+    )
+    questions: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *_args: (
+            questions.append(text) or QMessageBox.StandardButton.Yes
+        ),
+    )
+    dialog.save_button.click()
+    assert len(questions) == 1 and target.name in questions[0]
+    assert json.loads(target.read_text(encoding="utf-8"))["kind"] == "mrm-usage-aggregation"
+    assert dashboard_data.messages[0][0] == "information"
+
+
+@pytest.mark.parametrize(
+    ("unit", "start", "nominal_end"),
+    [
+        (AggregationPeriodUnit.DAY, "2026-03-15", "2026-03-16"),
+        (AggregationPeriodUnit.MONTH, "2026-03-01", "2026-04-01"),
+        (AggregationPeriodUnit.CALENDAR_YEAR, "2026-01-01", "2027-01-01"),
+        (AggregationPeriodUnit.FISCAL_YEAR, "2025-04-01", "2026-04-01"),
+    ],
+)
+def test_json_output_for_each_period_unit(
+    unit: AggregationPeriodUnit,
+    start: str,
+    nominal_end: str,
+    dashboard_data: DashboardData,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dialog = _json_dialog(dashboard_data, qtbot)
+    _json_unit(dialog, unit)
+    target = tmp_path / "output.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(target), ""))
+    dialog.save_button.click()
+    document = json.loads(target.read_text(encoding="utf-8"))
+    period = document["period"]
+    assert period["unit"] == unit.value
+    assert period["nominal_start"] == period["start"] == start
+    assert period["nominal_end"] == nominal_end
+    assert period["end"] == "2026-03-16"
+    assert period["is_in_progress"] is (unit is not AggregationPeriodUnit.DAY)
+    assert period["includes_current_business_date"] is True
+    assert dashboard_data.messages[0][0] == "information"
+
+
+def test_json_save_rechecks_snapshot_after_business_day_changes(
+    dashboard_data: DashboardData, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    now = [datetime(2026, 3, 15, 14, 59, tzinfo=UTC)]
+    dashboard_data.scenario.context = create_app_context(
+        dashboard_data.scenario.conn, clock=lambda: now[0]
+    )
+    dialog = _json_dialog(dashboard_data, qtbot)
+    _json_unit(dialog, AggregationPeriodUnit.MONTH)
+    target = tmp_path / "all.json"
+    defaults: list[str] = []
+    snapshots: list[AggregationExportSnapshot] = []
+    get_snapshot = dashboard_data.scenario.context.aggregation_reports.get_export_snapshot
+
+    def snapshot_once(spec: AggregationExportPeriodSpec) -> AggregationExportSnapshot:
+        snapshot = get_snapshot(spec)
+        snapshots.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr(
+        dashboard_data.scenario.context.aggregation_reports, "get_export_snapshot", snapshot_once
+    )
+
+    def choose(_parent: object, _title: str, default: str, _filter: str) -> tuple[str, str]:
+        defaults.append(default)
+        now[0] = datetime(2026, 3, 15, 15, 1, tzinfo=UTC)
+        return str(target.with_suffix("")), ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    dialog.save_button.click()
+    assert defaults == ["meter-usage-month-2026-03-01-20260315_235900.json"]
+    raw = target.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf") and b"\r\n" not in raw
+    document = json.loads(raw)
+    assert document["generated_at"] == "2026-03-15 15:01:00"
+    assert document["generated_at_local"] == "2026-03-16T00:01:00+09:00"
+    assert document["as_of_business_date"] == "2026-03-16"
+    assert document["period"]["start"] == "2026-03-01"
+    assert document["period"]["end"] == "2026-03-17"
+    assert len(snapshots) == 1
+    assert {item["purpose"] for item in document["results"]} == {"operational", "billing"}
+    assert len(document["results"]) == 3
+    assert dashboard_data.messages == [
+        (
+            "information",
+            f"JSON を保存しました。\n保存先: {target}\n"
+            "集計期間: 2026-03-01 〜 2026-03-16\n出力件数: 3",
+        )
+    ]
+
+
+def test_json_rejects_period_that_becomes_future_after_save_selection(
+    dashboard_data: DashboardData, qtbot: QtBot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    now = [datetime(2026, 3, 15, 12, tzinfo=UTC)]
+    dashboard_data.scenario.context = create_app_context(
+        dashboard_data.scenario.conn, clock=lambda: now[0]
+    )
+    dialog = _json_dialog(dashboard_data, qtbot)
+    target = tmp_path / "old.json"
+    target.write_text("元データ", encoding="utf-8")
+
+    def choose(*_args: object) -> tuple[str, str]:
+        now[0] = datetime(2026, 3, 14, 12, tzinfo=UTC)
+        return str(target), ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose)
+    dialog.save_button.click()
+    assert target.read_text(encoding="utf-8") == "元データ"
+    assert len(dashboard_data.messages) == 1
+    assert dashboard_data.messages[0][0] == "warning"
+    assert "未来" in dashboard_data.messages[0][1]
+
+
+@pytest.mark.parametrize("failure", ["domain", "write", "unexpected"])
+def test_json_failures_preserve_existing_file_and_do_not_report_success(
+    failure: str,
+    dashboard_data: DashboardData,
+    qtbot: QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dialog = _json_dialog(dashboard_data, qtbot)
+    target = tmp_path / "existing.json"
+    target.write_text("元データ", encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(target), ""))
+    if failure == "domain":
+
+        def fail_snapshot(_spec: object) -> None:
+            raise ValidationError("集計データが不正です。")
+
+        monkeypatch.setattr(
+            dashboard_data.scenario.context.aggregation_reports,
+            "get_export_snapshot",
+            fail_snapshot,
+        )
+    elif failure == "write":
+
+        def fail_replace(_source: object, _target: object) -> None:
+            raise OSError("書込失敗")
+
+        monkeypatch.setattr(atomic_write.os, "replace", fail_replace)
+    else:
+
+        def fail_unexpected(_spec: object) -> None:
+            raise RuntimeError("予期しない障害")
+
+        monkeypatch.setattr(
+            dashboard_data.scenario.context.aggregation_reports,
+            "get_export_snapshot",
+            fail_unexpected,
+        )
+    dialog.save_button.click()
+    assert target.read_text(encoding="utf-8") == "元データ"
+    assert list(tmp_path.iterdir()) == [target]
+    assert len(dashboard_data.messages) == 1
+    kind, message = dashboard_data.messages[0]
+    assert kind == ("critical" if failure == "unexpected" else "warning")
+    expected = {"domain": "不正", "write": "アクセス権", "unexpected": "エラー"}
+    assert expected[failure] in message
 
 
 def test_dashboard_purpose_location_partial_and_disabled_definition(

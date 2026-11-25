@@ -38,7 +38,7 @@ def _decimal(value: Decimal | None) -> str | None:
     return text
 
 
-def _label(unit: AggregationPeriodUnit, start: date) -> str:
+def aggregation_period_label(unit: AggregationPeriodUnit, start: date) -> str:
     if unit is AggregationPeriodUnit.DAY:
         return start.isoformat()
     if unit is AggregationPeriodUnit.MONTH:
@@ -248,7 +248,7 @@ def build_aggregation_json(snapshot: AggregationExportSnapshot) -> str:
         "as_of_business_date": snapshot.as_of_business_date.isoformat(),
         "period": {
             "unit": period.unit.value,
-            "label": _label(period.unit, period.nominal_start),
+            "label": aggregation_period_label(period.unit, period.nominal_start),
             "nominal_start": period.nominal_start.isoformat(),
             "nominal_end": period.nominal_end.isoformat(),
             "start": period.start.isoformat(),
