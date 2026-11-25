@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import tzinfo
 from decimal import Decimal
 
 from pydantic import ValidationError as PydanticValidationError
@@ -33,7 +34,7 @@ HEADERS = (
     "場所",
     "測定項目",
     "業務日",
-    "検針時間",
+    "予定日時",
     "現在の枠状態",
     "採否区分",
     "既存結果",
@@ -115,12 +116,17 @@ def _result_text(
     return "\n".join(lines)
 
 
-def _previous_text(previous: InitialPreviousReading | None) -> str:
+def _previous_text(previous: InitialPreviousReading | None, timezone: tzinfo) -> str:
     if previous is None:
         return "未算出"
     source = PREVIOUS_SOURCE_LABELS[previous.source]
+    details: list[str] = []
+    if previous.scheduled_at is not None:
+        details.append(previous.scheduled_at.astimezone(timezone).strftime("%Y/%m/%d %H:%M"))
     if previous.planned_reading_id is not None:
-        source += f": {previous.planned_reading_id}"
+        details.append(previous.planned_reading_id)
+    if details:
+        source += f": {' / '.join(details)}"
     return f"{_decimal_text(previous.reading)}（{source}）"
 
 
@@ -137,7 +143,7 @@ def _warning_text(warning: MobileReadingWarning) -> str:
 
 
 def _row_values(
-    row: MobileReadingPreviewRow, recalculated_existing_ids: frozenset[str]
+    row: MobileReadingPreviewRow, recalculated_existing_ids: frozenset[str], timezone: tzinfo
 ) -> tuple[str, ...]:
     target = row.target
     unit = target.unit if target is not None else ""
@@ -216,14 +222,16 @@ def _row_values(
         target.location_name if target is not None else "不明",
         target.display_name if target is not None else "不明",
         target.business_date.isoformat() if target is not None else "不明",
-        target.reading_session.value if target is not None else "不明",
+        target.scheduled_at.astimezone(timezone).strftime("%Y/%m/%d %H:%M")
+        if target is not None
+        else "不明",
         TASK_STATE_LABELS[target.task_state] if target is not None else "不明",
         _DISPOSITION_LABELS[row.disposition],
         existing_text,
         input_text,
-        _previous_text(calculation.previous if calculation is not None else None),
+        _previous_text(calculation.previous if calculation is not None else None, timezone),
         final_text,
-        _previous_text(final.previous if final is not None else None),
+        _previous_text(final.previous if final is not None else None, timezone),
         "\n".join(details) if details else "なし",
     )
 
@@ -261,12 +269,18 @@ class MobileReadingPreviewTableModel(QAbstractTableModel):
         self._readings: tuple[MobileReadingPreviewRow, ...] = ()
         self._rows: tuple[tuple[str, ...], ...] = ()
 
-    def set_preview(self, preview: MobileReadingImportPreview | None) -> None:
-        readings = preview.rows if preview is not None else ()
-        recalculated = (
-            preview.effects.recalculated_existing_ids if preview is not None else frozenset()
-        )
-        rows = tuple(_row_values(row, recalculated) for row in readings)
+    def set_preview(
+        self, preview: MobileReadingImportPreview | None, *, timezone: tzinfo | None = None
+    ) -> None:
+        if preview is None:
+            readings = ()
+            rows = ()
+        else:
+            if timezone is None:
+                raise ValueError("プレビューの表示には業務タイムゾーンが必要です。")
+            readings = preview.rows
+            recalculated = preview.effects.recalculated_existing_ids
+            rows = tuple(_row_values(row, recalculated, timezone) for row in readings)
         self.beginResetModel()
         self._readings = readings
         self._rows = rows

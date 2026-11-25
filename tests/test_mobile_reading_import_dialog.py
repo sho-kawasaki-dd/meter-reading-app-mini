@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from conftest import SheetBrowser
@@ -455,6 +456,93 @@ def test_preview_failure_clears_old_state_before_error_notification(
         assert "プレビュー業務エラー" in messages.warnings[-1]
 
 
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_timezone_failure_clears_old_preview_before_error_notification(
+    import_data: ImportData,
+    qtbot: QtBot,
+    messages: Messages,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    unexpected: bool,
+) -> None:
+    dialog = _dialog(import_data, qtbot)
+    _select_staff(dialog)
+    _preview(dialog, _payload(_entry("early", "110", 8)))
+    assert dialog.preview_model.rowCount() == 1 and dialog.commit_button.isEnabled()
+    before = tuple(import_data.connection.iterdump())
+
+    def fail() -> ZoneInfo:
+        assert dialog.preview_model.rowCount() == 0 and not dialog.commit_button.isEnabled()
+        if unexpected:
+            raise RuntimeError("タイムゾーン取得失敗")
+        raise ValidationError("タイムゾーン設定エラー")
+
+    monkeypatch.setattr(import_data.services.timezone_settings, "get_timezone", fail)
+    dialog.preview_button.click()
+
+    assert dialog.preview_model.rowCount() == 0 and not dialog.commit_button.isEnabled()
+    assert tuple(import_data.connection.iterdump()) == before
+    if unexpected:
+        assert "予期しないエラー" in messages.errors[-1]
+        assert "タイムゾーン取得失敗" in caplog.text
+    else:
+        assert "タイムゾーン設定エラー" in messages.warnings[-1]
+
+
+@pytest.mark.parametrize(
+    ("timezone_name", "previous_time", "scheduled_time"),
+    [
+        ("Asia/Tokyo", "2026/02/03 22:00", "2026/02/05 06:00"),
+        ("America/New_York", "2026/02/03 08:00", "2026/02/04 16:00"),
+    ],
+)
+def test_preview_shows_scheduled_and_previous_local_datetime(
+    memory_conn: sqlite3.Connection,
+    sqlite_repository: SQLiteRepository,
+    qtbot: QtBot,
+    messages: Messages,
+    timezone_name: str,
+    previous_time: str,
+    scheduled_time: str,
+) -> None:
+    writer, sync = build_services(memory_conn, sqlite_repository)
+    services = create_app_context(memory_conn, clock=lambda: NOW)
+    services.timezone_settings.save_timezone(timezone_name)
+    previous_at = datetime(2026, 2, 3, 13, tzinfo=UTC)
+    scheduled_at = datetime(2026, 2, 4, 21, tzinfo=UTC)
+    create_plan(sqlite_repository, "previous-day", previous_at)
+    create_plan(sqlite_repository, "next-day", scheduled_at)
+    writer.save_manual_reading(
+        ManualReadingInput(
+            "previous-day", ResultStatus.MEASURED, previous_at, Decimal("100"), None
+        ),
+        staff_id=STAFF_ID,
+    )
+    data = ImportData(memory_conn, sqlite_repository, writer, sync, services)
+    dialog = _dialog(data, qtbot)
+    _preview(dialog, _payload(_entry("next-day", "110", 8), _entry("missing", "1", 8)))
+
+    assert _cell(dialog, 0, "業務日") == "2026-02-04"
+    assert _cell(dialog, 0, "予定日時") == scheduled_time
+    expected_previous = f"100（前回実測: {previous_time} / previous-day）"
+    assert _cell(dialog, 0, "入力計算時の前回値・出所") == expected_previous
+    assert _cell(dialog, 0, "最終見込の前回値・出所") == expected_previous
+    assert _cell(dialog, 1, "予定日時") == "不明"
+    assert messages.warnings == messages.errors == []
+
+
+def test_preview_model_requires_explicit_timezone(
+    import_data: ImportData, qtbot: QtBot, messages: Messages
+) -> None:
+    dialog = _dialog(import_data, qtbot)
+    result = parse_mobile_reading_result(_text(_payload(_entry("early", "110", 8))))
+    preview = import_data.services.mobile_reading_import.preview(result)
+    with pytest.raises(ValueError, match="タイムゾーン"):
+        dialog.preview_model.set_preview(preview)
+    assert dialog.preview_model.rowCount() == 0
+    assert messages.warnings == messages.errors == []
+
+
 def test_input_changed_during_preview_cannot_restore_an_old_snapshot(
     import_data: ImportData, qtbot: QtBot, messages: Messages
 ) -> None:
@@ -566,7 +654,7 @@ def test_preview_compares_excluded_input_and_recalculated_existing_result_and_co
     assert _cell(dialog, 0, "場所") == "試験場所"
     assert _cell(dialog, 0, "測定項目") == "試験測定対象"
     assert _cell(dialog, 0, "業務日") == "2026-02-04"
-    assert _cell(dialog, 0, "検針時間") == "08:00"
+    assert _cell(dialog, 0, "予定日時") == "2026/02/04 23:00"
     assert _cell(dialog, 0, "現在の枠状態") == "完了"
     assert _cell(dialog, 0, "採否区分") == "無視: 重複"
     assert "使用量: 20" in _cell(dialog, 0, "既存結果")
@@ -574,8 +662,10 @@ def test_preview_compares_excluded_input_and_recalculated_existing_result_and_co
     assert "使用量: 20" in _cell(dialog, 0, "入力結果")
     assert "使用量: 10" in _cell(dialog, 0, "最終見込結果")
     assert "既存結果を保持（間接再計算後）" in _cell(dialog, 0, "最終見込結果")
-    assert "110" in _cell(dialog, 0, "最終見込の前回値・出所")
-    assert "early" in _cell(dialog, 0, "最終見込の前回値・出所")
+    assert _cell(dialog, 0, "入力計算時の前回値・出所") == (
+        "100（前回実測: 2026/02/04 12:00 / previous）"
+    )
+    assert _cell(dialog, 0, "最終見込の前回値・出所") == "110（前回実測: 2026/02/04 17:00 / early）"
     warnings = _cell(dialog, 0, "警告・理由")
     assert "業務日" in warnings and "検針時間" in warnings and "周期区分" in warnings
     assert "シート: 週次 / 予定枠: 日次" in warnings
