@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from types import EllipsisType
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from meter_reading_mini.core.mobile_reading import render_sheet_html
 
@@ -73,22 +75,39 @@ def slot(
     last_reading: str | None = None,
     previous_scheduled_at: str | None = None,
     previous_planned_reading_id: str | None = None,
+    scheduled_local_date: str | None = None,
+    initial_previous_scheduled_local: str | None | EllipsisType = ...,
     assignment_effective_from: str = "2026-02-01 00:00:00",
     multiplier: str | None = None,
     rollover_value: str | None = None,
 ) -> dict[str, Any]:
     hour, minute = int(session[:2]), int(session[3:])
     default_utc = datetime(2026, 2, 4, hour, minute) - timedelta(hours=9)
+    scheduled = scheduled_at or default_utc.strftime("%Y-%m-%d %H:%M:%S")
+    local_scheduled = (
+        datetime.fromisoformat(scheduled).replace(tzinfo=UTC).astimezone(ZoneInfo("Asia/Tokyo"))
+    )
+    if initial_previous_scheduled_local is ...:
+        initial_previous_scheduled_local = (
+            datetime.fromisoformat(previous_scheduled_at)
+            .replace(tzinfo=UTC)
+            .astimezone(ZoneInfo("Asia/Tokyo"))
+            .strftime("%Y-%m-%d %H:%M")
+            if previous_source == "measured" and previous_scheduled_at is not None
+            else None
+        )
     result = {
         "planned_reading_id": planned_reading_id,
         "measurement_definition_id": definition_id,
         "meter_id": meter_id,
         "reading_session": session,
-        "scheduled_at": scheduled_at or default_utc.strftime("%Y-%m-%d %H:%M:%S"),
+        "scheduled_at": scheduled,
+        "scheduled_local_date": scheduled_local_date or local_scheduled.strftime("%Y-%m-%d"),
         "reading_cycle": cycle,
         "task_state": task_state,
         "initial_last_reading": last_reading,
         "initial_previous_scheduled_at": previous_scheduled_at,
+        "initial_previous_scheduled_local": initial_previous_scheduled_local,
         "initial_previous_planned_reading_id": previous_planned_reading_id,
         "previous_source": previous_source,
         "assignment_effective_from": assignment_effective_from,

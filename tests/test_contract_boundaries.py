@@ -218,6 +218,15 @@ def test_mobile_reading_assets_load_and_have_no_external_dependencies() -> None:
 def test_sheet_script_does_not_use_floating_point_for_business_numbers() -> None:
     script = read_sheet_asset("sheet.js")
 
+    # 予定日の年月日は Date.UTC のための整数であり、業務数値ではない。
+    for part in (
+        "year = Number(dateParts[1])",
+        "month = Number(dateParts[2])",
+        "day = Number(dateParts[3])",
+    ):
+        assert script.count(part) == 1
+        script = script.replace(part, "")
+
     for forbidden in ("parseFloat", "parseInt", "Number(", "toFixed", "Math.round"):
         assert forbidden not in script, forbidden
 

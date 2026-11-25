@@ -10,8 +10,14 @@
   };
   var PHASE_LABELS = { lag: "遅れ (lag)", lead: "進み (lead)", unity: "1 (unity)" };
   var CATEGORY_ORDER = { electricity: 0, gas: 1, water: 2 };
-  var DAILY_CYCLES = { daily_1x: true, daily_2x: true, daily_3x: true };
-  var NONDAILY_TAB = "nondaily";
+  var CYCLE_LABELS = {
+    daily_1x: "日次1回",
+    daily_2x: "日次2回",
+    daily_3x: "日次3回",
+    weekly: "週次",
+    monthly: "月次",
+    every_two_months: "隔月",
+  };
   var ALL_TAB = "all";
   var UNSET_LOCATION = "__unset__";
   var PF_SCHEMA = "power_factor_percent_phase";
@@ -124,6 +130,36 @@
     return 0;
   }
 
+  function formatScheduledDate(dateText, timeText) {
+    if (typeof dateText !== "string" || typeof timeText !== "string") {
+      return null;
+    }
+    var dateParts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateText);
+    if (!dateParts || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(timeText)) {
+      return null;
+    }
+    var year = Number(dateParts[1]);
+    var month = Number(dateParts[2]);
+    var day = Number(dateParts[3]);
+    var date = new Date(Date.UTC(2000, month - 1, day));
+    date.setUTCFullYear(year);
+    if (
+      year === 0 ||
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) {
+      return null;
+    }
+    return (
+      dateParts[2] + "/" + dateParts[3] + "(" + "日月火水木金土"[date.getUTCDay()] + ") " + timeText
+    );
+  }
+
+  function scheduledLabel(dateText, timeText) {
+    return formatScheduledDate(dateText, timeText) || "予定日時不明";
+  }
+
   var slots = sheet.slots.map(function (base) {
     var definition = definitions[base.measurement_definition_id];
     var locationKey = definition.location_id ? definition.location_id : UNSET_LOCATION;
@@ -133,7 +169,7 @@
       definition: definition,
       meter: meters[base.meter_id],
       locationKey: locationKey,
-      tabKey: DAILY_CYCLES[base.reading_cycle] ? "s:" + base.reading_session : NONDAILY_TAB,
+      tabKey: "d:" + base.scheduled_local_date + "T" + base.reading_session,
       state: {
         result_status: "measured",
         raw: "",
@@ -286,6 +322,7 @@
         kind: "carried",
         reading: carried.state.raw.trim(),
         fromSlotId: carried.id,
+        fromDate: carried.base.scheduled_local_date,
         fromSession: carried.base.reading_session,
       };
     }
@@ -293,7 +330,6 @@
       kind: base.previous_source,
       reading: base.initial_last_reading,
       fromSlotId: null,
-      fromSession: null,
     };
   }
 
@@ -492,6 +528,9 @@
   }
 
   function compareSlotsForDisplay(a, b) {
+    if (a.tabKey !== b.tabKey) {
+      return a.tabKey < b.tabKey ? -1 : 1;
+    }
     var rank = categoryRank(a.definition) - categoryRank(b.definition);
     if (rank !== 0) {
       return rank;
@@ -526,7 +565,14 @@
 
     var head = element("div", "card-head");
     head.appendChild(element("h3", "card-title", slot.definition.display_name));
-    head.appendChild(element("span", "card-session", slot.base.reading_session));
+    head.appendChild(
+      element(
+        "span",
+        "card-session",
+        scheduledLabel(slot.base.scheduled_local_date, slot.base.reading_session)
+      )
+    );
+    head.appendChild(element("span", "card-cycle", CYCLE_LABELS[slot.base.reading_cycle]));
     ui.stateBadge = element("span", "card-state");
     head.appendChild(ui.stateBadge);
     card.appendChild(head);
@@ -688,12 +734,23 @@
           previous.reading +
           " " +
           unit +
-          " (同日 " +
-          previous.fromSession +
+          " (" +
+          scheduledLabel(previous.fromDate, previous.fromSession) +
           " の入力値を引き継ぎ)"
         );
-      case "measured":
-        return "前回値: " + previous.reading + " " + unit;
+      case "measured": {
+        var local = slot.base.initial_previous_scheduled_local;
+        var match =
+          typeof local === "string" && /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})$/.exec(local);
+        var label = match && formatScheduledDate(match[1], match[2]);
+        return (
+          "前回値: " +
+          previous.reading +
+          " " +
+          unit +
+          (label ? " (" + label + " の実測)" : " (実測の参照元日時を確認できません)")
+        );
+      }
       case "replacement_initial":
         return "前回値: " + previous.reading + " " + unit + " (メーター交換時の初期値)";
       case "definition_initial":
@@ -788,24 +845,19 @@
   }
 
   function tabDefinitions() {
-    var sessions = {};
-    var hasNonDaily = false;
+    var dates = {};
     slots.forEach(function (slot) {
-      if (slot.tabKey === NONDAILY_TAB) {
-        hasNonDaily = true;
-      } else {
-        sessions[slot.base.reading_session] = true;
-      }
+      dates[slot.tabKey] = scheduledLabel(
+        slot.base.scheduled_local_date,
+        slot.base.reading_session
+      );
     });
     var list = [{ key: ALL_TAB, label: "すべて" }];
-    Object.keys(sessions)
+    Object.keys(dates)
       .sort()
-      .forEach(function (session) {
-        list.push({ key: "s:" + session, label: session });
+      .forEach(function (key) {
+        list.push({ key: key, label: dates[key] });
       });
-    if (hasNonDaily) {
-      list.push({ key: NONDAILY_TAB, label: "週次・月次・隔月" });
-    }
     return list;
   }
 
@@ -823,17 +875,16 @@
     return { total: total, done: done };
   }
 
-  // 未消化の枠が残る最も早い日次検針枠、なければ非日次、すべて消化済みなら「すべて」。
+  // 未確認の枠が残る最も早い日時、すべて確認済みなら「すべて」。
   function initialTab() {
     var list = tabDefinitions();
     for (var index = 1; index < list.length; index += 1) {
       var count = countFor(list[index].key);
-      if (list[index].key !== NONDAILY_TAB && count.done < count.total) {
+      if (count.done < count.total) {
         return list[index].key;
       }
     }
-    var nonDaily = countFor(NONDAILY_TAB);
-    return nonDaily.done < nonDaily.total ? NONDAILY_TAB : ALL_TAB;
+    return ALL_TAB;
   }
 
   function updateTabs() {
@@ -961,7 +1012,11 @@
 
   function centerTab(key) {
     var button = tabButtons[key];
-    var left = button.offsetLeft - (tabsList.clientWidth - button.offsetWidth) / 2;
+    var left =
+      tabsList.scrollLeft +
+      button.getBoundingClientRect().left -
+      tabsList.getBoundingClientRect().left -
+      (tabsList.clientWidth - button.offsetWidth) / 2;
     tabsList.scrollLeft = Math.max(0, left);
   }
 
@@ -973,7 +1028,7 @@
 
   function buildHeader() {
     var header = element("header", "sheet-header");
-    header.appendChild(element("h1", "", "検針シート " + sheet.business_date));
+    header.appendChild(element("h1", "", "検針シート 業務日 " + sheet.business_date));
     header.appendChild(
       element(
         "p",
@@ -2038,6 +2093,7 @@
           );
         }
         applyDraftStates(validated.states, validated.revision);
+        selectTab(initialTab());
       })
       .catch(function (error) {
         showStorageFailure(
@@ -2406,7 +2462,7 @@
 
   function buildNavigation() {
     tabsBar = element("nav", "tabs-bar");
-    tabsBar.setAttribute("aria-label", "検針時間・周期");
+    tabsBar.setAttribute("aria-label", "予定日・検針時間");
     tabsList = element("div", "tabs");
     tabsList.setAttribute("role", "tablist");
     tabDefinitions().forEach(function (tab) {

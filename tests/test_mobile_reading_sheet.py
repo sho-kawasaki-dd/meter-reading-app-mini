@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, tzinfo
 from decimal import Decimal
 from functools import partial
 from typing import Any
@@ -486,24 +486,25 @@ def _build_sheet_service(
     repository: SQLiteRepository,
     *,
     now: datetime = NOW,
+    business_timezone: tzinfo = JST,
 ) -> MobileReadingSheetService:
     transaction_factory = partial(transaction, conn)
     release_offsets = ReleaseOffsetSettingsService(
         repository,
         recomposition_repository=repository,
         transaction_factory=transaction_factory,
-        current_business_date_provider=lambda: now.astimezone(JST).date(),
+        current_business_date_provider=lambda: now.astimezone(business_timezone).date(),
         clock=lambda: now,
     )
     return MobileReadingSheetService(
         planned_reading_generator=PlannedReadingGeneratorService(
             repository,
             release_date_calculator=release_offsets,
-            scheduled_timezone_provider=lambda: JST,
+            scheduled_timezone_provider=lambda: business_timezone,
         ),
         planned_reading_lifecycle_service=PlannedReadingLifecycleService(
             repository,
-            current_datetime_provider=lambda: now.astimezone(JST),
+            current_datetime_provider=lambda: now.astimezone(business_timezone),
             cutoff_time_provider=lambda: time(7),
         ),
         task_repository=repository,
@@ -512,7 +513,7 @@ def _build_sheet_service(
         assignment_repository=repository,
         boundary_repository=repository,
         transaction_factory=transaction_factory,
-        timezone_provider=lambda: JST,
+        timezone_provider=lambda: business_timezone,
         clock=lambda: now,
         sheet_id_factory=lambda: SHEET_ID,
     )
@@ -603,10 +604,12 @@ def test_create_sheet_embeds_auto_closed_slot_and_inactive_masters(
             "rollover_value": None,
             "reading_session": "08:00",
             "scheduled_at": "2026-02-02 23:00:00",
+            "scheduled_local_date": "2026-02-03",
             "reading_cycle": "daily_1x",
             "task_state": "auto_closed",
             "initial_last_reading": None,
             "initial_previous_scheduled_at": None,
+            "initial_previous_scheduled_local": None,
             "initial_previous_planned_reading_id": None,
             "previous_source": "none",
         }
@@ -641,6 +644,81 @@ def test_create_sheet_embeds_auto_closed_slot_and_inactive_masters(
         }
     ]
     assert [slot["planned_reading_id"] for slot in inactive["slots"]] == [slot_id]
+
+
+def test_sheet_local_dates_follow_day_offsets_and_one_timezone_snapshot(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    for definition_id, session, offset in (("before", "06:00", -1), ("after", "22:00", 1)):
+        _add_definition(
+            conn,
+            repository,
+            definition_id,
+            cycle=ReadingCycle.DAILY_1X,
+            schedule_json=json.dumps(
+                {"reading_sessions": [{"reading_session": session, "day_offset": offset}]}
+            ),
+        )
+    MeasurementDefinitionService(
+        repository, repository, repository, transaction_factory=partial(transaction, conn)
+    ).set_initial_reading(DEFINITION_ID, Decimal("10"))
+    service = _build_sheet_service(conn, repository)
+    timezone_calls: list[tzinfo] = []
+
+    def timezone_provider() -> tzinfo:
+        timezone_calls.append(JST)
+        return JST
+
+    monkeypatch.setattr(service, "_timezone_provider", timezone_provider)
+    data = _extract_data(service.create_sheet(date(2026, 2, 4)).html)
+    slots = {slot["measurement_definition_id"]: slot for slot in data["slots"]}
+
+    assert timezone_calls == [JST]
+    assert data["generated_at_local"] == "2026-02-04 12:00:00"
+    assert (slots["before"]["scheduled_at"], slots["before"]["scheduled_local_date"]) == (
+        "2026-02-02 21:00:00",
+        "2026-02-03",
+    )
+    assert (slots["after"]["scheduled_at"], slots["after"]["scheduled_local_date"]) == (
+        "2026-02-05 13:00:00",
+        "2026-02-05",
+    )
+    assert slots[DEFINITION_ID]["previous_source"] == "definition_initial"
+    assert all(slot["initial_previous_scheduled_local"] is None for slot in slots.values())
+
+
+def test_sheet_local_dates_and_previous_measured_time_across_dst(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, sync_service = build_services(conn, repository)
+    _add_definition(conn, repository, "dst", cycle=ReadingCycle.DAILY_1X, schedule_json=DAILY_0800)
+    service = _build_sheet_service(
+        conn,
+        repository,
+        now=datetime(2026, 3, 9, 16, tzinfo=UTC),
+        business_timezone=ZoneInfo("America/New_York"),
+    )
+    service.create_sheet(date(2026, 3, 8))
+    previous_id = _slot_id("dst", "2026-03-07", "0800")
+    response = sync_service.sync(
+        sync_request(mobile_submission(previous_id, "10")), confirmation_context()
+    )
+    assert response.accepted_reading_items == 1
+
+    data = _extract_data(service.create_sheet(date(2026, 3, 8)).html)
+    slot = next(slot for slot in data["slots"] if slot["measurement_definition_id"] == "dst")
+
+    assert data["generated_at_local"] == "2026-03-09 12:00:00"
+    assert slot["scheduled_at"] == "2026-03-08 12:00:00"
+    assert slot["scheduled_local_date"] == "2026-03-08"
+    assert slot["previous_source"] == "measured"
+    assert slot["initial_previous_scheduled_at"] == "2026-03-07 13:00:00"
+    assert slot["initial_previous_scheduled_local"] == "2026-03-07 08:00"
+    assert slot["initial_previous_planned_reading_id"] == previous_id
 
 
 def test_sheet_excludes_completed_and_superseded_slots_and_their_masters(
@@ -872,6 +950,7 @@ def test_initial_previous_reading_uses_measured_slot_from_the_same_day(
     assert twice["previous_source"] == "measured"
     assert twice["initial_last_reading"] == "40.0"
     assert twice["initial_previous_scheduled_at"] == "2026-02-03 23:00:00"
+    assert twice["initial_previous_scheduled_local"] == "2026-02-04 08:00"
     assert twice["initial_previous_planned_reading_id"] == morning_id
     assert all(s["measurement_definition_id"] != DEFINITION_ID for s in data["slots"])
 
@@ -882,6 +961,7 @@ def test_initial_previous_reading_uses_measured_slot_from_the_same_day(
     assert carried["previous_source"] == "measured"
     assert carried["initial_last_reading"] == "100.50"
     assert carried["initial_previous_scheduled_at"] == "2026-02-02 23:00:00"
+    assert carried["initial_previous_scheduled_local"] == "2026-02-03 08:00"
     assert carried["initial_previous_planned_reading_id"] == previous_day_id
 
 
@@ -1021,6 +1101,7 @@ def test_replacement_boundary_sets_initial_previous_reading_and_supersedes_old_s
         assert slot["previous_source"] == source
         assert slot["initial_last_reading"] == reading
         assert slot["initial_previous_scheduled_at"] is None
+        assert slot["initial_previous_scheduled_local"] is None
         assert slot["initial_previous_planned_reading_id"] is None
     assert [meter["meter_id"] for meter in data["meters"]] == ["replacement-meter"]
 

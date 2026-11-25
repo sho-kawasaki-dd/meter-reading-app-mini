@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
 
 import pytest
 from conftest import SheetBrowser
+from mobile_draft_helpers import export_draft, import_text, reload_and_wait, wait_saved
 from mobile_sheet_helpers import definition, meter, sheet_html, simple_sheet_html, slot
 from playwright.sync_api import Locator, Page, expect
 
@@ -72,34 +74,29 @@ def test_notice_and_header_are_shown(sheet_browser: SheetBrowser) -> None:
     page = sheet_browser.open_html(simple_sheet_html())
 
     expect(page.locator("#app .notice")).to_contain_text("Chrome で開いてください")
-    expect(page.locator(".sheet-header h1")).to_have_text("検針シート 2026-02-04")
+    expect(page.locator(".sheet-header h1")).to_have_text("検針シート 業務日 2026-02-04")
     expect(page.locator(".sheet-meta")).to_contain_text("出力日時 2026-02-04 12:00:00")
 
 
-def test_tabs_group_sessions_and_non_daily_slots_with_progress_badges(
+def test_tabs_group_all_cycles_by_date_and_session_with_progress_badges(
     sheet_browser: SheetBrowser,
 ) -> None:
     page = sheet_browser.open_html(multi_session_html())
 
     assert tab_labels(page) == [
         "すべて (0/5)",
-        "08:00 (0/1)",
-        "14:00 (0/1)",
-        "22:00 (0/1)",
-        "週次・月次・隔月 (0/2)",
+        "02/04(水) 08:00 (0/2)",
+        "02/04(水) 14:00 (0/2)",
+        "02/04(水) 22:00 (0/1)",
     ]
-    expect(page.locator('.tab[data-tab="s:08:00"]')).to_have_attribute("aria-selected", "true")
-    assert visible_slot_ids(page) == ["d-0800"]
+    expect(page.locator(".tabs-bar")).to_have_attribute("aria-label", "予定日・検針時間")
+    expect(page.locator('.tab[data-tab="d:2026-02-04T08:00"]')).to_have_attribute(
+        "aria-selected", "true"
+    )
+    assert sorted(visible_slot_ids(page)) == ["d-0800", "m-0800"]
 
-    page.locator('.tab[data-tab="s:14:00"]').click()
-    assert visible_slot_ids(page) == ["d-1400"]
-
-    page.locator('.tab[data-tab="nondaily"]').click()
-    assert visible_slot_ids(page) == ["m-0800", "w-1400"] or visible_slot_ids(page) == [
-        "w-1400",
-        "m-0800",
-    ]
-    assert sorted(visible_slot_ids(page)) == ["m-0800", "w-1400"]
+    page.locator('.tab[data-tab="d:2026-02-04T14:00"]').click()
+    assert sorted(visible_slot_ids(page)) == ["d-1400", "w-1400"]
 
     page.locator('.tab[data-tab="all"]').click()
     assert sorted(visible_slot_ids(page)) == sorted(
@@ -107,10 +104,10 @@ def test_tabs_group_sessions_and_non_daily_slots_with_progress_badges(
     )
 
     enter_and_confirm(page, "d-0800", "10")
-    assert tab_labels(page)[:2] == ["すべて (1/5)", "08:00 (1/1)"]
+    assert tab_labels(page)[:2] == ["すべて (1/5)", "02/04(水) 08:00 (1/2)"]
 
 
-def test_initial_tab_is_non_daily_when_only_non_daily_slots_exist(
+def test_initial_tab_includes_non_daily_slots(
     sheet_browser: SheetBrowser,
 ) -> None:
     page = sheet_browser.open_html(
@@ -121,8 +118,176 @@ def test_initial_tab_is_non_daily_when_only_non_daily_slots_exist(
         )
     )
 
-    expect(page.locator('.tab[data-tab="nondaily"]')).to_have_attribute("aria-selected", "true")
-    assert tab_labels(page) == ["すべて (0/1)", "週次・月次・隔月 (0/1)"]
+    expect(page.locator('.tab[data-tab="d:2026-02-04T08:00"]')).to_have_attribute(
+        "aria-selected", "true"
+    )
+    assert tab_labels(page) == ["すべて (0/1)", "02/04(水) 08:00 (0/1)"]
+    expect(card(page, "w-1").locator(".card-cycle")).to_have_text("週次")
+
+
+def test_leap_day_and_session_label_are_independent_of_utc_and_browser_timezone(
+    sheet_browser: SheetBrowser,
+) -> None:
+    page = sheet_browser.open_html(
+        simple_sheet_html(
+            slot_overrides={
+                "session": "02:30",
+                "scheduled_at": "2024-02-29 07:30:00",
+                "scheduled_local_date": "2024-02-29",
+                "previous_source": "measured",
+                "last_reading": "10",
+                "previous_scheduled_at": "2024-02-28 07:30:00",
+                "previous_planned_reading_id": "old",
+                "initial_previous_scheduled_local": "2024-02-28 03:30",
+            }
+        ),
+        timezone_id="America/Los_Angeles",
+    )
+    expect(card(page, "slot-1").locator(".card-session")).to_have_text("02/29(木) 02:30")
+    expect(card(page, "slot-1").locator(".previous")).to_have_text(
+        "前回値: 10 m3 (02/28(水) 03:30 の実測)"
+    )
+
+
+def dated_sheet_html() -> str:
+    return sheet_html(
+        [
+            slot(
+                "later-22",
+                "electric",
+                "meter-1",
+                session="22:00",
+                cycle="monthly",
+                scheduled_at="2026-02-05 13:00:00",
+            ),
+            slot(
+                "next-06",
+                "water",
+                "meter-1",
+                session="06:00",
+                cycle="weekly",
+                scheduled_at="2026-02-04 21:00:00",
+            ),
+            slot(
+                "today-22",
+                "water",
+                "meter-1",
+                session="22:00",
+                cycle="daily_2x",
+                scheduled_at="2026-02-04 13:00:00",
+            ),
+            slot(
+                "next-22",
+                "water",
+                "meter-1",
+                session="22:00",
+                cycle="every_two_months",
+                scheduled_at="2026-02-05 13:00:00",
+            ),
+            slot(
+                "last-06",
+                "gas",
+                "meter-1",
+                session="06:00",
+                cycle="daily_3x",
+                scheduled_at="2026-02-05 21:00:00",
+            ),
+        ],
+        [
+            definition("electric", display_name="電力", category="electricity"),
+            definition("water", display_name="水", category="water"),
+            definition("gas", display_name="ガス", category="gas"),
+        ],
+        [meter("meter-1")],
+    )
+
+
+@pytest.mark.parametrize("timezone_id", ["America/Los_Angeles", "Pacific/Kiritimati"])
+def test_dated_tabs_and_card_order_ignore_browser_timezone(
+    sheet_browser: SheetBrowser, timezone_id: str
+) -> None:
+    page = sheet_browser.open_html(dated_sheet_html(), timezone_id=timezone_id)
+    assert tab_labels(page) == [
+        "すべて (0/5)",
+        "02/04(水) 22:00 (0/1)",
+        "02/05(木) 06:00 (0/1)",
+        "02/05(木) 22:00 (0/2)",
+        "02/06(金) 06:00 (0/1)",
+    ]
+    expect(page.locator('.tab[data-tab="d:2026-02-04T22:00"]')).to_have_attribute(
+        "aria-selected", "true"
+    )
+    page.locator('.tab[data-tab="all"]').click()
+    assert visible_slot_ids(page) == ["today-22", "next-06", "later-22", "next-22", "last-06"]
+    for slot_id, date_time, cycle in (
+        ("today-22", "02/04(水) 22:00", "日次2回"),
+        ("next-06", "02/05(木) 06:00", "週次"),
+        ("later-22", "02/05(木) 22:00", "月次"),
+        ("next-22", "02/05(木) 22:00", "隔月"),
+        ("last-06", "02/06(金) 06:00", "日次3回"),
+    ):
+        expect(card(page, slot_id).locator(".card-session")).to_have_text(date_time)
+        expect(card(page, slot_id).locator(".card-cycle")).to_have_text(cycle)
+    card(page, "today-22").locator(".next").click()
+    expect(card(page, "next-06").locator(".raw")).to_be_focused()
+    page.locator('.tab[data-tab="d:2026-02-05T22:00"]').click()
+    assert visible_slot_ids(page) == ["later-22", "next-22"]
+
+
+def test_initial_tab_after_restoring_draft_uses_unconfirmed_slots(
+    sheet_browser: SheetBrowser,
+) -> None:
+    page = sheet_browser.open_html(dated_sheet_html())
+    enter_and_confirm(page, "today-22", "10")
+    wait_saved(page)
+    reload_and_wait(page)
+    expect(page.locator('.tab[data-tab="d:2026-02-05T06:00"]')).to_have_attribute(
+        "aria-selected", "true"
+    )
+    center_offset = page.locator('.tab[data-tab="d:2026-02-05T06:00"]').evaluate(
+        """button => {
+          const tab = button.getBoundingClientRect();
+          const list = button.parentElement.getBoundingClientRect();
+          return Math.abs((tab.left + tab.right - list.left - list.right) / 2);
+        }"""
+    )
+    assert center_offset <= 2
+    page.locator('.tab[data-tab="all"]').click()
+    for slot_id in ("next-06", "later-22", "next-22", "last-06"):
+        enter_and_confirm(page, slot_id, "20")
+    wait_saved(page)
+    reload_and_wait(page)
+    expect(page.locator('.tab[data-tab="all"]')).to_have_attribute("aria-selected", "true")
+
+
+def test_manual_draft_import_preserves_selected_tab(sheet_browser: SheetBrowser) -> None:
+    page = sheet_browser.open_html(dated_sheet_html())
+    enter_and_confirm(page, "today-22", "10")
+    wait_saved(page)
+    backup = json.dumps(export_draft(page))
+    page.locator('.tab[data-tab="d:2026-02-05T22:00"]').click()
+    import_text(page, backup)
+    page.locator("#draft-confirm-import").click()
+    expect(page.locator('.tab[data-tab="d:2026-02-05T22:00"]')).to_have_attribute(
+        "aria-selected", "true"
+    )
+
+
+def test_conflict_recovery_preserves_selected_tab(sheet_browser: SheetBrowser) -> None:
+    context = sheet_browser.new_context()
+    first = sheet_browser.open_html(dated_sheet_html(), name="dated-first.html", context=context)
+    second = sheet_browser.open_html(dated_sheet_html(), name="dated-second.html", context=context)
+    expect(second.locator("#draft-storage-status")).to_have_attribute("data-status", "ready")
+    enter_and_confirm(first, "today-22", "10")
+    wait_saved(first)
+    second.locator('.tab[data-tab="d:2026-02-05T22:00"]').click()
+    card(second, "later-22").locator(".raw").fill("20")
+    expect(second.locator("#draft-conflict")).to_be_visible()
+    second.locator("#draft-use-stored").click()
+    expect(second.locator('.tab[data-tab="d:2026-02-05T22:00"]')).to_have_attribute(
+        "aria-selected", "true"
+    )
+    expect(card(second, "later-22").locator(".raw")).to_have_value("")
 
 
 def location_sheet_html() -> str:
@@ -170,6 +335,28 @@ def test_slots_are_grouped_by_location_in_category_then_name_order(
         "s-misc",
     ]
     assert page.locator('.location[data-location-id=""] .card').count() == 1
+
+
+def test_same_date_session_slots_use_scheduled_time_then_id_as_tiebreaker(
+    sheet_browser: SheetBrowser,
+) -> None:
+    page = sheet_browser.open_html(
+        sheet_html(
+            [
+                slot("z-late", "def", "meter", session="22:00", scheduled_at="2026-02-04 14:00:00"),
+                slot("z-same", "def", "meter", session="22:00", scheduled_at="2026-02-04 13:00:00"),
+                slot("a-same", "def", "meter", session="22:00", scheduled_at="2026-02-04 13:00:00"),
+                slot(
+                    "a-early", "def", "meter", session="22:00", scheduled_at="2026-02-04 12:00:00"
+                ),
+            ],
+            [definition("def", display_name="同じ測定項目")],
+            [meter("meter")],
+        )
+    )
+    page.locator('.tab[data-tab="all"]').click()
+
+    assert visible_slot_ids(page) == ["a-early", "a-same", "z-same", "z-late"]
 
 
 def test_location_dropdown_unentered_toggle_collapse_and_completion_badge(
@@ -225,8 +412,85 @@ def test_card_shows_meter_information_and_previous_reading(sheet_browser: SheetB
     expect(target.locator(".card-title")).to_have_text("水道メーター")
     expect(target.locator(".card-meta")).to_contain_text("主水道 (SN-001)")
     expect(target.locator(".card-meta")).to_contain_text("単位: m3")
-    expect(target.locator(".previous")).to_have_text("前回値: 123.40 m3")
+    expect(target.locator(".previous")).to_have_text("前回値: 123.40 m3 (02/03(火) 14:00 の実測)")
     expect(target).to_have_attribute("data-previous", "123.40")
+
+
+@pytest.mark.parametrize(
+    "local",
+    [None, "", "2026-02-30 14:00", "2026-02-03 24:00", "2026-02-03T14:00"],
+)
+def test_missing_or_invalid_measured_previous_date_is_explicit(
+    sheet_browser: SheetBrowser, local: str | None
+) -> None:
+    page = sheet_browser.open_html(
+        simple_sheet_html(
+            slot_overrides={
+                "previous_source": "measured",
+                "last_reading": "123.40",
+                "previous_scheduled_at": "2026-02-03 05:00:00",
+                "previous_planned_reading_id": "old-1",
+                "initial_previous_scheduled_local": local,
+            }
+        )
+    )
+    expect(card(page, "slot-1").locator(".previous")).to_have_text(
+        "前回値: 123.40 m3 (実測の参照元日時を確認できません)"
+    )
+
+
+def test_absent_measured_previous_date_is_explicit(sheet_browser: SheetBrowser) -> None:
+    item = slot(
+        "slot-1",
+        "def-1",
+        "meter-1",
+        previous_source="measured",
+        last_reading="10",
+        previous_scheduled_at="2026-02-03 05:00:00",
+        previous_planned_reading_id="old",
+    )
+    del item["initial_previous_scheduled_local"]
+    page = sheet_browser.open_html(sheet_html([item], [definition("def-1")], [meter("meter-1")]))
+    expect(card(page, "slot-1").locator(".previous")).to_have_text(
+        "前回値: 10 m3 (実測の参照元日時を確認できません)"
+    )
+
+
+def test_carried_previous_crosses_dates_and_reverts_to_database_on_unconfirm(
+    sheet_browser: SheetBrowser,
+) -> None:
+    previous = {
+        "previous_source": "measured",
+        "last_reading": "90",
+        "previous_scheduled_at": "2026-02-03 13:00:00",
+        "previous_planned_reading_id": "old",
+    }
+    page = open_all_tab(
+        sheet_browser,
+        sheet_html(
+            [
+                slot("today", "def-1", "meter-1", session="22:00", **previous),
+                slot(
+                    "tomorrow",
+                    "def-1",
+                    "meter-1",
+                    session="06:00",
+                    scheduled_at="2026-02-04 21:00:00",
+                    **previous,
+                ),
+            ],
+            [definition("def-1")],
+            [meter("meter-1")],
+        ),
+    )
+    target = card(page, "tomorrow")
+    expect(target.locator(".previous")).to_have_text("前回値: 90 m3 (02/03(火) 22:00 の実測)")
+    enter_and_confirm(page, "today", "100")
+    expect(target.locator(".previous")).to_have_text(
+        "前回値: 100 m3 (02/04(水) 22:00 の入力値を引き継ぎ)"
+    )
+    card(page, "today").locator(".confirm").click()
+    expect(target.locator(".previous")).to_have_text("前回値: 90 m3 (02/03(火) 22:00 の実測)")
 
 
 def test_result_status_controls_input_visibility_and_can_be_confirmed(
@@ -551,7 +815,7 @@ def test_previous_reading_is_carried_from_the_latest_confirmed_preceding_slot(
     enter_and_confirm(page, "s-0800", "100")
     expect(afternoon).to_have_attribute("data-previous", "100")
     expect(afternoon).to_have_attribute("data-previous-kind", "carried")
-    expect(night.locator(".previous")).to_contain_text("同日 08:00 の入力値を引き継ぎ")
+    expect(night.locator(".previous")).to_contain_text("02/04(水) 08:00 の入力値を引き継ぎ")
 
     afternoon.locator(".raw").fill("130")
     expect(afternoon).to_have_attribute("data-usage", "30")
@@ -738,7 +1002,11 @@ def test_all_operations_are_reachable_at_each_viewport(
                 slot("w-1", "def-a", "meter-b", session="14:00", cycle="weekly"),
             ],
             [
-                definition("def-a", location_id="loc-a", display_name="A"),
+                definition(
+                    "def-a",
+                    location_id="loc-a",
+                    display_name="長い測定項目名" * 8,
+                ),
                 definition("def-b", location_id="loc-a", display_name="B"),
                 definition("def-c", location_id="loc-c", display_name="C"),
                 definition(
@@ -766,7 +1034,7 @@ def test_all_operations_are_reachable_at_each_viewport(
     assert_fits()
     for tab in page.locator(".tab").all():
         tab.click()
-    page.locator('.tab[data-tab="s:08:00"]').click()
+    page.locator('.tab[data-tab="d:2026-02-04T08:00"]').click()
     page.locator(".location-select").select_option("loc-a")
     page.locator(".unentered-toggle").check()
     page.locator(".unentered-toggle").uncheck()
@@ -796,6 +1064,11 @@ def test_all_operations_are_reachable_at_each_viewport(
         assert box is not None
         assert box["x"] >= 0
         assert box["x"] + box["width"] <= viewport[0]
+        for item in card(page, slot_id).locator(".card-head > *").all():
+            item_box = item.bounding_box()
+            assert item_box is not None
+            assert item_box["x"] >= box["x"]
+            assert item_box["x"] + item_box["width"] <= box["x"] + box["width"]
     page.locator("#result-copy").scroll_into_view_if_needed()
     expect(page.locator("#result-copy")).to_be_enabled()
     expect(page.locator("#result-download")).to_be_enabled()
