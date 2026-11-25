@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from functools import partial
@@ -20,6 +21,7 @@ from meter_reading_mini.core.aggregation_contracts import (
     AggregationFormulaCreateInput,
     AggregationFormulaTerm,
     AggregationFormulaVersionInput,
+    AggregationIssue,
     AggregationPeriodUnit,
     AggregationResult,
     AggregationTargetType,
@@ -1680,6 +1682,7 @@ def test_export_uses_one_read_transaction_and_one_clock_and_timezone(scenario: S
     assert calls == ["begin", "clock", "timezone", "end"]
     assert document["generated_at"] == "2026-03-15 15:00:00"
     assert document["generated_at_local"] == "2026-03-16T00:00:00+09:00"
+    assert document["business_timezone"] == "Asia/Tokyo"
     assert document["as_of_business_date"] == "2026-03-16"
     assert document["period"]["end"] == "2026-03-17"
     assert document["period"]["includes_current_business_date"] is True
@@ -1699,6 +1702,87 @@ def test_export_uses_one_read_transaction_and_one_clock_and_timezone(scenario: S
         invalid.get_export_snapshot(
             AggregationExportPeriodSpec(AggregationPeriodUnit.DAY, date(2026, 3, 16))
         )
+
+
+@pytest.mark.parametrize(
+    ("unit", "anchor", "label", "nominal_start", "nominal_end", "in_progress"),
+    [
+        (
+            AggregationPeriodUnit.DAY,
+            date(2026, 3, 15),
+            "2026-03-15",
+            "2026-03-15",
+            "2026-03-16",
+            False,
+        ),
+        (
+            AggregationPeriodUnit.MONTH,
+            date(2026, 3, 31),
+            "2026年3月",
+            "2026-03-01",
+            "2026-04-01",
+            True,
+        ),
+        (
+            AggregationPeriodUnit.CALENDAR_YEAR,
+            date(2026, 12, 31),
+            "2026年",
+            "2026-01-01",
+            "2027-01-01",
+            True,
+        ),
+        (
+            AggregationPeriodUnit.FISCAL_YEAR,
+            date(2026, 3, 31),
+            "2025年度",
+            "2025-04-01",
+            "2026-04-01",
+            True,
+        ),
+    ],
+)
+def test_export_current_business_date_for_every_period(
+    scenario: Scenario,
+    unit: AggregationPeriodUnit,
+    anchor: date,
+    label: str,
+    nominal_start: str,
+    nominal_end: str,
+    in_progress: bool,
+) -> None:
+    snapshot = scenario.context.aggregation_reports.get_export_snapshot(
+        AggregationExportPeriodSpec(unit, anchor)
+    )
+    document = json.loads(build_aggregation_json(snapshot))
+    assert document["period"] == {
+        "unit": unit.value,
+        "label": label,
+        "nominal_start": nominal_start,
+        "nominal_end": nominal_end,
+        "start": nominal_start,
+        "end": "2026-03-16",
+        "is_in_progress": in_progress,
+        "includes_current_business_date": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("unit", "anchor"),
+    [
+        (AggregationPeriodUnit.DAY, date(2026, 3, 16)),
+        (AggregationPeriodUnit.MONTH, date(2026, 4, 1)),
+        (AggregationPeriodUnit.CALENDAR_YEAR, date(2027, 1, 1)),
+        (AggregationPeriodUnit.FISCAL_YEAR, date(2026, 4, 1)),
+    ],
+)
+def test_export_rejects_future_periods(
+    scenario: Scenario, unit: AggregationPeriodUnit, anchor: date
+) -> None:
+    with pytest.raises(ValidationError, match="未来"):
+        scenario.context.aggregation_reports.get_export_snapshot(
+            AggregationExportPeriodSpec(unit, anchor)
+        )
+    assert not scenario.conn.in_transaction
 
 
 def test_export_matches_reports_for_all_purposes_and_versions(scenario: Scenario) -> None:
@@ -1724,6 +1808,8 @@ def test_export_matches_reports_for_all_purposes_and_versions(scenario: Scenario
     )
     assert text.encode("utf-8").startswith(b"{\n") and text.endswith("\n")
     document = json.loads(text)
+    assert document["kind"] == "mrm-usage-aggregation"
+    assert document["v"] == 1
     assert list(document) == [
         "kind",
         "v",
@@ -1851,6 +1937,7 @@ def test_export_states_unapplied_versions_and_disabled_definitions(scenario: Sce
     assert "INFO_DISABLED_DEFINITION" in results["zero"]["information_codes"]
     assert results["reference"]["value_state"] == "reference"
     assert results["missing"]["value_state"] == "no_value"
+    assert results["missing"]["reason"] == "欠測系の理由により使用量を算出できません。"
     assert results["empty"]["reason"] == "この有効期間に予定枠・交換境界はありません。"
     for target in ("raw", "power"):
         assert results[target]["value_state"] == "excluded"
@@ -1858,6 +1945,9 @@ def test_export_states_unapplied_versions_and_disabled_definitions(scenario: Sce
     assert "INFO_DISABLED_DEFINITION" in results["raw"]["information_codes"]
     assert results["partial-items"]["missing_definition_ids"] == ["missing"]
     assert results["partial-items"]["applications"][0]["terms"][0]["contribution"] == "0"
+    assert results["zero"]["is_active"] is False
+    assert results["raw"]["is_active"] is False
+    assert results["partial-items"]["applications"][0]["terms"][0]["is_active"] is False
     assert results["all-missing"]["missing_definition_ids"] == []
     assert "INFO_DISABLED_DEFINITION" in results["partial-items"]["information_codes"]
     for item in results.values():
@@ -1887,6 +1977,74 @@ def test_export_states_unapplied_versions_and_disabled_definitions(scenario: Sce
         )
     assert month_items["future"]["reason"] == "指定期間内に式の適用は開始されていません。"
     assert month_items["disabled"]["reason"] == "指定期間内に有効な式版がありません (無効化中)。"
+
+
+def test_export_sums_multiple_terms_and_readings_per_formula_version(scenario: Scenario) -> None:
+    for definition_id in ("a", "b", "missing"):
+        scenario.definition(definition_id)
+    for definition_id, readings in (
+        ("a", ("0.1", "0.3", "0.6")),
+        ("b", ("0.4", "0.5", "0.7")),
+    ):
+        scenario.plan(f"{definition_id}-base", definition_id, date(2026, 2, 9), value="0")
+        for day, reading in enumerate(readings, start=10):
+            scenario.plan(
+                f"{definition_id}-{day}", definition_id, date(2026, 2, day), value=reading
+            )
+    service = scenario.formula("formula", (("b", "-2"), ("a", "1.5"), ("missing", "1")))
+    service.save_version(
+        "formula",
+        scenario.version(date(2026, 2, 12), (("a", "0.5"), ("missing", "1"), ("b", "-2"))),
+    )
+    snapshot = scenario.context.aggregation_reports.get_export_snapshot(
+        AggregationExportPeriodSpec(AggregationPeriodUnit.MONTH, date(2026, 2, 1))
+    )
+    item = next(
+        item
+        for item in json.loads(build_aggregation_json(snapshot))["results"]
+        if item["target_id"] == "formula"
+    )
+    assert item["value"] == "-0.80"
+    assert item["value_state"] == "reference"
+    assert item["missing_definition_ids"] == ["missing"]
+    assert "MISSING_PARTIAL_ITEMS" in item["missing_codes"]
+    assert [app["is_retroactive"] for app in item["applications"]] == [True, False]
+    assert [
+        (
+            application["version_effective_from"],
+            application["start"],
+            application["end"],
+            application["contribution"],
+            [
+                (term["measurement_definition_id"], term["source_usage"], term["contribution"])
+                for term in application["terms"]
+            ],
+        )
+        for application in item["applications"]
+    ] == [
+        (
+            "2026-02-01",
+            "2026-02-01",
+            "2026-02-12",
+            "-0.55",
+            [("b", "0.5", "-1.0"), ("a", "0.3", "0.45"), ("missing", None, None)],
+        ),
+        (
+            "2026-02-12",
+            "2026-02-12",
+            "2026-03-01",
+            "-0.25",
+            [("a", "0.3", "0.15"), ("missing", None, None), ("b", "0.2", "-0.4")],
+        ),
+    ]
+    report = scenario.context.aggregation_reports.get_report(
+        date(2026, 2, 1), date(2026, 3, 1), unit=AggregationPeriodUnit.MONTH
+    )
+    result = next(result for result in report.periods[0].results if result.target_id == "formula")
+    assert Decimal(item["value"]) == result.value
+    assert [Decimal(app["contribution"]) for app in item["applications"]] == [
+        app.contribution for app in result.applications
+    ]
 
 
 def test_export_excludes_pending_replacement_detail_from_term_sum(scenario: Scenario) -> None:
@@ -2071,6 +2229,37 @@ def test_export_precision_locations_sort_order_and_issues(scenario: Scenario) ->
     for result in results.values():
         issues = [(issue["code"], issue["message"]) for issue in result["issues"]]
         assert issues == sorted(set(issues), key=lambda issue: (issue_order[issue[0]], issue[1]))
+
+
+def test_export_preserves_strings_and_sorts_deduplicated_issues(scenario: Scenario) -> None:
+    scenario.definition("a")
+    scenario.conn.execute(
+        "UPDATE measurement_definitions SET display_name = ?, unit = ?",
+        ("=対象\n日本語", "+kWh"),
+    )
+    snapshot = scenario.context.aggregation_reports.get_export_snapshot(
+        AggregationExportPeriodSpec(AggregationPeriodUnit.DAY, date(2026, 2, 10))
+    )
+    result = snapshot.period.results[0]
+    issues = (
+        AggregationIssue(AggregationCode.WARN_NEGATIVE, "警告"),
+        AggregationIssue(AggregationCode.MISSING_UNMEASURED, "欠測B"),
+        AggregationIssue(AggregationCode.MISSING_UNMEASURED, "欠測A"),
+        AggregationIssue(AggregationCode.MISSING_UNMEASURED, "欠測B"),
+    )
+    snapshot = replace(
+        snapshot, period=replace(snapshot.period, results=(replace(result, issues=issues),))
+    )
+    text = build_aggregation_json(snapshot)
+    assert "\r" not in text
+    item = json.loads(text)["results"][0]
+    assert item["display_name"] == "=対象\n日本語"
+    assert item["unit"] == "+kWh"
+    assert item["issues"] == [
+        {"code": "MISSING_UNMEASURED", "message": "欠測A"},
+        {"code": "MISSING_UNMEASURED", "message": "欠測B"},
+        {"code": "WARN_NEGATIVE", "message": "警告"},
+    ]
 
 
 def test_export_every_query_and_history_uses_one_read_transaction(scenario: Scenario) -> None:
