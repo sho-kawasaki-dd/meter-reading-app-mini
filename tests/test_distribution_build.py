@@ -102,7 +102,10 @@ def test_current_history_plan_is_included_in_source_snapshot() -> None:
 
 
 def test_current_sheet_datetime_plan_is_included_in_source_snapshot() -> None:
-    assert "docs/plan/検針シート予定日表示・日付時刻分類計画.md" in builder.snapshot_source_files()
+    assert (
+        "docs/plan/implemented/検針シート予定日表示・日付時刻分類計画.md"
+        in builder.snapshot_source_files()
+    )
 
 
 def test_project_version_is_read_from_pyproject(
