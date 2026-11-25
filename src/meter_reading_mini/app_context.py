@@ -194,6 +194,7 @@ def create_app_context(
             read_transaction_factory=partial(read_transaction, connection),
             current_business_date_provider=business_date,
             timezone_provider=timezone_settings.get_timezone,
+            clock=clock,
         ),
         reading_history=ReadingHistoryService(
             repository,

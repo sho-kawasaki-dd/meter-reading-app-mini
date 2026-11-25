@@ -76,7 +76,9 @@ src/meter_reading_mini/app_context.py
 src/meter_reading_mini/config.py
 src/meter_reading_mini/core/__init__.py
 src/meter_reading_mini/core/aggregation_contracts.py
+src/meter_reading_mini/core/aggregation_export_contracts.py
 src/meter_reading_mini/core/aggregation_formulas.py
+src/meter_reading_mini/core/aggregation_json.py
 src/meter_reading_mini/core/assignment_calculation.py
 src/meter_reading_mini/core/assignment_calculation_settings.py
 src/meter_reading_mini/core/backup_restore_contracts.py
