@@ -1,9 +1,10 @@
-"""集計画面に表示した系列を CSV / PNG に出力する。"""
+"""使用量集計を CSV / PNG / JSON に出力する。"""
 
 from __future__ import annotations
 
 import csv
 import io
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCharts import QChartView
@@ -16,7 +17,14 @@ from meter_reading_mini.core.aggregation_contracts import (
     AggregationResult,
     AggregationTargetType,
 )
+from meter_reading_mini.core.aggregation_export_contracts import (
+    AggregationExportPeriodSpec,
+    AggregationExportSnapshot,
+)
+from meter_reading_mini.core.aggregation_json import build_aggregation_json
 from meter_reading_mini.core.errors import FileOutputError, ValidationError
+from meter_reading_mini.core.reports import period_boundaries
+from meter_reading_mini.core.timeutil import local_timestamp_for_filename
 from meter_reading_mini.ui.aggregation_display import (
     BASELINE_LABELS,
     PERIOD_LABELS,
@@ -199,6 +207,23 @@ def save_aggregation_csv(
     except OSError as error:
         raise FileOutputError(
             f"集計 CSV を保存できませんでした。\n保存先: {path}\n"
+            "保存先やアクセス権を確認してください。"
+        ) from error
+
+
+def aggregation_json_filename(spec: AggregationExportPeriodSpec, now: datetime) -> str:
+    start, _end = period_boundaries(spec.anchor, spec.unit)
+    timestamp = local_timestamp_for_filename(now, now.tzinfo)
+    return f"meter-usage-{spec.unit.value}-{start.isoformat()}-{timestamp}.json"
+
+
+def save_aggregation_json(path: Path, snapshot: AggregationExportSnapshot) -> None:
+    text = build_aggregation_json(snapshot)
+    try:
+        atomic_write_text(path, text)
+    except OSError as error:
+        raise FileOutputError(
+            f"集計 JSON を保存できませんでした。\n保存先: {path}\n"
             "保存先やアクセス権を確認してください。"
         ) from error
 

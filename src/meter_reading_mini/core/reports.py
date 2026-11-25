@@ -8,6 +8,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, tzinfo
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from meter_reading_mini.core.aggregation_contracts import (
     AggregationApplication,
@@ -29,6 +30,11 @@ from meter_reading_mini.core.aggregation_contracts import (
     serialize_aggregation_coefficient,
     validate_aggregation_term_attributes,
 )
+from meter_reading_mini.core.aggregation_export_contracts import (
+    AggregationExportFormula,
+    AggregationExportPeriodSpec,
+    AggregationExportSnapshot,
+)
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -37,7 +43,11 @@ from meter_reading_mini.core.contract_models import (
     ValueSchema,
 )
 from meter_reading_mini.core.decimal_arithmetic import exact_add, exact_multiply
-from meter_reading_mini.core.errors import FormulaValidationError, ValidationError
+from meter_reading_mini.core.errors import (
+    FormulaValidationError,
+    InvalidTimezoneError,
+    ValidationError,
+)
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     AggregationBoundaryRecord,
     AggregationReadingRecord,
@@ -47,9 +57,11 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeterAssignmentRecord,
     PlannedReadingTaskState,
 )
+from meter_reading_mini.core.timeutil import utc_now
 from meter_reading_mini.core.timezone_settings import (
     DEFAULT_APP_TIMEZONE,
     build_business_date_provider,
+    normalize_to_utc,
 )
 
 type _Event = AggregationReadingRecord | AggregationBoundaryRecord
@@ -76,6 +88,14 @@ class _Observation:
 class _FormulaSelection:
     formula: AggregationFormulaRecord
     versions: tuple[AggregationFormulaVersionRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _AggregationData:
+    definitions: dict[str, MeasurementDefinitionRecord]
+    direct: list[MeasurementDefinitionRecord]
+    selections: list[_FormulaSelection]
+    histories: dict[str, _DefinitionHistory]
 
 
 def _event_at(event: _Event) -> datetime:
@@ -124,7 +144,7 @@ def _applications(
     return tuple(applications)
 
 
-def _period_boundaries(day: date, unit: AggregationPeriodUnit) -> tuple[date, date]:
+def period_boundaries(day: date, unit: AggregationPeriodUnit) -> tuple[date, date]:
     try:
         if unit is AggregationPeriodUnit.DAY:
             return day, day + timedelta(days=1)
@@ -834,10 +854,12 @@ class AggregationReportService:
         read_transaction_factory: _TransactionFactory,
         current_business_date_provider: Callable[[], date] | None = None,
         timezone_provider: Callable[[], tzinfo] = lambda: DEFAULT_APP_TIMEZONE,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._repository = repository
         self._read_transaction_factory = read_transaction_factory
         self._timezone_provider = timezone_provider
+        self._clock = clock
         self._current_business_date_provider = (
             current_business_date_provider or build_business_date_provider()
         )
@@ -876,6 +898,44 @@ class AggregationReportService:
                 start, end, effective_end, today, unit, purpose, category, location_id
             )
 
+    def get_export_snapshot(self, spec: AggregationExportPeriodSpec) -> AggregationExportSnapshot:
+        if type(spec.anchor) is not date:
+            raise ValidationError("出力期間は集計単位と日付で指定してください。")
+        try:
+            unit = AggregationPeriodUnit(spec.unit)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("集計単位が不正です。") from exc
+        with self._read_transaction_factory():
+            generated_at = normalize_to_utc(self._clock()).replace(microsecond=0)
+            timezone = self._timezone_provider()
+            if not isinstance(timezone, ZoneInfo):
+                raise InvalidTimezoneError(
+                    "業務タイムゾーンは IANA タイムゾーンで指定してください。"
+                )
+            today = generated_at.astimezone(timezone).date()
+            start, nominal_end = period_boundaries(spec.anchor, unit)
+            if start > today:
+                raise ValidationError("未来の集計期間は出力できません。")
+            try:
+                end = min(nominal_end, today + timedelta(days=1))
+            except OverflowError as exc:
+                raise ValidationError("現在業務日の翌日を表現できません。") from exc
+            data = self._load_data(start, end, None, None, None, timezone=timezone)
+            period = self._build_period(data, start, end, today, unit)
+            locations = tuple(self._repository.list_meter_locations())
+            return AggregationExportSnapshot(
+                generated_at=generated_at,
+                business_timezone=timezone,
+                as_of_business_date=today,
+                period=period,
+                definitions=tuple(data.definitions.values()),
+                formulas=tuple(
+                    AggregationExportFormula(item.formula, item.versions)
+                    for item in data.selections
+                ),
+                locations=locations,
+            )
+
     def _build_report(
         self,
         start: date,
@@ -887,6 +947,26 @@ class AggregationReportService:
         category: Category | None,
         location_id: str | None,
     ) -> AggregationReport:
+        data = self._load_data(start, end, purpose, category, location_id)
+        periods: list[AggregationPeriod] = []
+        cursor = start
+        while cursor < end:
+            _, nominal_end = period_boundaries(cursor, unit)
+            period_end = min(end, nominal_end)
+            periods.append(self._build_period(data, cursor, period_end, today, unit))
+            cursor = period_end
+        return AggregationReport(start, requested_end, today, purpose, tuple(periods))
+
+    def _load_data(
+        self,
+        start: date,
+        end: date,
+        purpose: Purpose | None,
+        category: Category | None,
+        location_id: str | None,
+        *,
+        timezone: tzinfo | None = None,
+    ) -> _AggregationData:
         definitions = {
             definition.measurement_definition_id: definition
             for definition in self._repository.list_measurement_definitions(show_inactive=True)
@@ -895,7 +975,7 @@ class AggregationReportService:
         for definition in definitions.values():
             _, definition_category, _, definition_purpose = _definition_metadata(definition)
             if (
-                definition_purpose == purpose
+                (purpose is None or definition_purpose == purpose)
                 and (category is None or category == definition_category)
                 and (location_id is None or location_id == _definition_location(definition))
             ):
@@ -903,14 +983,14 @@ class AggregationReportService:
 
         selections: list[_FormulaSelection] = []
         for formula in self._repository.list_aggregation_formulas():
-            if formula.purpose != purpose or (
+            if (purpose is not None and formula.purpose != purpose) or (
                 category is not None and formula.category != category
             ):
                 continue
             versions = tuple(self._repository.list_aggregation_formula_versions(formula.formula_id))
             self._validate_versions(formula, versions)
             applications = _applications(versions, start, end)
-            if not applications:
+            if not applications and purpose is not None:
                 continue
             for application in applications:
                 for term in application.version.terms:
@@ -968,45 +1048,44 @@ class AggregationReportService:
                 boundaries_by_definition[definition_id],
                 self._repository.list_meter_assignments(definition_id),
                 flags,
-                self._timezone_provider(),
+                timezone if timezone is not None else self._timezone_provider(),
             )
             for definition_id in ids
         }
-        periods: list[AggregationPeriod] = []
-        cursor = start
-        while cursor < end:
-            nominal_start, nominal_end = _period_boundaries(cursor, unit)
-            period_end = min(end, nominal_end)
-            results = [
-                _definition_result(
-                    histories.get(definition.measurement_definition_id),
-                    definition,
-                    cursor,
-                    period_end,
-                )
-                for definition in direct
-            ]
-            for selection in selections:
-                result = _formula_result(selection, definitions, histories, cursor, period_end)
-                if result is not None:
-                    results.append(result)
-            periods.append(
-                AggregationPeriod(
-                    unit=unit,
-                    start=cursor,
-                    end=period_end,
-                    nominal_start=nominal_start,
-                    nominal_end=nominal_end,
-                    is_in_progress=(
-                        unit is not AggregationPeriodUnit.DAY
-                        and nominal_start <= today < nominal_end
-                        and period_end > today
-                    ),
-                    results=tuple(results),
-                )
+        return _AggregationData(definitions, direct, selections, histories)
+
+    @staticmethod
+    def _build_period(
+        data: _AggregationData,
+        start: date,
+        end: date,
+        today: date,
+        unit: AggregationPeriodUnit,
+    ) -> AggregationPeriod:
+        nominal_start, nominal_end = period_boundaries(start, unit)
+        results = [
+            _definition_result(
+                data.histories.get(definition.measurement_definition_id), definition, start, end
             )
-            cursor = period_end
-        return AggregationReport(start, requested_end, today, purpose, tuple(periods))
+            for definition in data.direct
+        ]
+        for selection in data.selections:
+            result = _formula_result(selection, data.definitions, data.histories, start, end)
+            if result is not None:
+                results.append(result)
+        return AggregationPeriod(
+            unit=unit,
+            start=start,
+            end=end,
+            nominal_start=nominal_start,
+            nominal_end=nominal_end,
+            is_in_progress=(
+                unit is not AggregationPeriodUnit.DAY
+                and nominal_start <= today < nominal_end
+                and end > today
+            ),
+            results=tuple(results),
+        )
 
     @staticmethod
     def _validate_versions(

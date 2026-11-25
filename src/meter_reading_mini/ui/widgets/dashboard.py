@@ -49,6 +49,9 @@ from meter_reading_mini.ui.aggregation_display import (
 )
 from meter_reading_mini.ui.aggregation_export import save_aggregation_csv, save_chart_png
 from meter_reading_mini.ui.csv_export import export_csv_with_dialog, export_file_with_dialog
+from meter_reading_mini.ui.dialogs.aggregation_json_export_dialog import (
+    AggregationJsonExportDialog,
+)
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.error_handling import run_guarded
 from meter_reading_mini.ui.models.reading_overview_model import (
@@ -216,8 +219,10 @@ class DashboardWindow(QDialog):
         export_row = QHBoxLayout()
         self.csv_button = QPushButton("表示系列を CSV 出力")
         self.png_button = QPushButton("グラフを PNG 出力")
+        self.json_button = QPushButton("全対象を JSON 出力…")
         export_row.addWidget(self.csv_button)
         export_row.addWidget(self.png_button)
+        export_row.addWidget(self.json_button)
         export_row.addStretch()
         layout.addLayout(export_row)
         self.export_notice = QLabel(
@@ -245,6 +250,7 @@ class DashboardWindow(QDialog):
         self.correction_button.clicked.connect(lambda: run_guarded(self, self._open_correction))
         self.csv_button.clicked.connect(lambda: run_guarded(self, self._export_csv))
         self.png_button.clicked.connect(lambda: run_guarded(self, self._export_png))
+        self.json_button.clicked.connect(lambda: run_guarded(self, self._export_json))
         self.invalidate()
         self.refresh()
 
@@ -732,3 +738,6 @@ class DashboardWindow(QDialog):
         )
         if path is not None:
             QMessageBox.information(self, "PNG 出力", f"PNG を保存しました。\n{path}")
+
+    def _export_json(self) -> None:
+        AggregationJsonExportDialog(self._services, self).exec()

@@ -21,6 +21,7 @@ DB_ROOT = PACKAGE_ROOT / "db"
 UI_ROOT = PACKAGE_ROOT / "ui"
 CONTRACT_FILES = (
     "aggregation_contracts.py",
+    "aggregation_export_contracts.py",
     "backup_restore_contracts.py",
     "contract_models.py",
     "errors.py",
@@ -31,6 +32,7 @@ CONTRACT_FILES = (
 )
 CONTRACT_MODULES = {
     "meter_reading_mini.core.aggregation_contracts",
+    "meter_reading_mini.core.aggregation_export_contracts",
     "meter_reading_mini.core.backup_restore_contracts",
     "meter_reading_mini.core.contract_models",
     "meter_reading_mini.core.errors",
