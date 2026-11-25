@@ -337,6 +337,28 @@ def test_slots_are_grouped_by_location_in_category_then_name_order(
     assert page.locator('.location[data-location-id=""] .card').count() == 1
 
 
+def test_same_date_session_slots_use_scheduled_time_then_id_as_tiebreaker(
+    sheet_browser: SheetBrowser,
+) -> None:
+    page = sheet_browser.open_html(
+        sheet_html(
+            [
+                slot("z-late", "def", "meter", session="22:00", scheduled_at="2026-02-04 14:00:00"),
+                slot("z-same", "def", "meter", session="22:00", scheduled_at="2026-02-04 13:00:00"),
+                slot("a-same", "def", "meter", session="22:00", scheduled_at="2026-02-04 13:00:00"),
+                slot(
+                    "a-early", "def", "meter", session="22:00", scheduled_at="2026-02-04 12:00:00"
+                ),
+            ],
+            [definition("def", display_name="同じ測定項目")],
+            [meter("meter")],
+        )
+    )
+    page.locator('.tab[data-tab="all"]').click()
+
+    assert visible_slot_ids(page) == ["a-early", "a-same", "z-same", "z-late"]
+
+
 def test_location_dropdown_unentered_toggle_collapse_and_completion_badge(
     sheet_browser: SheetBrowser,
 ) -> None:
