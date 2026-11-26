@@ -51,6 +51,9 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionCreateRequest,
     MeterMasterCreateRequest,
     PlannedReadingTaskState,
+    ReadingRouteCategoryRecord,
+    ReadingRouteDefinitionRecord,
+    ReadingRouteLocationRecord,
     ReadingUpsertRequest,
     ResultSource,
 )
@@ -68,6 +71,7 @@ from meter_reading_mini.core.mobile_reading_sheet import (
     build_sheet_filename,
 )
 from meter_reading_mini.core.previous_reading import PreviousReadingSource
+from meter_reading_mini.core.reading_route_service import ReadingRouteService
 from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
 from meter_reading_mini.core.schedule_settings import ReleaseOffsetSettingsService
 from meter_reading_mini.core.timeutil import parse_utc
@@ -177,13 +181,29 @@ def test_sheet_exported_before_initial_is_recalculated_on_import(
     ).fetchone() == ("10", "6")
 
 
-def test_definition_initial_draft_restores_from_indexeddb_and_json(
+def test_definition_initial_draft_restores_even_when_sheet_route_ranks_change(
     sheet_browser: SheetBrowser,
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:
     conn, repository = file_database_repository
     build_services(conn, repository, multiplier=Decimal("2"))
     create_plan(repository, "initial-draft", datetime(2026, 2, 4, 4, tzinfo=UTC))
+    _add_definition(
+        conn,
+        repository,
+        "draft-peer",
+        cycle=ReadingCycle.DAILY_1X,
+        schedule_json=DAILY_0800,
+    )
+    _add_definition(
+        conn,
+        repository,
+        "draft-remote",
+        cycle=ReadingCycle.DAILY_1X,
+        schedule_json=DAILY_0800,
+        location_id="remote",
+        location_name="A棟",
+    )
     MeasurementDefinitionService(
         repository,
         repository,
@@ -191,7 +211,9 @@ def test_definition_initial_draft_restores_from_indexeddb_and_json(
         reading_route_repository=repository,
         transaction_factory=partial(transaction, conn),
     ).set_initial_reading(DEFINITION_ID, Decimal("10"))
-    html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
+    service = _build_sheet_service(conn, repository)
+    business_date = date(2026, 2, 4)
+    html = service.create_sheet(business_date).html
     page = open_sheet(sheet_browser, html=html)
     page.locator('.tab[data-tab="all"]').click()
     card = page.locator('.card[data-slot-id="initial-draft"]')
@@ -203,7 +225,21 @@ def test_definition_initial_draft_restores_from_indexeddb_and_json(
     assert export_draft(page) == draft
     expect(card).to_have_attribute("data-previous", "10")
     expect(card).to_have_attribute("data-usage", "6")
-    restored = open_sheet(sheet_browser, html=html, name="initial-restored.html")
+    with transaction(conn):
+        repository.replace_reading_route(
+            [ReadingRouteLocationRecord(LOCATION_ID, 0)],
+            [],
+            [ReadingRouteDefinitionRecord(DEFINITION_ID, 0)],
+        )
+    reordered_html = service.create_sheet(business_date).html
+    before, after = _extract_data(html), _extract_data(reordered_html)
+    for key, id_key, item_id in (
+        ("locations", "location_id", LOCATION_ID),
+        ("definitions", "measurement_definition_id", DEFINITION_ID),
+    ):
+        assert next(item["route_rank"] for item in before[key] if item[id_key] == item_id) == 1
+        assert next(item["route_rank"] for item in after[key] if item[id_key] == item_id) == 0
+    restored = open_sheet(sheet_browser, html=reordered_html, name="initial-restored.html")
     import_text(restored, json.dumps(draft))
     expect(restored.locator("#draft-preview")).to_be_visible()
     restored.locator("#draft-confirm-import").click()
@@ -591,6 +627,17 @@ def test_sheet_route_ranks_are_unique_and_use_names_from_all_location_meters(
         location_id="loc-z",
         location_name="Z target",
     )
+    for definition_id, category in (("route-z-a", Category.WATER), ("route-z-gas", Category.GAS)):
+        _add_definition(
+            conn,
+            repository,
+            definition_id,
+            cycle=ReadingCycle.DAILY_1X,
+            schedule_json=DAILY_0800,
+            location_id="loc-z",
+            location_name="Z target",
+            category=category,
+        )
     _add_definition(
         conn,
         repository,
@@ -605,23 +652,39 @@ def test_sheet_route_ranks_are_unique_and_use_names_from_all_location_meters(
         "(meter_id, location_id, location_name, meter_name, category, is_active) "
         "VALUES ('meter-route-z-decoy', 'loc-z', 'A candidate', '対象外メーター', 'water', 0)"
     )
+    saved_locations = [ReadingRouteLocationRecord(LOCATION_ID, 4)]
+    saved_categories = [ReadingRouteCategoryRecord("loc-z", Category.WATER, 6)]
+    saved_definitions = [ReadingRouteDefinitionRecord("route-z-a", 8)]
+    with transaction(conn):
+        repository.replace_reading_route(saved_locations, saved_categories, saved_definitions)
+    route_service = ReadingRouteService(repository, transaction_factory=partial(transaction, conn))
 
     data = _extract_data(_build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html)
 
-    locations = {item["location_id"]: item["route_rank"] for item in data["locations"]}
-    definition_ranks: dict[str, set[int]] = {}
-    for item in data["definitions"]:
-        definition_ranks.setdefault(item["location_id"], set()).add(item["route_rank"])
-    assert locations["loc-z"] == 0
-    assert locations["loc-b"] == 1
-    assert len(set(locations.values())) == len(locations)
-    assert all(
-        len(ranks) == sum(item["location_id"] == location_id for item in data["definitions"])
-        for location_id, ranks in definition_ranks.items()
-    )
-    assert conn.execute("SELECT COUNT(*) FROM reading_route_locations").fetchone() == (0,)
-    assert conn.execute("SELECT COUNT(*) FROM reading_route_categories").fetchone() == (0,)
-    assert conn.execute("SELECT COUNT(*) FROM reading_route_definitions").fetchone() == (0,)
+    assert data["locations"] == [
+        {"location_id": "loc-b", "location_name": "B target", "route_rank": 2},
+        {"location_id": "loc-z", "location_name": "Z target", "route_rank": 1},
+        {"location_id": LOCATION_ID, "location_name": "試験場所", "route_rank": 0},
+    ]
+    assert {
+        item["measurement_definition_id"]: (item["location_id"], item["route_rank"])
+        for item in data["definitions"]
+    } == {
+        DEFINITION_ID: (LOCATION_ID, 0),
+        "route-b": ("loc-b", 0),
+        "route-z-a": ("loc-z", 0),
+        "route-z": ("loc-z", 1),
+        "route-z-gas": ("loc-z", 2),
+    }
+    assert len(data["definitions"]) == 5
+    assert all(type(item["route_rank"]) is int for item in data["locations"] + data["definitions"])
+    editor_locations = route_service.load_route_editor().locations
+    assert [item.location_id for item in editor_locations] == [LOCATION_ID, "loc-z", "loc-b"]
+    assert editor_locations[1].location_name_candidates == ("A candidate", "Z target")
+    assert editor_locations[1].location_name == "A candidate / Z target"
+    assert repository.list_reading_route_locations() == saved_locations
+    assert repository.list_reading_route_categories() == saved_categories
+    assert repository.list_reading_route_definitions() == saved_definitions
 
 
 def _slot_id(definition_id: str, day: str, session: str) -> str:
@@ -710,6 +773,40 @@ def test_create_sheet_embeds_auto_closed_slot_and_inactive_masters(
         }
     ]
     assert [slot["planned_reading_id"] for slot in inactive["slots"]] == [slot_id]
+
+
+@pytest.mark.parametrize("is_configured", [True, False], ids=["configured", "default"])
+def test_sheet_ranks_inactive_definition_for_past_auto_closed_slot(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    is_configured: bool,
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    _add_definition(
+        conn, repository, "active-peer", cycle=ReadingCycle.DAILY_1X, schedule_json=DAILY_0800
+    )
+    service = _build_sheet_service(conn, repository)
+    business_date = date(2026, 2, 3)
+    service.create_sheet(business_date)
+    with transaction(conn):
+        repository.set_measurement_definition_active(DEFINITION_ID, False)
+        if is_configured:
+            repository.replace_reading_route(
+                [], [], [ReadingRouteDefinitionRecord(DEFINITION_ID, 5)]
+            )
+
+    data = _extract_data(service.create_sheet(business_date).html)
+
+    assert {slot["measurement_definition_id"]: slot["task_state"] for slot in data["slots"]} == {
+        DEFINITION_ID: "auto_closed",
+        "active-peer": "auto_closed",
+    }
+    assert {
+        item["measurement_definition_id"]: item["route_rank"] for item in data["definitions"]
+    } == {
+        DEFINITION_ID: 0 if is_configured else 1,
+        "active-peer": 1 if is_configured else 0,
+    }
 
 
 def test_sheet_local_dates_follow_day_offsets_and_one_timezone_snapshot(
@@ -1143,6 +1240,40 @@ def _replace_meter(
     assert successor is not None
     assert successor.superseded_by_planned_reading_id is not None
     return successor.superseded_by_planned_reading_id
+
+
+def test_route_rank_stays_with_definition_across_meter_replacement(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    _, sync_service = build_services(conn, repository)
+    _add_definition(
+        conn, repository, "replacement-peer", cycle=ReadingCycle.DAILY_1X, schedule_json=DAILY_0800
+    )
+    create_plan(repository, "old-meter-pending", datetime(2026, 2, 4, 5, tzinfo=UTC))
+    route_service = ReadingRouteService(repository, transaction_factory=partial(transaction, conn))
+    saved_definitions = [ReadingRouteDefinitionRecord(DEFINITION_ID, 4)]
+    with transaction(conn):
+        repository.replace_reading_route([], [], saved_definitions)
+    editor_before = route_service.load_route_editor()
+    sheet_service = _build_sheet_service(conn, repository)
+    business_date = date(2026, 2, 4)
+    before = _extract_data(sheet_service.create_sheet(business_date).html)
+
+    new_slot_id = _replace_meter(conn, repository, sync_service, new_initial="95")
+    after = _extract_data(sheet_service.create_sheet(business_date).html)
+
+    assert route_service.load_route_editor() == editor_before
+    assert repository.list_reading_route_definitions() == saved_definitions
+    assert after["definitions"] == before["definitions"]
+    assert {
+        definition["measurement_definition_id"]: definition["route_rank"]
+        for definition in after["definitions"]
+    } == {DEFINITION_ID: 0, "replacement-peer": 1}
+    slots = {slot["planned_reading_id"]: slot for slot in after["slots"]}
+    for slot_id, meter_id in (("old-meter-pending", METER_ID), (new_slot_id, "replacement-meter")):
+        assert slots[slot_id]["meter_id"] == meter_id
+        assert slots[slot_id]["measurement_definition_id"] == DEFINITION_ID
 
 
 @pytest.mark.parametrize(
