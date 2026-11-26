@@ -179,9 +179,10 @@ def test_legacy_location_name_conflict_is_a_warning_not_a_restore_blocker(
     )
 
 
-def test_restore_preserves_negative_raw_only_readings_across_replacement(
-    prepared_database: tuple[sqlite3.Connection, str], tmp_path: Path
-) -> None:
+@pytest.fixture
+def signed_raw_only_database(
+    prepared_database: tuple[sqlite3.Connection, str],
+) -> sqlite3.Connection:
     conn, _ = prepared_database
     conn.execute("UPDATE measurement_definitions SET calculation_method = 'raw_only'")
     conn.execute(
@@ -192,6 +193,13 @@ def test_restore_preserves_negative_raw_only_readings_across_replacement(
         "UPDATE replacement_boundaries SET previous_measured_reading = '-2.50', "
         "old_final_reading = '-1', new_initial_reading = '-3', old_meter_usage_delta = NULL"
     )
+    return conn
+
+
+def test_restore_preserves_negative_raw_only_readings_across_replacement(
+    signed_raw_only_database: sqlite3.Connection, tmp_path: Path
+) -> None:
+    conn = signed_raw_only_database
     path = tmp_path / "meter-reading.db"
     backup = tmp_path / "signed.db"
     restore = SQLiteBackupRestoreRepository(conn, path)
@@ -208,6 +216,27 @@ def test_restore_preserves_negative_raw_only_readings_across_replacement(
             "SELECT previous_measured_reading, old_final_reading, new_initial_reading "
             "FROM replacement_boundaries"
         ).fetchall() == [("-2.50", "-1", "-3")]
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("reading_transactions", "raw_reading"),
+        ("replacement_boundaries", "previous_measured_reading"),
+        ("replacement_boundaries", "old_final_reading"),
+        ("replacement_boundaries", "new_initial_reading"),
+    ],
+)
+def test_restore_rejects_negative_zero_in_signed_raw_only_columns(
+    signed_raw_only_database: sqlite3.Connection, tmp_path: Path, table: str, column: str
+) -> None:
+    restore = SQLiteBackupRestoreRepository(signed_raw_only_database, tmp_path / "meter-reading.db")
+    backup = tmp_path / "negative-zero.db"
+    restore.create_backup(backup)
+    with closing(connect(backup)) as candidate:
+        candidate.execute(f"UPDATE {table} SET {column} = ?", ("-0.00",))
+    with pytest.raises(InvalidBackupError, match=column):
+        restore.preview_restore(backup)
 
 
 @pytest.mark.parametrize(

@@ -367,6 +367,22 @@ def test_signed_raw_only_preview_save_and_correction(
         assert definition.last_reading == Decimal(raw)
 
 
+def test_invalid_raw_only_correction_preserves_saved_reading(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, calculation_method=CalculationMethod.RAW_ONLY)
+    create_plan(repository, "first", _at(4))
+    writer.save_manual_reading(_input("first", "-1.25", 4), staff_id=STAFF_ID)
+
+    with pytest.raises(ValidationError, match="負のゼロ"):
+        writer.save_manual_reading(_input("first", "-0.00", 4), staff_id=STAFF_ID)
+    assert conn.execute(
+        "SELECT raw_reading, last_reading, usage_delta FROM reading_transactions"
+        " WHERE planned_reading_id = 'first'"
+    ).fetchall() == [("-1.25", None, None)]
+
+
 @pytest.mark.parametrize(
     ("method", "value"),
     [
