@@ -7,7 +7,7 @@ from decimal import Decimal
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QWidget
 
-from meter_reading_mini.core.contract_models import ValueSchema
+from meter_reading_mini.core.contract_models import ValueSchema, allows_negative_reading
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     AssignmentCalculationTerms,
@@ -53,8 +53,11 @@ class ReplacementDefinitionEditor(QGroupBox):
         old_conditions = QLabel(_conditions(old_assignment))
         old_conditions.setWordWrap(True)
         form.addRow("旧条件（変更不可）", old_conditions)
-        self.old_final_edit = DecimalLineEdit("旧メーター最終読値")
-        self.new_initial_edit = DecimalLineEdit("新メーター初期読値")
+        allow_negative = allows_negative_reading(
+            definition.calculation_method, definition.value_schema
+        )
+        self.old_final_edit = DecimalLineEdit("旧メーター最終読値", allow_negative=allow_negative)
+        self.new_initial_edit = DecimalLineEdit("新メーター初期読値", allow_negative=allow_negative)
         if readings is not None:
             self.old_final_edit.set_decimal_value(readings.old_final_reading)
             self.new_initial_edit.set_decimal_value(readings.new_initial_reading)

@@ -209,6 +209,7 @@ class ReplacementRegistrationPage(QWidget):
                     editor is None
                     or editor.old_assignment != target.assignment
                     or editor.definition.value_schema != definition.value_schema
+                    or editor.definition.calculation_method != definition.calculation_method
                 ):
                     if editor is not None:
                         editor.deleteLater()
