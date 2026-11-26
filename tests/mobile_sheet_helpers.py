@@ -8,7 +8,15 @@ from types import EllipsisType
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from meter_reading_mini.core.contract_models import Category
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    ReadingRouteCategoryRecord,
+    ReadingRouteDefinitionRecord,
+    ReadingRouteLocationRecord,
+    ReadingRouteTargetRecord,
+)
 from meter_reading_mini.core.mobile_reading import render_sheet_html
+from meter_reading_mini.core.reading_route import calculate_reading_route_order
 
 SHEET_ID = "b" * 32
 LOCATION_ID = "loc-main"
@@ -122,11 +130,35 @@ def sheet_data(
     slots: Sequence[dict[str, Any]],
     definitions: Sequence[dict[str, Any]],
     meters: Sequence[dict[str, Any]],
+    *,
+    route_locations: Sequence[ReadingRouteLocationRecord] = (),
+    route_categories: Sequence[ReadingRouteCategoryRecord] = (),
+    route_definitions: Sequence[ReadingRouteDefinitionRecord] = (),
 ) -> dict[str, Any]:
     locations: dict[str, str] = {}
+    location_names: dict[str, list[str]] = {}
     for item in meters:
         if item["location_id"] is not None:
             locations.setdefault(item["location_id"], item["location_name"])
+            location_names.setdefault(item["location_id"], []).append(item["location_name"])
+    route_targets = [
+        ReadingRouteTargetRecord(
+            measurement_definition_id=item["measurement_definition_id"],
+            location_id=item["location_id"] or "",
+            category=Category(item["category"]),
+            display_name=item["display_name"],
+            unit=item["unit"],
+            is_active=True,
+        )
+        for item in definitions
+    ]
+    route_order = calculate_reading_route_order(
+        route_locations,
+        route_categories,
+        route_definitions,
+        route_targets,
+        location_names,
+    )
     definitions_by_id = {item["measurement_definition_id"]: item for item in definitions}
     slots_with_conditions = []
     for item in slots:
@@ -144,10 +176,21 @@ def sheet_data(
         "generated_at_local": "2026-02-04 12:00:00",
         "filter": {"reading_sessions": None, "cycle_groups": None},
         "locations": [
-            {"location_id": key, "location_name": name} for key, name in locations.items()
+            {
+                "location_id": key,
+                "location_name": name,
+                "route_rank": route_order.location_ranks[key],
+            }
+            for key, name in locations.items()
         ],
         "meters": list(meters),
-        "definitions": list(definitions),
+        "definitions": [
+            {
+                **item,
+                "route_rank": route_order.definition_ranks[item["measurement_definition_id"]],
+            }
+            for item in definitions
+        ],
         "slots": slots_with_conditions,
     }
 
@@ -156,8 +199,21 @@ def sheet_html(
     slots: Sequence[dict[str, Any]],
     definitions: Sequence[dict[str, Any]],
     meters: Sequence[dict[str, Any]],
+    *,
+    route_locations: Sequence[ReadingRouteLocationRecord] = (),
+    route_categories: Sequence[ReadingRouteCategoryRecord] = (),
+    route_definitions: Sequence[ReadingRouteDefinitionRecord] = (),
 ) -> str:
-    return render_sheet_html(sheet_data(slots, definitions, meters))
+    return render_sheet_html(
+        sheet_data(
+            slots,
+            definitions,
+            meters,
+            route_locations=route_locations,
+            route_categories=route_categories,
+            route_definitions=route_definitions,
+        )
+    )
 
 
 def simple_sheet_html(
