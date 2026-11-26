@@ -11,6 +11,7 @@ from mobile_draft_helpers import (
     export_draft,
     get_record,
     import_text,
+    oncomplete_patch,
     open_sheet,
     put_record,
     reload_and_wait,
@@ -86,6 +87,81 @@ def rich_html() -> str:
         ],
         [meter("meter-1"), meter("meter-2"), meter("meter-3"), meter("meter-4")],
     )
+
+
+def test_sign_edit_releases_confirmation_and_updates_carried_previous(
+    sheet_browser: SheetBrowser,
+) -> None:
+    html = sheet_html(
+        [
+            slot(
+                "first",
+                "raw",
+                "meter",
+                previous_source="measured",
+                last_reading="-2.50",
+                previous_scheduled_at="2026-02-03 23:00:00",
+                previous_planned_reading_id="prior",
+            ),
+            slot("later", "raw", "meter", session="14:00"),
+        ],
+        [definition("raw", calculation_method="raw_only")],
+        [meter("meter")],
+    )
+    context = sheet_browser.new_context()
+    context.add_init_script(oncomplete_patch("readwrite", "window.delaySave ? 500 : 0"))
+    page = open_sheet(sheet_browser, context=context, html=html)
+    page.locator('.tab[data-tab="all"]').click()
+    first, later = card(page, "first"), card(page, "later")
+    expect(first.locator(".previous")).to_contain_text("-2.50")
+    enter_and_confirm(page, "first", "-1.25")
+    wait_saved(page)
+    expect(later.locator(".previous")).to_contain_text("-1.25")
+    page.evaluate("window.delaySave = true")
+    first.get_by_role("button", name="符号を切り替え").click()
+    expect(first).to_have_attribute("data-confirmed", "false")
+    expect(later.locator(".previous")).not_to_contain_text("-1.25")
+    expect(page.locator("#draft-storage-status")).to_have_attribute("data-status", "saving")
+    wait_saved(page)
+    reload_and_wait(page)
+    expect(first.locator(".raw")).to_have_value("1.25")
+    expect(first).to_have_attribute("data-confirmed", "false")
+
+
+def test_invalid_signed_drafts_round_trip_only_when_unconfirmed(
+    sheet_browser: SheetBrowser,
+) -> None:
+    invalid = {"minus": "-", "zero": "-0", "zero-scale": "-0.00", "delta": "-1"}
+    html = sheet_html(
+        [slot(key, "delta" if key == "delta" else "raw", "meter") for key in (*invalid, "valid")],
+        [definition("raw", calculation_method="raw_only"), definition("delta")],
+        [meter("meter")],
+    )
+    page = open_sheet(sheet_browser, html=html)
+    for key, text in invalid.items():
+        card(page, key).locator(".raw").fill(text)
+        expect(card(page, key).locator(".confirm")).to_be_disabled()
+    enter_and_confirm(page, "valid", "-1.25")
+    expect(page.locator("#result-count")).to_contain_text("出力対象: 1 件")
+    wait_saved(page)
+    draft = export_draft(page)
+    reload_and_wait(page)
+    assert export_draft(page) == draft
+    restored = open_sheet(sheet_browser, html=html, name="signed-restored.html")
+    import_text(restored, json.dumps(draft))
+    restored.locator("#draft-confirm-import").click()
+    for key, text in {**invalid, "valid": "-1.25"}.items():
+        expect(card(restored, key).locator(".raw")).to_have_value(text)
+    assert export_draft(restored) == draft
+
+    valid = next(entry for entry in draft["slots"] if entry["planned_reading_id"] == "valid")
+    for entry in draft["slots"]:
+        if entry is not valid:
+            entry.update(confirmed=True, bad_input=False, recorded_at=valid["recorded_at"])
+            import_text(restored, json.dumps(draft))
+            expect(restored.locator("#draft-feedback")).to_contain_text("確認済みにできません")
+            expect(restored.locator("#draft-preview")).to_be_hidden()
+            entry.update(confirmed=False, bad_input=True, recorded_at=None)
 
 
 def assert_chain_recomputed(page: Page) -> None:

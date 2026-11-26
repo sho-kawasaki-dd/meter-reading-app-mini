@@ -228,14 +228,29 @@
     return { errors: errors, complete: complete && Object.keys(errors).length === 0 };
   }
 
+  function allowsNegativeReading(definition) {
+    return definition.calculation_method === "raw_only" && definition.value_schema === "decimal_string";
+  }
+
+  function parseSignedReading(text) {
+    if (!text.startsWith("-")) {
+      return parseDecimal(text);
+    }
+    var magnitude = parseDecimal(text.slice(1));
+    return !magnitude || magnitude.n === ZERO ? null : { n: -magnitude.n, s: magnitude.s };
+  }
+
   function validateReading(slot, errors) {
     var text = slot.state.raw.trim();
     if (text === "") {
       return false;
     }
-    var value = parseDecimal(text);
+    var signed = allowsNegativeReading(slot.definition);
+    var value = signed ? parseSignedReading(text) : parseDecimal(text);
     if (!value) {
-      errors.raw = "0 以上の数値を、符号・指数・カンマなしで入力してください。";
+      errors.raw = signed
+        ? "指数・カンマなしの数値を入力してください。負数は先頭に - を付けます。負のゼロは入力できません。"
+        : "0 以上の数値を、符号・指数・カンマなしで入力してください。";
       return false;
     }
     var places = slot.definition.decimal_places;
@@ -634,12 +649,21 @@
       ui.pfField.appendChild(ui.pfPhaseError);
       card.appendChild(ui.pfField);
     } else {
-      var rawLabel = element("label", "field-row");
-      rawLabel.appendChild(element("span", "field-label", "今回値"));
+      var rawRow = element("div", "field-row");
+      var rawLabel = element("label", "field-label", "今回値");
       ui.raw = textInput("raw");
-      rawLabel.appendChild(ui.raw);
-      rawLabel.appendChild(element("span", "unit", slot.definition.unit));
-      ui.readingField.appendChild(rawLabel);
+      ui.raw.id = "reading-" + slot.id;
+      rawLabel.htmlFor = ui.raw.id;
+      rawRow.appendChild(rawLabel);
+      rawRow.appendChild(ui.raw);
+      if (allowsNegativeReading(slot.definition)) {
+        ui.toggleSign = element("button", "toggle-sign", "±");
+        ui.toggleSign.type = "button";
+        ui.toggleSign.setAttribute("aria-label", "符号を切り替え");
+        rawRow.appendChild(ui.toggleSign);
+      }
+      rawRow.appendChild(element("span", "unit", slot.definition.unit));
+      ui.readingField.appendChild(rawRow);
       ui.rawError = element("p", "field-error");
       ui.readingField.appendChild(ui.rawError);
       card.appendChild(ui.readingField);
@@ -682,6 +706,14 @@
       });
     });
     if (ui.raw) {
+      if (ui.toggleSign) {
+        ui.toggleSign.addEventListener("click", function () {
+          var text = ui.raw.value.trim();
+          ui.raw.value = text.startsWith("-") ? text.slice(1) : "-" + text;
+          ui.raw.dispatchEvent(new Event("input", { bubbles: true }));
+          ui.raw.focus();
+        });
+      }
       ui.raw.addEventListener("input", function () {
         editContent(slot, function (state) {
           state.raw = ui.raw.value;
