@@ -168,7 +168,11 @@ def test_replacement_before_first_reading_uses_definition_initial(
     writer, _ = build_services(conn, repository, multiplier=Decimal("10"))
     _meter(repository, "new-meter")
     definitions = MeasurementDefinitionService(
-        repository, repository, repository, transaction_factory=partial(transaction, conn)
+        repository,
+        repository,
+        repository,
+        reading_route_repository=repository,
+        transaction_factory=partial(transaction, conn),
     )
     definitions.set_initial_reading(DEFINITION_ID, Decimal("100"))
     service = _service(conn, repository, writer)

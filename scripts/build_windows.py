@@ -22,7 +22,13 @@ INTERNAL = Path("_internal")
 APP_RESOURCES = (
     *(
         Path("db") / name
-        for name in ("schema.sql", "schema_v1.sql", "schema_v3.sql", "schema_v4.sql")
+        for name in (
+            "schema.sql",
+            "schema_v1.sql",
+            "schema_v3.sql",
+            "schema_v4.sql",
+            "schema_v5.sql",
+        )
     ),
     *(
         Path("core") / "mobile_reading_assets" / name

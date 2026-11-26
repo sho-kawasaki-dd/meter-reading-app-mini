@@ -615,6 +615,49 @@ def _check_aggregation_formulas(conn: sqlite3.Connection, reasons: list[str]) ->
             reasons.append(f"集計式版 {key[0]}/{key[1]}の有効状態と項目数が一致しません。")
 
 
+def _check_reading_routes(conn: sqlite3.Connection, reasons: list[str]) -> None:
+    for table in ("reading_route_locations", "reading_route_categories"):
+        for location_id, sort_order in conn.execute(f"SELECT location_id, sort_order FROM {table}"):
+            label = f"{table} の場所 {location_id}"
+            if not isinstance(location_id, str) or not location_id.strip():
+                reasons.append(f"{label}の ID が不正です。")
+            elif (
+                conn.execute(
+                    "SELECT 1 FROM physical_meters WHERE location_id = ? "
+                    "UNION SELECT 1 FROM measurement_definitions WHERE location_id = ? LIMIT 1",
+                    (location_id, location_id),
+                ).fetchone()
+                is None
+            ):
+                reasons.append(f"{label}は物理メーターまたは測定定義に存在しません。")
+            if type(sort_order) is not int or sort_order < 0:
+                reasons.append(f"{label}の表示順が不正です。")
+
+    for definition_id, sort_order in conn.execute(
+        "SELECT measurement_definition_id, sort_order FROM reading_route_definitions"
+    ):
+        if type(sort_order) is not int or sort_order < 0:
+            reasons.append(f"検針順路の測定定義 {definition_id} の表示順が不正です。")
+
+    for location_id, category, sort_order in conn.execute(
+        "SELECT location_id, category, sort_order FROM reading_route_categories"
+    ):
+        if category not in {item.value for item in Category}:
+            reasons.append(f"検針順路の場所 {location_id} のカテゴリが不正です。")
+        if type(sort_order) is not int or sort_order < 0:
+            reasons.append(f"検針順路の場所 {location_id} のカテゴリ順が不正です。")
+
+    for location_id, category, sort_order in conn.execute(
+        "SELECT d.location_id, d.category, r.sort_order "
+        "FROM reading_route_definitions AS r "
+        "JOIN measurement_definitions AS d USING (measurement_definition_id) "
+        "GROUP BY d.location_id, d.category, r.sort_order HAVING COUNT(*) > 1"
+    ):
+        reasons.append(
+            f"検針順路の測定定義順が重複しています: {location_id}/{category}/{sort_order}"
+        )
+
+
 def check_business_integrity(conn: sqlite3.Connection) -> list[str]:
     """最新版へ移行した DB を変更せず、復元に必要な業務整合性を検査する。"""
 
@@ -637,6 +680,7 @@ def check_business_integrity(conn: sqlite3.Connection) -> list[str]:
         _check_corrections(conn, by_key, reasons)
         _check_boundaries(conn, numbers, by_key, reasons)
         _check_aggregation_formulas(conn, reasons)
+        _check_reading_routes(conn, reasons)
         return reasons
 
 

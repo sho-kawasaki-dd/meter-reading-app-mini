@@ -19,7 +19,7 @@ from meter_reading_mini.core.timeutil import parse_utc, utc_now_str
 from meter_reading_mini.db.backup import copy_database
 from meter_reading_mini.db.connection import connect, transaction
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MIN_SUPPORTED_SCHEMA_VERSION = 1
 
 
@@ -439,6 +439,16 @@ def _migrate_assignment_initial_reading(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE meter_assignments_v5 RENAME TO meter_assignments")
 
 
+def _migrate_reading_route(conn: sqlite3.Connection) -> None:
+    for name in (
+        "reading_route_locations",
+        "reading_route_categories",
+        "reading_route_definitions",
+    ):
+        ddl = next(table.sql for table in SCHEMA_SPECS[6].tables if table.name == name)
+        conn.execute(ddl)
+
+
 MIGRATIONS: dict[int, MigrationStep | str] = {
     2: MigrationStep(
         _migrate_assignment_calculation_settings,
@@ -448,6 +458,7 @@ MIGRATIONS: dict[int, MigrationStep | str] = {
     3: MigrationStep(_migrate_review_flags_and_replacement_values),
     4: MigrationStep(_migrate_aggregation_formulas),
     5: MigrationStep(_migrate_assignment_initial_reading, rebuilds_tables=True),
+    6: MigrationStep(_migrate_reading_route),
 }
 
 SCHEMA_SPECS: dict[int, SchemaSpec] = {
@@ -480,6 +491,9 @@ SCHEMA_SPECS: dict[int, SchemaSpec] = {
         files("meter_reading_mini.db").joinpath("schema_v4.sql").read_text(encoding="utf-8")
     ),
     5: _schema_spec_from_ddl(
+        files("meter_reading_mini.db").joinpath("schema_v5.sql").read_text(encoding="utf-8")
+    ),
+    6: _schema_spec_from_ddl(
         files("meter_reading_mini.db").joinpath("schema.sql").read_text(encoding="utf-8")
     ),
 }

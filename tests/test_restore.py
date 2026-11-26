@@ -18,10 +18,16 @@ import pytest
 
 from meter_reading_mini.core.backup_restore_contracts import RestoreSummary
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
+from meter_reading_mini.core.contract_models import Category
 from meter_reading_mini.core.errors import FileOutputError, InvalidBackupError, RestoreError
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    ReadingRouteCategoryRecord,
+    ReadingRouteDefinitionRecord,
+    ReadingRouteLocationRecord,
+)
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
 from meter_reading_mini.db import restore
-from meter_reading_mini.db.connection import connect, connect_readonly
+from meter_reading_mini.db.connection import connect, connect_readonly, transaction
 from meter_reading_mini.db.migrations import SCHEMA_VERSION, create_schema, migrate_schema
 from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
@@ -152,6 +158,18 @@ def _seed_legacy_history(conn: sqlite3.Connection, *, multiplier: str = "1") -> 
     )
 
 
+def _add_unassigned_route_definition(conn: sqlite3.Connection, location_id: str) -> None:
+    conn.execute(
+        "INSERT INTO measurement_definitions "
+        "(measurement_definition_id, location_id, display_name, category, unit, "
+        "value_schema, multiplier, calculation_method, reading_cycle, purpose, "
+        "generation_start_date) VALUES "
+        "('unassigned', ?, '未割当の測定対象', 'water', 'm3', "
+        "'decimal_string', '1', 'delta', 'daily_1x', 'operational', '2026-01-01')",
+        (location_id,),
+    )
+
+
 def _read_staff(path: Path) -> list[str]:
     immutable = not Path(f"{path}-wal").exists()
     with closing(connect_readonly(path, immutable=immutable)) as conn:
@@ -214,7 +232,7 @@ def test_legacy_negative_zero_settings_survive_use_and_restore(
     check_settings(harness.path)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
 def test_preview_migrates_all_supported_versions_without_changing_source(
     harness: RestoreHarness, tmp_path: Path, version: int
 ) -> None:
@@ -242,7 +260,57 @@ def test_preview_migrates_all_supported_versions_without_changing_source(
     result = harness.service.restore_after_shutdown(harness.close)
     assert _read_staff(result.backup_path) == ["現行担当"]
     assert _read_staff(harness.path) == ["候補担当"]
+    with closing(connect_readonly(harness.path, immutable=True)) as conn:
+        repository = SQLiteRepository(conn)
+        assert conn.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+        assert repository.list_reading_route_locations() == []
+        assert repository.list_reading_route_categories() == []
+        assert repository.list_reading_route_definitions() == []
     assert hashlib.sha256(source.read_bytes()).digest() == original
+    _assert_no_workspace(harness)
+
+
+def test_restore_preserves_route_order_with_gaps_and_missing_parent_rows(
+    harness: RestoreHarness, tmp_path: Path
+) -> None:
+    source = tmp_path / "route.db"
+    backup = tmp_path / "route-backup.db"
+    _create_source(source)
+    locations = [
+        ReadingRouteLocationRecord("without-definition", 2),
+        ReadingRouteLocationRecord("without-meter", 5),
+    ]
+    categories = [
+        ReadingRouteCategoryRecord("location", Category.GAS, 3),
+        ReadingRouteCategoryRecord("without-definition", Category.WATER, 4),
+        ReadingRouteCategoryRecord("without-meter", Category.WATER, 6),
+    ]
+    definitions = [
+        ReadingRouteDefinitionRecord("definition", 7),
+        ReadingRouteDefinitionRecord("unassigned", 7),
+    ]
+    with closing(connect(source)) as conn:
+        with transaction(conn):
+            _seed_formula(conn)
+            _add_unassigned_route_definition(conn, "without-meter")
+            conn.execute(
+                "INSERT INTO physical_meters "
+                "(meter_id, location_id, location_name, meter_name, category) "
+                "VALUES ('unused', 'without-definition', '未割当の場所', '未割当計器', 'water')"
+            )
+            SQLiteRepository(conn).replace_reading_route(locations, categories, definitions)
+        SQLiteBackupRestoreRepository(conn, source).create_backup(backup)
+
+    preview = harness.service.preview_restore(backup)
+    harness.service.restore_after_shutdown(harness.close)
+
+    assert preview.source_schema_version == 6
+    assert preview.warnings == ()
+    with closing(connect_readonly(harness.path, immutable=True)) as conn:
+        repository = SQLiteRepository(conn)
+        assert repository.list_reading_route_locations() == locations
+        assert repository.list_reading_route_categories() == categories
+        assert repository.list_reading_route_definitions() == definitions
     _assert_no_workspace(harness)
 
 
@@ -649,6 +717,48 @@ def test_business_and_foreign_key_corruption_is_rejected(
     with pytest.raises(InvalidBackupError, match=message):
         harness.service.preview_restore(source)
     assert source.read_bytes() == before
+    _assert_no_workspace(harness)
+
+
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    [
+        ("orphan-location", "reading_route_locations.*存在しません"),
+        ("orphan-category", "reading_route_categories.*存在しません"),
+        ("duplicate-definition-order", "測定定義順が重複.*location/water/4"),
+    ],
+)
+def test_restore_rejects_invalid_reading_route(
+    harness: RestoreHarness, tmp_path: Path, corruption: str, message: str
+) -> None:
+    source = tmp_path / "invalid-route.db"
+    _create_source(source)
+    with closing(connect(source)) as conn, transaction(conn):
+        _seed_formula(conn)
+        repository = SQLiteRepository(conn)
+        if corruption == "orphan-location":
+            repository.replace_reading_route([ReadingRouteLocationRecord("missing", 2)], [], [])
+        elif corruption == "orphan-category":
+            repository.replace_reading_route(
+                [], [ReadingRouteCategoryRecord("missing", Category.WATER, 2)], []
+            )
+        else:
+            _add_unassigned_route_definition(conn, "location")
+            repository.replace_reading_route(
+                [],
+                [],
+                [
+                    ReadingRouteDefinitionRecord("definition", 4),
+                    ReadingRouteDefinitionRecord("unassigned", 4),
+                ],
+            )
+    original = source.read_bytes()
+
+    with pytest.raises(InvalidBackupError, match=message):
+        harness.service.preview_restore(source)
+
+    assert source.read_bytes() == original
+    assert _read_staff(harness.path) == ["現行担当"]
     _assert_no_workspace(harness)
 
 

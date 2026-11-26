@@ -22,6 +22,7 @@ from meter_reading_mini.core.planned_reading_maintenance import PlannedReadingMa
 from meter_reading_mini.core.reading_history import ReadingHistoryService
 from meter_reading_mini.core.reading_overview import ReadingOverviewQueryService
 from meter_reading_mini.core.reading_preview import ReadingPreviewService
+from meter_reading_mini.core.reading_route_service import ReadingRouteService
 from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
 from meter_reading_mini.core.reports import AggregationReportService
 from meter_reading_mini.core.schedule_settings import (
@@ -59,6 +60,7 @@ class AppContext:
     reading_writer: ReadingWriteOrchestrationService
     meter_replacement: MeterReplacementService
     mobile_reading_sheet: MobileReadingSheetService
+    reading_route: ReadingRouteService
     mobile_reading_import: MobileReadingImportService
     schedule_defaults: ScheduleSettingsService
     measurement_schedules: MeasurementDefinitionScheduleService
@@ -180,7 +182,11 @@ def create_app_context(
         assignment_calculation_settings=assignment_settings,
         meter_master=meter_master,
         measurement_definitions=MeasurementDefinitionService(
-            repository, repository, repository, transaction_factory=transaction_factory
+            repository,
+            repository,
+            repository,
+            reading_route_repository=repository,
+            transaction_factory=transaction_factory,
         ),
         aggregation_formulas=AggregationFormulaService(
             repository,
@@ -214,10 +220,12 @@ def create_app_context(
             historical_reading_repository=repository,
             assignment_repository=repository,
             boundary_repository=repository,
+            reading_route_repository=repository,
             transaction_factory=transaction_factory,
             timezone_provider=timezone_settings.get_timezone,
             clock=clock,
         ),
+        reading_route=ReadingRouteService(repository, transaction_factory=transaction_factory),
         mobile_reading_import=MobileReadingImportService(
             repository,
             sync_service=mobile_sync,

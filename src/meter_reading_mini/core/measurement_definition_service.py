@@ -21,6 +21,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeterAssignmentRecord,
     MeterAssignmentRepository,
     MeterMasterWriteRepository,
+    ReadingRouteRepository,
 )
 from meter_reading_mini.core.reading_values import validate_initial_reading
 from meter_reading_mini.core.schedule_settings import (
@@ -50,12 +51,14 @@ class MeasurementDefinitionService:
         assignment_repository: MeterAssignmentRepository,
         meter_repository: MeterMasterWriteRepository,
         *,
+        reading_route_repository: ReadingRouteRepository,
         transaction_factory: TransactionFactory,
         id_provider: Callable[[], str] = lambda: uuid4().hex,
     ) -> None:
         self._repository = repository
         self._assignment_repository = assignment_repository
         self._meter_repository = meter_repository
+        self._reading_route_repository = reading_route_repository
         self._transaction_factory = transaction_factory
         self._id_provider = id_provider
 
@@ -127,6 +130,8 @@ class MeasurementDefinitionService:
             ) and self._repository.is_measurement_definition_referenced_by_formula(normalized_id):
                 raise FormulaReferencedDefinitionError(normalized_id)
             self._validate_precision_change(normalized_id, normalized.decimal_places)
+            if current.category != normalized.category:
+                self._reading_route_repository.delete_reading_route_definition(normalized_id)
             self._repository.update_measurement_definition(normalized_id, normalized)
             updated = self._repository.get_measurement_definition(normalized_id)
             if updated is None:

@@ -145,7 +145,7 @@ def test_existing_destination_is_never_overwritten(
     assert sentinel.read_text(encoding="utf-8") == "unchanged"
 
 
-@pytest.mark.parametrize("name", ["schema.sql", "schema_v4.sql"])
+@pytest.mark.parametrize("name", ["schema.sql", "schema_v4.sql", "schema_v5.sql"])
 def test_distribution_rejects_missing_or_changed_assets(tmp_path: Path, name: str) -> None:
     _populate_distribution(tmp_path)
     schema = tmp_path / build_windows.INTERNAL / "meter_reading_mini" / "db" / name
@@ -159,6 +159,7 @@ def test_distribution_rejects_missing_or_changed_assets(tmp_path: Path, name: st
 
 def test_frozen_v4_schema_is_included_in_pyinstaller_spec() -> None:
     assert '"schema_v4.sql"' in build_windows.SPEC.read_text(encoding="utf-8")
+    assert '"schema_v5.sql"' in build_windows.SPEC.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

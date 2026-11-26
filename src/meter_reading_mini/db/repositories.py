@@ -81,6 +81,10 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReadingHistoryBoundaryRecord,
     ReadingHistoryReadingRecord,
     ReadingOverviewRecord,
+    ReadingRouteCategoryRecord,
+    ReadingRouteDefinitionRecord,
+    ReadingRouteLocationRecord,
+    ReadingRouteTargetRecord,
     ReadingSessionReleaseOffsetRecord,
     ReadingUpsertRequest,
     ReplacementAffectedSlot,
@@ -2343,6 +2347,100 @@ class SQLiteRepository:
             result,
             key=lambda definition: (definition.location_id, definition.measurement_definition_id),
         )
+
+    def list_reading_route_locations(self) -> list[ReadingRouteLocationRecord]:
+        return [
+            ReadingRouteLocationRecord(str(location_id), int(sort_order))
+            for location_id, sort_order in self._conn.execute(
+                "SELECT location_id, sort_order FROM reading_route_locations "
+                "ORDER BY sort_order, location_id"
+            )
+        ]
+
+    def list_reading_route_categories(self) -> list[ReadingRouteCategoryRecord]:
+        try:
+            return [
+                ReadingRouteCategoryRecord(
+                    str(location_id), Category(str(category)), int(sort_order)
+                )
+                for location_id, category, sort_order in self._conn.execute(
+                    "SELECT location_id, category, sort_order FROM reading_route_categories "
+                    "ORDER BY location_id, sort_order, category"
+                )
+            ]
+        except ValueError as exc:
+            raise ValidationError("DB の検針順路カテゴリが不正です。") from exc
+
+    def list_reading_route_definitions(self) -> list[ReadingRouteDefinitionRecord]:
+        return [
+            ReadingRouteDefinitionRecord(str(definition_id), int(sort_order))
+            for definition_id, sort_order in self._conn.execute(
+                "SELECT measurement_definition_id, sort_order FROM reading_route_definitions "
+                "ORDER BY sort_order, measurement_definition_id"
+            )
+        ]
+
+    def replace_reading_route(
+        self,
+        locations: Collection[ReadingRouteLocationRecord],
+        categories: Collection[ReadingRouteCategoryRecord],
+        definitions: Collection[ReadingRouteDefinitionRecord],
+    ) -> None:
+        try:
+            self._conn.execute("DELETE FROM reading_route_definitions")
+            self._conn.execute("DELETE FROM reading_route_categories")
+            self._conn.execute("DELETE FROM reading_route_locations")
+            self._conn.executemany(
+                "INSERT INTO reading_route_locations (location_id, sort_order) VALUES (?, ?)",
+                ((item.location_id, item.sort_order) for item in locations),
+            )
+            self._conn.executemany(
+                "INSERT INTO reading_route_categories (location_id, category, sort_order) "
+                "VALUES (?, ?, ?)",
+                ((item.location_id, item.category.value, item.sort_order) for item in categories),
+            )
+            self._conn.executemany(
+                "INSERT INTO reading_route_definitions "
+                "(measurement_definition_id, sort_order) VALUES (?, ?)",
+                ((item.measurement_definition_id, item.sort_order) for item in definitions),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValidationError(f"検針順路を保存できません: {exc}") from exc
+
+    def delete_reading_route_definition(self, measurement_definition_id: str) -> None:
+        self._conn.execute(
+            "DELETE FROM reading_route_definitions WHERE measurement_definition_id = ?",
+            (measurement_definition_id,),
+        )
+
+    def list_reading_route_targets(self) -> list[ReadingRouteTargetRecord]:
+        try:
+            return [
+                ReadingRouteTargetRecord(
+                    measurement_definition_id=str(row[0]),
+                    location_id=str(row[1]),
+                    category=Category(str(row[2])),
+                    display_name=str(row[3]),
+                    unit=str(row[4]),
+                    is_active=bool(row[5]),
+                )
+                for row in self._conn.execute(
+                    "SELECT measurement_definition_id, location_id, category, display_name, unit, "
+                    "is_active FROM measurement_definitions "
+                    "ORDER BY location_id, category, display_name, measurement_definition_id"
+                )
+            ]
+        except ValueError as exc:
+            raise ValidationError("DB の検針順路対象カテゴリが不正です。") from exc
+
+    def list_reading_route_location_names(self) -> dict[str, tuple[str, ...]]:
+        names: dict[str, list[str]] = {}
+        for location_id, location_name in self._conn.execute(
+            "SELECT DISTINCT location_id, location_name FROM physical_meters "
+            "ORDER BY location_id, location_name"
+        ):
+            names.setdefault(str(location_id), []).append(str(location_name))
+        return {location_id: tuple(values) for location_id, values in names.items()}
 
     def auto_close_open_planned_readings(
         self,

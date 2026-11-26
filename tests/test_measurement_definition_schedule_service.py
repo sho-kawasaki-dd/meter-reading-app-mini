@@ -304,6 +304,7 @@ def test_created_definition_generates_its_custom_schedule(
         repository,
         repository,
         repository,
+        reading_route_repository=repository,
         transaction_factory=_transaction_factory(memory_conn),
         id_provider=lambda: "definition-created",
     )

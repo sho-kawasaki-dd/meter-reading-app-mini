@@ -109,6 +109,8 @@ src/meter_reading_mini/core/reading_history.py
 src/meter_reading_mini/core/reading_history_contracts.py
 src/meter_reading_mini/core/reading_overview.py
 src/meter_reading_mini/core/reading_preview.py
+src/meter_reading_mini/core/reading_route.py
+src/meter_reading_mini/core/reading_route_service.py
 src/meter_reading_mini/core/reading_signature.py
 src/meter_reading_mini/core/reading_values.py
 src/meter_reading_mini/core/reading_write_orchestration.py
@@ -133,6 +135,7 @@ src/meter_reading_mini/db/schema.sql
 src/meter_reading_mini/db/schema_v1.sql
 src/meter_reading_mini/db/schema_v3.sql
 src/meter_reading_mini/db/schema_v4.sql
+src/meter_reading_mini/db/schema_v5.sql
 src/meter_reading_mini/installation_guard.py
 src/meter_reading_mini/restart.py
 src/meter_reading_mini/ui/__init__.py
@@ -237,6 +240,7 @@ tests/test_reading_history_ui.py
 tests/test_reading_overview.py
 tests/test_reading_overview_model.py
 tests/test_reading_preview.py
+tests/test_reading_route.py
 tests/test_reading_signature.py
 tests/test_reading_write_orchestration.py
 tests/test_replacement_planned_reading_generation.py

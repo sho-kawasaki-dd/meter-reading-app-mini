@@ -47,6 +47,10 @@ def _schema_v4_sql() -> str:
     return files("meter_reading_mini.db").joinpath("schema_v4.sql").read_text(encoding="utf-8")
 
 
+def _schema_v5_sql() -> str:
+    return files("meter_reading_mini.db").joinpath("schema_v5.sql").read_text(encoding="utf-8")
+
+
 def _create_database(
     path: Path, *, schema_sql: str | None = None, version: int = SCHEMA_VERSION
 ) -> None:
@@ -70,6 +74,24 @@ def test_new_database_is_created_and_persists_schema(tmp_path: Path) -> None:
 
     reopened = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "unused")
     reopened.close()
+
+
+def test_reading_route_schema_rejects_null_primary_keys() -> None:
+    conn = connect_memory()
+    try:
+        create_schema(conn)
+        assert conn.execute("PRAGMA foreign_keys").fetchone() == (1,)
+        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+            conn.execute(
+                "INSERT INTO reading_route_locations (location_id, sort_order) VALUES (NULL, 0)"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+            conn.execute(
+                "INSERT INTO reading_route_definitions "
+                "(measurement_definition_id, sort_order) VALUES (NULL, 0)"
+            )
+    finally:
+        conn.close()
 
 
 def test_create_schema_rolls_back_partial_ddl() -> None:
@@ -604,8 +626,8 @@ def test_v1_restore_candidate_is_copied_migrated_and_checked_without_altering_so
         source.close()
 
 
-@pytest.mark.parametrize("old_version", [1, 2, 3, 4])
-def test_v1_to_v4_files_migrate_to_v5_without_changing_existing_readings(
+@pytest.mark.parametrize("old_version", [1, 2, 3, 4, 5])
+def test_v1_to_v5_files_migrate_to_v6_without_changing_existing_readings(
     tmp_path: Path, old_version: int
 ) -> None:
     path = tmp_path / f"v{old_version}.db"
@@ -644,10 +666,10 @@ def test_v1_to_v4_files_migrate_to_v5_without_changing_existing_readings(
     finally:
         original.close()
 
-    conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "v5")
+    conn = open_database(path, tmp_path / "backups", backup_timestamp=lambda: "v6")
     try:
-        assert conn.execute("PRAGMA user_version").fetchone() == (5,)
-        assert inspect_schema(conn, 5) == []
+        assert conn.execute("PRAGMA user_version").fetchone() == (6,)
+        assert inspect_schema(conn, 6) == []
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("SELECT * FROM reading_transactions").fetchall() == before
         assert (
@@ -661,7 +683,11 @@ def test_v1_to_v4_files_migrate_to_v5_without_changing_existing_readings(
         assert len(assignments_after) == 2
         assert all(row[-1] is None for row in assignments_after)
         if old_version > 1:
-            assert [row[:-1] for row in assignments_after] == assignments_before
+            assert (
+                assignments_after == assignments_before
+                if old_version == 5
+                else [row[:-1] for row in assignments_after] == assignments_before
+            )
         if old_version >= 3:
             assert conn.execute("SELECT reason FROM assignment_review_flags").fetchall() == [
                 ("確認待ち",)
@@ -671,10 +697,13 @@ def test_v1_to_v4_files_migrate_to_v5_without_changing_existing_readings(
                 "SELECT correction_id, reason FROM assignment_calculation_corrections"
             ).fetchall() == [("correction", "確認")]
         assert conn.execute("SELECT COUNT(*) FROM aggregation_formulas").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM reading_route_locations").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM reading_route_categories").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM reading_route_definitions").fetchone() == (0,)
         assert check_business_integrity(conn) == []
     finally:
         conn.close()
-    backup = connect_readonly(tmp_path / "backups" / f"pre-migrate_v{old_version}_v5.db")
+    backup = connect_readonly(tmp_path / "backups" / f"pre-migrate_v{old_version}_v6.db")
     try:
         assert backup.execute("PRAGMA user_version").fetchone() == (old_version,)
         assert inspect_schema(backup, old_version) == []
@@ -683,7 +712,7 @@ def test_v1_to_v4_files_migrate_to_v5_without_changing_existing_readings(
         backup.close()
 
 
-def test_older_schema_specs_remain_frozen_after_v5() -> None:
+def test_older_schema_specs_remain_frozen_after_v6() -> None:
     v2_tables = {table.name for table in SCHEMA_SPECS[2].tables}
     v3_tables = {table.name for table in SCHEMA_SPECS[3].tables}
     v4_tables = {table.name for table in SCHEMA_SPECS[4].tables}
@@ -700,6 +729,10 @@ def test_older_schema_specs_remain_frozen_after_v5() -> None:
         conn.executescript(_schema_v4_sql())
         assert inspect_schema(conn, 4) == []
         assert inspect_schema(conn, 5)
+    with closing(connect_memory()) as conn:
+        conn.executescript(_schema_v5_sql())
+        assert inspect_schema(conn, 5) == []
+        assert inspect_schema(conn, 6)
 
 
 @pytest.mark.parametrize("version", [4, 5])
@@ -741,6 +774,34 @@ def test_v5_initial_reading_check_rejects_empty_string(tmp_path: Path) -> None:
         assert conn.execute(
             "SELECT initial_reading FROM meter_assignments WHERE meter_id = 'old-meter'"
         ).fetchone() == ("0",)
+
+
+def test_v5_to_v6_migration_failure_keeps_v5_schema_and_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "rollback-v5.db"
+    _create_database(path, schema_sql=_schema_v5_sql(), version=5)
+    conn = migrations.connect(path)
+    try:
+        inspect = migrations.inspect_schema
+
+        def fail_v6_schema_check(connection, version, specs=SCHEMA_SPECS):
+            return ["検査失敗"] if version == 6 else inspect(connection, version, specs)
+
+        monkeypatch.setattr(migrations, "inspect_schema", fail_v6_schema_check)
+        with pytest.raises(UnsupportedSchemaError, match="検査失敗"):
+            migrations.migrate_schema(conn, 5, 6)
+        assert conn.execute("PRAGMA user_version").fetchone() == (5,)
+        assert inspect(conn, 5) == []
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'reading_route_%'"
+            ).fetchall()
+            == []
+        )
+        assert not conn.in_transaction
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("failure", ["partial", "inspection", "foreign-key", "commit"])
