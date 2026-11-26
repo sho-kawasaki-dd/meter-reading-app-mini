@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSignalBlocker, Signal
 from PySide6.QtWidgets import QDialog, QPushButton, QTabWidget, QVBoxLayout, QWidget
 
 from meter_reading_mini.app_context import AppContext
@@ -16,6 +16,7 @@ from meter_reading_mini.ui.widgets.assignment_correction_page import AssignmentC
 from meter_reading_mini.ui.widgets.definition_master_page import DefinitionMasterPage
 from meter_reading_mini.ui.widgets.master_common import scroll_area
 from meter_reading_mini.ui.widgets.meter_master_page import MeterMasterPage
+from meter_reading_mini.ui.widgets.reading_route_page import ReadingRoutePage
 from meter_reading_mini.ui.widgets.staff_master_page import StaffMasterPage
 
 
@@ -29,6 +30,7 @@ class MasterDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.services = services
         self.setWindowTitle("マスタ管理")
         self.resize(1000, 700)
         layout = QVBoxLayout(self)
@@ -39,12 +41,16 @@ class MasterDialog(QDialog):
         self.formula_page = AggregationFormulaPage(services)
         self.correction_page = AssignmentCorrectionPage(services, staff_memory)
         self.staff_page = StaffMasterPage(services)
+        self.reading_route_page = ReadingRoutePage(services)
         self.tabs.addTab(scroll_area(self.meter_page), "物理メーター")
         self.tabs.addTab(self.definition_page, "測定定義・スケジュール")
         self.tabs.addTab(scroll_area(self.formula_page), "集計式")
         self.correction_tab = scroll_area(self.correction_page)
         self.tabs.addTab(self.correction_tab, "計算条件の訂正")
         self.tabs.addTab(scroll_area(self.staff_page), "担当者")
+        self.tabs.addTab(self.reading_route_page, "検針順路")
+        self._current_tab = self.tabs.currentWidget()
+        self.tabs.currentChanged.connect(self._tab_changed)
         close_button = QPushButton("閉じる")
         close_button.clicked.connect(self.accept)
         layout.addWidget(close_button)
@@ -80,6 +86,7 @@ class MasterDialog(QDialog):
             lambda: (
                 self.definition_page.confirm_discard_changes()
                 and self.formula_page.confirm_discard_changes()
+                and self.reading_route_page.confirm_discard_changes()
             ),
         )
         if succeeded and discard:
@@ -91,6 +98,7 @@ class MasterDialog(QDialog):
             lambda: (
                 self.definition_page.confirm_discard_changes()
                 and self.formula_page.confirm_discard_changes()
+                and self.reading_route_page.confirm_discard_changes()
             ),
         )
         if succeeded and discard:
@@ -102,3 +110,21 @@ class MasterDialog(QDialog):
             self.correction_page.select_assignment(
                 flag.measurement_definition_id, flag.meter_id, flag.assignment_effective_from
             )
+
+    def _tab_changed(self, index: int) -> None:
+        previous = self._current_tab
+        current = self.tabs.widget(index)
+        if previous is self.reading_route_page and current is not self.reading_route_page:
+            succeeded, discard = run_guarded(self, self.reading_route_page.confirm_discard_changes)
+            if not succeeded or not discard:
+                with QSignalBlocker(self.tabs):
+                    self.tabs.setCurrentWidget(self.reading_route_page)
+                self._current_tab = self.reading_route_page
+                return
+        self._current_tab = current
+        if current is self.reading_route_page:
+            succeeded, _ = run_guarded(self, self.reading_route_page.reload)
+            if not succeeded and previous is not None:
+                with QSignalBlocker(self.tabs):
+                    self.tabs.setCurrentWidget(previous)
+                self._current_tab = previous

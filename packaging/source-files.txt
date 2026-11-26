@@ -173,6 +173,7 @@ src/meter_reading_mini/ui/widgets/definition_master_page.py
 src/meter_reading_mini/ui/widgets/form_helpers.py
 src/meter_reading_mini/ui/widgets/master_common.py
 src/meter_reading_mini/ui/widgets/meter_master_page.py
+src/meter_reading_mini/ui/widgets/reading_route_page.py
 src/meter_reading_mini/ui/widgets/replacement_definition_editor.py
 src/meter_reading_mini/ui/widgets/replacement_history_page.py
 src/meter_reading_mini/ui/widgets/replacement_registration_page.py
@@ -241,6 +242,7 @@ tests/test_reading_overview.py
 tests/test_reading_overview_model.py
 tests/test_reading_preview.py
 tests/test_reading_route.py
+tests/test_reading_route_ui.py
 tests/test_reading_signature.py
 tests/test_reading_write_orchestration.py
 tests/test_replacement_planned_reading_generation.py
