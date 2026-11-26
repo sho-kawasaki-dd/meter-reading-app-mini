@@ -28,6 +28,7 @@ from meter_reading_mini.core.contract_models import (
     ResultStatus,
     ValueSchema,
 )
+from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
     MeasurementDefinitionCreateRequest,
@@ -467,6 +468,83 @@ def test_multiple_definitions_use_distinct_values_terms_and_rollover(
         "SELECT last_reading, usage_delta FROM reading_transactions WHERE planned_reading_id = ?",
         (data.successor("second-later"),),
     ).fetchone() == ("2", "12")
+
+
+def test_signed_replacement_readings_follow_meter_time_and_history_selection(
+    replacement_data: ReplacementData,
+) -> None:
+    data = replacement_data
+    page = data.dialog.registration_page
+    page.preview_button.click()
+    page.apply_button.click()
+    first_event = data.connection.execute(
+        "SELECT replacement_event_id FROM replacement_events"
+    ).fetchone()[0]
+
+    _meter(data.repository, "third-meter")
+    data.repository.create_measurement_definition(
+        MeasurementDefinitionCreateRequest(
+            measurement_definition_id="temperature",
+            location_id=LOCATION_ID,
+            display_name="温度",
+            category=Category.WATER,
+            unit="℃",
+            value_schema=ValueSchema.DECIMAL_STRING,
+            multiplier=Decimal("1"),
+            decimal_places=2,
+            warning_threshold=None,
+            rollover_value=None,
+            calculation_method=CalculationMethod.RAW_ONLY,
+            reading_cycle=ReadingCycle.DAILY_1X,
+            purpose=Purpose.OPERATIONAL,
+            generation_start_date=DAY,
+            initial_schedule_json=None,
+            initial_meter_id="new-meter",
+        )
+    )
+    page.refresh_location(old_meter_id=METER_ID)
+    page.replaced_at.set_datetime(_at(4))
+    assert set(page.definition_editors) == {DEFINITION_ID}
+    page.old_meter_combo.setCurrentIndex(page.old_meter_combo.findData("new-meter"))
+    assert set(page.definition_editors) == {"temperature"}
+    page.replaced_at.set_datetime(_at(7))
+    assert set(page.definition_editors) == {"temperature", DEFINITION_ID}
+    raw = page.definition_editors["temperature"]
+    raw.old_final_edit.setText("-12.50")
+    raw.new_initial_edit.setText("-1.25")
+    delta = page.definition_editors[DEFINITION_ID]
+    delta.new_initial_edit.setText("-1")
+    with pytest.raises(ValidationError, match="10進数"):
+        delta.definition_reading()
+    delta.new_initial_edit.setText("1")
+    delta.old_final_edit.setText("8")
+    page.new_meter_combo.setCurrentIndex(page.new_meter_combo.findData("third-meter"))
+    page.preview_button.click()
+    assert page.apply_button.isEnabled(), page.preview_text.toPlainText()
+    page.apply_button.click()
+    second_event = data.connection.execute(
+        "SELECT replacement_event_id FROM replacement_boundaries "
+        "WHERE measurement_definition_id = ?",
+        ("temperature",),
+    ).fetchone()[0]
+
+    history = data.dialog.history_page
+    _select_history(data.dialog, first_event)
+    assert set(history.definition_editors) == {DEFINITION_ID}
+    delta = history.definition_editors[DEFINITION_ID]
+    delta.old_final_edit.setText("-1")
+    with pytest.raises(ValidationError, match="10進数"):
+        delta.definition_reading()
+    _select_history(data.dialog, second_event)
+    raw = history.definition_editors["temperature"]
+    assert (raw.old_final_edit.text(), raw.new_initial_edit.text()) == ("-12.50", "-1.25")
+    raw.new_initial_edit.setText("-2.75")
+    history.correct_button.click()
+    assert data.connection.execute(
+        "SELECT new_initial_reading FROM replacement_boundaries "
+        "WHERE measurement_definition_id = ?",
+        ("temperature",),
+    ).fetchone() == ("-2.75",)
 
 
 def test_later_replacement_rejects_past_registration_and_allows_earlier_corrections(

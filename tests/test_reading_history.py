@@ -610,6 +610,20 @@ def test_power_factor_and_raw_only() -> None:
     assert not _codes(raw.rows[0])
 
 
+def test_raw_only_history_flags_negative_zero_in_readings_and_boundaries() -> None:
+    definition = replace(DEFINITION, calculation_method=CalculationMethod.RAW_ONLY)
+    reading = _reading("a", START + timedelta(days=1), "old", raw="-0.00", usage=None)
+    boundary = replace(
+        _boundary(),
+        old_final_reading=Decimal("-0"),
+        new_initial_reading=Decimal("-0.0"),
+        previous_measured_reading=Decimal("-1"),
+        old_meter_usage_delta=None,
+    )
+    result = _build([reading], [boundary], _assignments(), definition=definition)
+    assert all(ReadingHistoryCode.STATE_MISMATCH in _codes(row) for row in result.rows)
+
+
 def test_service_queries_real_repository(
     memory_conn: sqlite3.Connection,
     sqlite_repository: SQLiteRepository,

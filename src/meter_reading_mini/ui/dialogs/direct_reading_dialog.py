@@ -24,6 +24,7 @@ from meter_reading_mini.core.contract_models import (
     PowerFactorReading,
     ResultStatus,
     ValueSchema,
+    allows_negative_reading,
 )
 from meter_reading_mini.core.errors import DomainError, ValidationError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
@@ -118,7 +119,10 @@ class DirectReadingDialog(QDialog):
                 self.status_combo.findData(reading.result_status.value)
             )
         self.value_edit = DecimalLineEdit(
-            "力率" if self._value_schema is ValueSchema.POWER_FACTOR_PERCENT_PHASE else "測定値"
+            "力率" if self._value_schema is ValueSchema.POWER_FACTOR_PERCENT_PHASE else "測定値",
+            allow_negative=allows_negative_reading(
+                definition.calculation_method, definition.value_schema
+            ),
         )
         self.value_edit.setObjectName("directReadingValue")
         self.phase_combo = QComboBox()

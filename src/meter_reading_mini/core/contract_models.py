@@ -91,6 +91,13 @@ def _parse_signed_decimal_as_string(value: object) -> Decimal:
     return _parse_decimal_as_string(value, pattern=SIGNED_DECIMAL_STRING_PATTERN)
 
 
+def _parse_signed_reading(value: object) -> Decimal:
+    parsed = _parse_signed_decimal_as_string(value)
+    if parsed.is_zero() and parsed.is_signed():
+        raise ValueError("読値に負のゼロは指定できません。0 を入力してください。")
+    return parsed
+
+
 DecimalAsString = Annotated[
     Decimal,
     BeforeValidator(_parse_non_negative_decimal_as_string),
@@ -113,6 +120,15 @@ PercentAsString = Annotated[
     PlainSerializer(_serialize_decimal_as_string, return_type=str, when_used="always"),
     WithJsonSchema(PERCENT_DECIMAL_JSON_SCHEMA, mode="validation"),
     WithJsonSchema(PERCENT_DECIMAL_JSON_SCHEMA, mode="serialization"),
+]
+
+
+SignedReadingAsString = Annotated[
+    Decimal,
+    BeforeValidator(_parse_signed_reading),
+    PlainSerializer(_serialize_decimal_as_string, return_type=str, when_used="always"),
+    WithJsonSchema(SIGNED_DECIMAL_JSON_SCHEMA, mode="validation"),
+    WithJsonSchema(SIGNED_DECIMAL_JSON_SCHEMA, mode="serialization"),
 ]
 
 
@@ -148,6 +164,15 @@ class ValueSchema(StrEnum):
 
     DECIMAL_STRING = "decimal_string"
     POWER_FACTOR_PERCENT_PHASE = "power_factor_percent_phase"
+
+
+def allows_negative_reading(
+    calculation_method: CalculationMethod, value_schema: ValueSchema
+) -> bool:
+    return (
+        calculation_method == CalculationMethod.RAW_ONLY
+        and value_schema == ValueSchema.DECIMAL_STRING
+    )
 
 
 class PreviousReadingSource(StrEnum):
@@ -258,7 +283,7 @@ class MeasurementDefinitionData(BaseApiModel):
     value_schema: ValueSchema = Field(
         description="Input schema used by the client for this measurement target."
     )
-    last_reading: DecimalAsString | None = Field(
+    last_reading: SignedReadingAsString | None = Field(
         default=None, description="Most recent measured value when represented as a decimal string."
     )
     multiplier: DecimalAsString = Field(
@@ -282,6 +307,16 @@ class MeasurementDefinitionData(BaseApiModel):
     purpose: Purpose = Field(
         description="Business purpose of the measurement (e.g. operational, billing, audit)."
     )
+
+    @model_validator(mode="after")
+    def validate_last_reading(self) -> MeasurementDefinitionData:
+        if (
+            self.last_reading is not None
+            and self.last_reading.is_signed()
+            and not allows_negative_reading(self.calculation_method, self.value_schema)
+        ):
+            raise ValueError("この測定定義の前回値に負数は指定できません。")
+        return self
 
 
 class PlannedReadingTask(BaseApiModel):
@@ -365,7 +400,7 @@ class MeterReadingSubmission(BaseApiModel):
     result_status: ResultStatus = Field(
         description="Outcome recorded for the planned reading slot."
     )
-    raw_reading: DecimalAsString | None = Field(
+    raw_reading: SignedReadingAsString | None = Field(
         default=None,
         description=(
             "Decimal reading payload for measured submissions. Transport validation checks "
@@ -415,6 +450,7 @@ class MeterReadingSubmission(BaseApiModel):
 class ResolvedMeterReadingSubmission(MeterReadingSubmission):
     """planned reading 解決後にだけ使える server-side validation モデル。"""
 
+    calculation_method: CalculationMethod
     measurement_definition_id: str = Field(
         min_length=1,
         description=(
@@ -458,6 +494,10 @@ class ResolvedMeterReadingSubmission(MeterReadingSubmission):
                     "resolved decimal_string submissions must provide raw_reading "
                     "and must not provide structured_payload."
                 )
+            if self.raw_reading.is_signed() and not allows_negative_reading(
+                self.calculation_method, self.value_schema
+            ):
+                raise ValueError("この測定定義の読値に負数は指定できません。")
             if (
                 self.decimal_places is not None
                 and _count_decimal_places(self.raw_reading) > self.decimal_places
@@ -494,6 +534,7 @@ def resolve_meter_reading_submission(
     *,
     measurement_definition_id: str,
     value_schema: ValueSchema,
+    calculation_method: CalculationMethod,
     decimal_places: int | None,
     rollover_value: Decimal | None,
 ) -> ResolvedMeterReadingSubmission:
@@ -504,6 +545,7 @@ def resolve_meter_reading_submission(
             **submission.model_dump(mode="python"),
             "measurement_definition_id": measurement_definition_id,
             "value_schema": value_schema,
+            "calculation_method": calculation_method,
             "decimal_places": decimal_places,
             "rollover_value": rollover_value,
         }
@@ -512,8 +554,8 @@ def resolve_meter_reading_submission(
 
 class ReplacementDefinitionReadingSubmission(BaseApiModel):
     measurement_definition_id: str = Field(min_length=1)
-    old_final_reading: DecimalAsString | None = None
-    new_initial_reading: DecimalAsString | None = None
+    old_final_reading: SignedReadingAsString | None = None
+    new_initial_reading: SignedReadingAsString | None = None
 
 
 class MeterReplacementSubmission(BaseApiModel):
@@ -533,11 +575,11 @@ class MeterReplacementSubmission(BaseApiModel):
     client_updated_at: AwareDatetime = Field(
         description="Offset-aware ISO8601 timestamp used for client-origin conflict resolution.",
     )
-    old_final_reading: DecimalAsString | None = Field(
+    old_final_reading: SignedReadingAsString | None = Field(
         default=None,
         description="Optional final reading captured from the retired meter.",
     )
-    new_initial_reading: DecimalAsString | None = Field(
+    new_initial_reading: SignedReadingAsString | None = Field(
         default=None,
         description="Optional initial reading captured from the new meter.",
     )
@@ -769,6 +811,8 @@ __all__ = [
     "ReadingSession",
     "ResultStatus",
     "SignedDecimalAsString",
+    "SignedReadingAsString",
+    "allows_negative_reading",
     "SyncItemIgnoreCode",
     "SyncItemRejectCode",
     "ValueSchema",

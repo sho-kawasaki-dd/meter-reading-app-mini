@@ -11,6 +11,7 @@ from meter_reading_mini.core.contract_models import (
     ResolvedMeterReadingSubmission,
     ResultStatus,
     ValueSchema,
+    allows_negative_reading,
     resolve_meter_reading_submission,
 )
 from meter_reading_mini.core.errors import ValidationError
@@ -40,6 +41,9 @@ def resolve_manual_reading(
     ):
         validate_reading_value(
             reading.raw_reading,
+            allow_negative=allows_negative_reading(
+                definition.calculation_method, definition.value_schema
+            ),
             decimal_places=definition.decimal_places,
             rollover_value=assignment.rollover_value,
         )
@@ -57,6 +61,7 @@ def resolve_manual_reading(
             submission,
             measurement_definition_id=definition.measurement_definition_id,
             value_schema=definition.value_schema,
+            calculation_method=definition.calculation_method,
             decimal_places=definition.decimal_places,
             rollover_value=assignment.rollover_value,
         )

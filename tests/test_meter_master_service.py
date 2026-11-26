@@ -392,6 +392,13 @@ def test_measurement_definition_service_persists_initial_schedule_and_assignment
         base_update,
     )
     assert updated.display_name == "更新対象"
+    with pytest.raises(ValidationError):
+        service.update_measurement_definition(
+            definition_id, replace(base_update, warning_threshold=Decimal("-0.00"))
+        )
+    assert service.update_measurement_definition(
+        definition_id, replace(base_update, warning_threshold=Decimal("0"))
+    ).warning_threshold == Decimal("0")
     immutable_requests = [
         (replace(base_update, location_id="different-location"), "集計場所"),
         (replace(base_update, reading_cycle=ReadingCycle.WEEKLY), "検針周期"),
@@ -543,6 +550,7 @@ def test_measurement_definition_service_validates_create_values(
     invalid_requests = (
         replace(base, multiplier=Decimal("0")),
         replace(base, warning_threshold=Decimal("-1")),
+        replace(base, warning_threshold=Decimal("-0")),
         replace(base, rollover_value=Decimal("0")),
         replace(base, decimal_places=11),
         replace(base, display_name=" "),
@@ -598,6 +606,7 @@ def test_definition_initial_reading_creation_validation_and_update(
     for request in (
         replace(base, initial_meter_id=None, initial_reading=Decimal("1")),
         replace(base, initial_reading=Decimal("-1")),
+        replace(base, initial_reading=Decimal("-0.00")),
         replace(base, initial_reading=Decimal("NaN")),
         replace(base, initial_reading=Decimal("1.234")),
         replace(base, initial_reading=Decimal("100")),
@@ -611,6 +620,8 @@ def test_definition_initial_reading_creation_validation_and_update(
     created = service.create_measurement_definition(replace(base, initial_reading=Decimal("1.230")))
     assignment = repository.list_meter_assignments(created.measurement_definition_id)[0]
     assert assignment.initial_reading == Decimal("1.230")
+    with pytest.raises(ValidationError):
+        service.set_initial_reading(created.measurement_definition_id, Decimal("-0"))
     service.set_initial_reading(created.measurement_definition_id, Decimal("0"))
     assert (
         repository.list_meter_assignments(created.measurement_definition_id)[0].initial_reading == 0

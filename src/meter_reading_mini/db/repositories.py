@@ -154,6 +154,12 @@ def _history_text(value: object) -> str:
     return value
 
 
+def _read_legacy_zero_setting(value: str | None) -> Decimal | None:
+    """旧版の警告閾値・読値初期値に限って、保存済みゼロの符号を除く。"""
+    parsed = _read_decimal(value)
+    return parsed.copy_abs() if parsed is not None and parsed.is_zero() else parsed
+
+
 def _history_optional_text(value: object) -> str | None:
     return None if value is None else _history_text(value)
 
@@ -499,7 +505,9 @@ class SQLiteRepository:
                     value_schema=ValueSchema(str(row[17])),
                     calculation_method=CalculationMethod(str(row[18])),
                     decimal_places=int(row[19]) if row[19] is not None else None,
-                    warning_threshold=_read_decimal(str(row[20]) if row[20] is not None else None),
+                    warning_threshold=_read_legacy_zero_setting(
+                        str(row[20]) if row[20] is not None else None
+                    ),
                     reading_cycle=ReadingCycle(str(row[21])),
                     purpose=Purpose(str(row[22])),
                     definition_is_active=bool(row[23]),
@@ -544,7 +552,9 @@ class SQLiteRepository:
             category=Category(str(row[11])),
             unit=str(row[12]),
             purpose=Purpose(str(row[13])),
-            warning_threshold=_read_decimal(str(row[14]) if row[14] is not None else None),
+            warning_threshold=_read_legacy_zero_setting(
+                str(row[14]) if row[14] is not None else None
+            ),
             meter_id=assignment.meter_id if assignment is not None else None,
         )
 
@@ -1737,7 +1747,7 @@ class SQLiteRepository:
             multiplier=multiplier,
             rollover_value=rollover_value,
             needs_review=bool(row[6]),
-            initial_reading=_read_decimal(str(row[7]) if row[7] is not None else None),
+            initial_reading=_read_legacy_zero_setting(str(row[7]) if row[7] is not None else None),
         )
 
     def get_meter_assignment_by_key(
@@ -2103,7 +2113,9 @@ class SQLiteRepository:
                     last_reading=_read_decimal(str(row[14]) if row[14] is not None else None),
                     multiplier=multiplier,
                     decimal_places=int(row[7]) if row[7] is not None else None,
-                    warning_threshold=_read_decimal(str(row[8]) if row[8] is not None else None),
+                    warning_threshold=_read_legacy_zero_setting(
+                        str(row[8]) if row[8] is not None else None
+                    ),
                     rollover_value=_read_decimal(
                         str(rollover_value) if rollover_value is not None else None
                     ),
@@ -2184,7 +2196,9 @@ class SQLiteRepository:
                 structured_payload_json=str(row[18]) if row[18] is not None else None,
                 last_reading=_read_decimal(str(row[19]) if row[19] is not None else None),
                 usage_delta=_read_decimal(str(row[20]) if row[20] is not None else None),
-                warning_threshold=_read_decimal(str(row[21]) if row[21] is not None else None),
+                warning_threshold=_read_legacy_zero_setting(
+                    str(row[21]) if row[21] is not None else None
+                ),
                 recorded_at=parse_utc(str(row[22])) if row[22] is not None else None,
                 note=str(row[23]) if row[23] is not None else None,
             )
@@ -2316,7 +2330,7 @@ class SQLiteRepository:
                         value_schema=ValueSchema(str(row[5])),
                         multiplier=multiplier,
                         decimal_places=int(row[7]) if row[7] is not None else None,
-                        warning_threshold=_read_decimal(
+                        warning_threshold=_read_legacy_zero_setting(
                             str(row[8]) if row[8] is not None else None
                         ),
                         rollover_value=_read_decimal(str(row[9]) if row[9] is not None else None),

@@ -214,7 +214,7 @@ class ReadingPreviewService:
                 if next_boundary is not None and planned.scheduled_at >= next_boundary.replaced_at:
                     break
                 assignment = resolve_planned_assignment(self._assignment_repository, planned)
-                validate_persisted_assignment_reading(reading.raw_reading, assignment)
+                validate_persisted_assignment_reading(reading.raw_reading, definition, assignment)
                 context = self._calculation_context(
                     planned,
                     definition,

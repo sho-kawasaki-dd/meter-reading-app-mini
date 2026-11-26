@@ -190,7 +190,7 @@ def _validate_reading(reading: AggregationReadingRecord) -> None:
         ):
             raise ValidationError(f"{label}の実測値または使用量が不正です。")
         if any(
-            value is not None and value < 0
+            value is not None and value.is_signed()
             for value in (reading.raw_reading, reading.last_reading, reading.usage_delta)
         ):
             raise ValidationError(f"{label}の実測値または使用量が負数です。")
@@ -240,7 +240,7 @@ class _DefinitionHistory:
                 or reading.usage_delta is None
                 or reading.structured_payload_json is not None
                 or any(
-                    value is not None and value < 0
+                    value is not None and value.is_signed()
                     for value in (reading.raw_reading, reading.last_reading, reading.usage_delta)
                 )
             ):
@@ -534,7 +534,7 @@ class _DefinitionHistory:
         if (boundary.old_final_reading is None) != (boundary.old_meter_usage_delta is None):
             raise ValidationError(f"{label}の旧最終値と使用量が一致しません。")
         if any(
-            value is not None and value < 0
+            value is not None and value.is_signed()
             for value in (
                 boundary.previous_measured_reading,
                 boundary.old_final_reading,

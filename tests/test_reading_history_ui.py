@@ -4,7 +4,7 @@ import csv
 import io
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,15 +16,15 @@ from reading_service_helpers import DEFINITION_ID, STAFF_ID, build_services, cre
 from test_reading_history import REPLACED, START, ZONE, _assignments, _boundary, _build, _reading
 
 from meter_reading_mini.app_context import create_app_context
-from meter_reading_mini.core.contract_models import Category, ResultStatus
+from meter_reading_mini.core.contract_models import CalculationMethod, Category
 from meter_reading_mini.core.errors import ValidationError
-from meter_reading_mini.core.meter_reading_sync_repositories import ManualReadingInput
 from meter_reading_mini.core.reading_history_contracts import (
     ReadingHistoryCode,
     ReadingHistoryIssue,
 )
 from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.ui import reading_history_export
+from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDialog
 from meter_reading_mini.ui.dialogs.reading_history_dialog import ReadingHistoryDialog
 from meter_reading_mini.ui.models.reading_history_model import HEADERS, ReadingHistoryTableModel
 from meter_reading_mini.ui.reading_history_export import (
@@ -187,9 +187,12 @@ def history_dialog(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
     fixed_clock: datetime,
     qtbot: QtBot,
+    request: pytest.FixtureRequest,
 ) -> ReadingHistoryDialog:
     conn, repository = file_database_repository
-    build_services(conn, repository)
+    build_services(
+        conn, repository, calculation_method=getattr(request, "param", CalculationMethod.DELTA)
+    )
     create_plan(repository, "plan", datetime(2026, 2, 2, 3, tzinfo=UTC))
     dialog = ReadingHistoryDialog(
         create_app_context(conn, clock=lambda: fixed_clock),
@@ -254,23 +257,35 @@ def test_save_failure_never_reports_success(
     assert not (tmp_path / "a.csv").exists()
 
 
+@pytest.mark.parametrize(
+    ("history_dialog", "value"),
+    [(CalculationMethod.DELTA, "123.45"), (CalculationMethod.RAW_ONLY, "-12.50")],
+    indirect=["history_dialog"],
+)
 def test_saved_reading_to_display_and_csv(
-    history_dialog: ReadingHistoryDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    history_dialog: ReadingHistoryDialog,
+    value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot: QtBot,
 ) -> None:
     dialog = history_dialog
-    dialog._services.reading_writer.save_manual_reading(
-        ManualReadingInput(
-            "plan",
-            ResultStatus.MEASURED,
-            datetime(2026, 2, 2, 3, tzinfo=UTC),
-            Decimal("123.45"),
-            None,
-        ),
-        staff_id=STAFF_ID,
-    )
+    (reading,) = dialog._services.reading_overview.get_overview(date(2026, 2, 2)).readings
+    direct = DirectReadingDialog(dialog._services, reading, StaffSelectionMemory())
+    qtbot.addWidget(direct)
+    direct.staff_combo.setCurrentIndex(direct.staff_combo.findData(STAFF_ID))
+    invalid, message = ("-0.00", "負のゼロ") if value.startswith("-") else ("-12.50", "10進数")
+    direct.value_edit.setText(invalid)
+    assert not direct.save_button.isEnabled()
+    assert message in direct.preview_text.toPlainText()
+    direct.value_edit.setText(value)
+    assert direct.save_button.isEnabled(), direct.preview_text.toPlainText()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    direct.save_button.click()
     dialog.refresh()
-    assert dialog.table_model.data(dialog.table_model.index(0, HEADERS.index("読値"))) == "123.45"
-    assert "保存済み使用量の単純合計: 0" in dialog.status_label.text()
+    assert dialog.table_model.data(dialog.table_model.index(0, HEADERS.index("読値"))) == value
+    if value == "123.45":
+        assert "保存済み使用量の単純合計: 0" in dialog.status_label.text()
     path = tmp_path / "history.csv"
     messages: list[str] = []
     suggested: list[str] = []
@@ -295,7 +310,7 @@ def test_saved_reading_to_display_and_csv(
     with path.open(encoding="utf-8-sig", newline="") as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 1
-    assert rows[0]["読値"] == "123.45"
+    assert rows[0]["読値"] == value
     assert rows[0]["予定枠ID"] == "plan"
     assert rows[0]["取込元"] == "manual"
 
