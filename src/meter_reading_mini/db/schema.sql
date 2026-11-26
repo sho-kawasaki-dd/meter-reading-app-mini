@@ -1,4 +1,4 @@
--- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 5)
+-- 検針管理アプリ 標準 sqlite3 スキーマ (SCHEMA_VERSION = 6)
 -- 将来の設備管理アプリ統合時にも備品在庫管理テーブルと衝突しない命名とする
 
 CREATE TABLE staff (
@@ -259,3 +259,22 @@ CREATE TABLE aggregation_formula_terms (
 );
 CREATE INDEX idx_aggregation_formula_terms_definition
   ON aggregation_formula_terms(measurement_definition_id);
+
+CREATE TABLE reading_route_locations (
+  location_id TEXT NOT NULL PRIMARY KEY CHECK (length(trim(location_id)) > 0),
+  sort_order INTEGER NOT NULL UNIQUE CHECK (typeof(sort_order) = 'integer' AND sort_order >= 0)
+);
+
+CREATE TABLE reading_route_categories (
+  location_id TEXT NOT NULL CHECK (length(trim(location_id)) > 0),
+  category TEXT NOT NULL CHECK (category IN ('electricity','gas','water','boiler','others')),
+  sort_order INTEGER NOT NULL CHECK (typeof(sort_order) = 'integer' AND sort_order >= 0),
+  PRIMARY KEY (location_id, category),
+  UNIQUE (location_id, sort_order)
+);
+
+CREATE TABLE reading_route_definitions (
+  measurement_definition_id TEXT NOT NULL PRIMARY KEY
+    REFERENCES measurement_definitions(measurement_definition_id),
+  sort_order INTEGER NOT NULL CHECK (typeof(sort_order) = 'integer' AND sort_order >= 0)
+);

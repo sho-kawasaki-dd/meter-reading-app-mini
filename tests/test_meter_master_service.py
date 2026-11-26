@@ -75,6 +75,7 @@ def _definition_service(
         repository,
         repository,
         repository,
+        reading_route_repository=repository,
         transaction_factory=partial(transaction, conn),
         id_provider=id_provider or (lambda: uuid4().hex),
     )

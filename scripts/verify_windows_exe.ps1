@@ -462,7 +462,7 @@ finally:
     }
     $preview = Find-IdSuffix $backup 'restorePreview'
     $previewText = $preview.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
-    if ($previewText -notmatch '元のスキーマ版: 5' -or $previewText -notmatch '担当者: 1 件') {
+    if ($previewText -notmatch '元のスキーマ版: 6' -or $previewText -notmatch '担当者: 1 件') {
         throw '復元候補の内容が期待値と一致しません。'
     }
     Send-Click ([IntPtr]$backup.Current.NativeWindowHandle) $button
@@ -548,11 +548,11 @@ import sys
 from pathlib import Path
 with sqlite3.connect(Path(sys.argv[1]).as_uri() + "?mode=ro", uri=True) as connection:
     actual = connection.execute("PRAGMA user_version").fetchone()[0]
-    if actual != 5:
+    if actual != 6:
         raise RuntimeError(f"空の保存先から作成した DB のスキーマ版が不正: {actual}")
 '@
     Invoke-ProjectPython @('-c', $schemaCheck, (Join-Path $emptyDataDirectory 'meter_reading.db'))
-    Write-Output '空の保存先で exe がスキーマ v5 の DB を作成したことを確認しました。'
+    Write-Output '空の保存先で exe がスキーマ v6 の DB を作成したことを確認しました。'
 
     $invalidDataPath = Join-Path $runDirectory 'not-a-directory'
     Set-Content -LiteralPath $invalidDataPath -Value 'invalid' -NoNewline

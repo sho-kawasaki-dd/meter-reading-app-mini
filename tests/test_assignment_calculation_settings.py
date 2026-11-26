@@ -279,7 +279,11 @@ def test_correction_preview_and_recalculation_use_definition_initial(
     conn, repository = file_database_repository
     writer, _ = build_services(conn, repository, multiplier=Decimal("2"))
     MeasurementDefinitionService(
-        repository, repository, repository, transaction_factory=partial(transaction, conn)
+        repository,
+        repository,
+        repository,
+        reading_route_repository=repository,
+        transaction_factory=partial(transaction, conn),
     ).set_initial_reading(DEFINITION_ID, Decimal("10"))
     for slot, hour, raw in (("first", 4, "13"), ("second", 5, "15")):
         create_plan(repository, slot, _at(hour))

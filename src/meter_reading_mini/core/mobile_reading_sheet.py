@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
@@ -22,6 +22,8 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     PlannedReadingRecord,
     PlannedReadingTaskQueryRepository,
     PlannedReadingTaskState,
+    ReadingRouteRepository,
+    ReadingRouteTargetRecord,
     ReplacementBoundaryLookupRepository,
     SheetMasterQueryRepository,
     SheetPlannedReadingRecord,
@@ -35,6 +37,7 @@ from meter_reading_mini.core.mobile_reading import (
     render_sheet_html,
 )
 from meter_reading_mini.core.previous_reading import describe_initial_previous_reading
+from meter_reading_mini.core.reading_route import calculate_reading_route_order
 from meter_reading_mini.core.timeutil import utc_now, utc_now_str
 from meter_reading_mini.core.timezone_settings import DEFAULT_APP_TIMEZONE
 from meter_reading_mini.core.work_package_download import (
@@ -105,6 +108,7 @@ class MobileReadingSheetService:
         historical_reading_repository: HistoricalMeasuredReadingLookupRepository,
         assignment_repository: AssignmentCalculationLookupRepository,
         boundary_repository: ReplacementBoundaryLookupRepository,
+        reading_route_repository: ReadingRouteRepository,
         transaction_factory: Callable[[], AbstractContextManager[object]],
         timezone_provider: Callable[[], tzinfo] | None = None,
         clock: Callable[[], datetime] = utc_now,
@@ -117,6 +121,7 @@ class MobileReadingSheetService:
         self._historical_reading_repository = historical_reading_repository
         self._assignment_repository = assignment_repository
         self._boundary_repository = boundary_repository
+        self._reading_route_repository = reading_route_repository
         self._transaction_factory = transaction_factory
         self._timezone_provider = timezone_provider or (lambda: DEFAULT_APP_TIMEZONE)
         self._clock = clock
@@ -181,10 +186,34 @@ class MobileReadingSheetService:
         definitions_by_id = {
             definition.measurement_definition_id: definition for definition in definitions
         }
+        route_targets = [
+            ReadingRouteTargetRecord(
+                measurement_definition_id=definition.measurement_definition_id,
+                location_id=definition.location_id,
+                category=definition.category,
+                display_name=definition.display_name,
+                unit=definition.unit,
+                is_active=True,
+            )
+            for definition in definitions
+        ]
+        route_order = calculate_reading_route_order(
+            self._reading_route_repository.list_reading_route_locations(),
+            self._reading_route_repository.list_reading_route_categories(),
+            self._reading_route_repository.list_reading_route_definitions(),
+            route_targets,
+            self._reading_route_repository.list_reading_route_location_names(),
+        )
         return {
-            "locations": _build_locations(slots, meters),
+            "locations": _build_locations(slots, meters, route_order.location_ranks),
             "meters": [_meter_json(meter) for meter in meters],
-            "definitions": [_definition_json(definition) for definition in definitions],
+            "definitions": [
+                _definition_json(
+                    definition,
+                    route_order.definition_ranks[definition.measurement_definition_id],
+                )
+                for definition in definitions
+            ],
             "slots": [
                 self._slot_json(
                     slot, definitions_by_id[slot.measurement_definition_id], business_timezone
@@ -270,16 +299,24 @@ def _require_masters(
 
 
 def _build_locations(
-    slots: Sequence[SheetPlannedReadingRecord], meters: Sequence[MeterMasterData]
-) -> list[dict[str, str]]:
+    slots: Sequence[SheetPlannedReadingRecord],
+    meters: Sequence[MeterMasterData],
+    route_ranks: Mapping[str, int],
+) -> list[dict[str, object]]:
     names: dict[str, str] = {}
     for meter in meters:
         names.setdefault(meter.location_id, meter.location_name)
-    locations: list[dict[str, str]] = []
+    locations: list[dict[str, object]] = []
     for location_id in sorted({slot.location_id for slot in slots}):
         if location_id not in names:
             raise ValidationError(f"シートに必要な場所名が見つかりません: {location_id}")
-        locations.append({"location_id": location_id, "location_name": names[location_id]})
+        locations.append(
+            {
+                "location_id": location_id,
+                "location_name": names[location_id],
+                "route_rank": route_ranks[location_id],
+            }
+        )
     return locations
 
 
@@ -298,10 +335,11 @@ def _meter_json(meter: MeterMasterData) -> dict[str, object]:
     }
 
 
-def _definition_json(definition: MeasurementDefinitionData) -> dict[str, object]:
+def _definition_json(definition: MeasurementDefinitionData, route_rank: int) -> dict[str, object]:
     return {
         "measurement_definition_id": definition.measurement_definition_id,
         "location_id": definition.location_id,
+        "route_rank": route_rank,
         "display_name": definition.display_name,
         "category": definition.category.value,
         "unit": definition.unit,

@@ -429,6 +429,35 @@ class PlannedReadingRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ReadingRouteLocationRecord:
+    location_id: str
+    sort_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingRouteCategoryRecord:
+    location_id: str
+    category: Category
+    sort_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingRouteDefinitionRecord:
+    measurement_definition_id: str
+    sort_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingRouteTargetRecord:
+    measurement_definition_id: str
+    location_id: str
+    category: Category
+    display_name: str
+    unit: str
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class MeasurementDefinitionRecord:
     """現在割当があればその条件を返し、なければ初期登録時の条件を返す。"""
 
@@ -1140,6 +1169,29 @@ class SheetMasterQueryRepository(Protocol):
     ) -> list[MeasurementDefinitionData]:
         """Return the definitions with the given ids, including inactive ones."""
         ...
+
+
+class ReadingRouteRepository(Protocol):
+    """検針順路の保存値と編集・シート出力に必要なマスタ取得境界。"""
+
+    def list_reading_route_locations(self) -> list[ReadingRouteLocationRecord]: ...
+
+    def list_reading_route_categories(self) -> list[ReadingRouteCategoryRecord]: ...
+
+    def list_reading_route_definitions(self) -> list[ReadingRouteDefinitionRecord]: ...
+
+    def replace_reading_route(
+        self,
+        locations: Collection[ReadingRouteLocationRecord],
+        categories: Collection[ReadingRouteCategoryRecord],
+        definitions: Collection[ReadingRouteDefinitionRecord],
+    ) -> None: ...
+
+    def delete_reading_route_definition(self, measurement_definition_id: str) -> None: ...
+
+    def list_reading_route_targets(self) -> list[ReadingRouteTargetRecord]: ...
+
+    def list_reading_route_location_names(self) -> dict[str, tuple[str, ...]]: ...
 
 
 class PlannedReadingTaskQueryRepository(Protocol):

@@ -456,6 +456,7 @@ def test_definition_attributes_are_protected_by_historical_formula_terms(
         sqlite_repository,
         sqlite_repository,
         sqlite_repository,
+        reading_route_repository=sqlite_repository,
         transaction_factory=partial(transaction, memory_conn),
     )
     request = MeasurementDefinitionUpdateRequest(
@@ -489,6 +490,7 @@ def test_unreferenced_definition_attributes_remain_editable(
         sqlite_repository,
         sqlite_repository,
         sqlite_repository,
+        reading_route_repository=sqlite_repository,
         transaction_factory=partial(transaction, memory_conn),
     )
     updated = service.update_measurement_definition(

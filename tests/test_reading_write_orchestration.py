@@ -96,7 +96,11 @@ def test_initial_reading_survives_preview_write_and_first_reading_removal(
     conn, repository = file_database_repository
     writer, _ = build_services(conn, repository, multiplier=Decimal("2"))
     definitions = MeasurementDefinitionService(
-        repository, repository, repository, transaction_factory=partial(transaction, conn)
+        repository,
+        repository,
+        repository,
+        reading_route_repository=repository,
+        transaction_factory=partial(transaction, conn),
     )
     definitions.set_initial_reading(DEFINITION_ID, Decimal("10"))
     for name, hour in (("initial-first", 4), ("initial-second", 5), ("initial-third", 6)):
@@ -300,6 +304,7 @@ def test_auto_closed_slot_on_deactivated_meter_can_be_completed_later(
         repository,
         repository,
         repository,
+        reading_route_repository=repository,
         transaction_factory=transaction_factory,
     )
     definition_service.deactivate_measurement_definition(DEFINITION_ID)

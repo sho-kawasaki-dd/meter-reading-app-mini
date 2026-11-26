@@ -96,7 +96,11 @@ def test_sheet_displays_definition_initial_and_exports_calculated_result(
     _, sync = build_services(conn, repository, multiplier=Decimal("2"))
     create_plan(repository, "initial-slot", datetime(2026, 2, 4, 4, tzinfo=UTC))
     MeasurementDefinitionService(
-        repository, repository, repository, transaction_factory=partial(transaction, conn)
+        repository,
+        repository,
+        repository,
+        reading_route_repository=repository,
+        transaction_factory=partial(transaction, conn),
     ).set_initial_reading(DEFINITION_ID, Decimal("10"))
     html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
     page = sheet_browser.open_html(html)
@@ -134,7 +138,11 @@ def test_sheet_exported_before_initial_is_recalculated_on_import(
     create_plan(repository, "old-sheet", datetime(2026, 2, 4, 4, tzinfo=UTC))
     html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
     MeasurementDefinitionService(
-        repository, repository, repository, transaction_factory=partial(transaction, conn)
+        repository,
+        repository,
+        repository,
+        reading_route_repository=repository,
+        transaction_factory=partial(transaction, conn),
     ).set_initial_reading(DEFINITION_ID, Decimal("10"))
 
     page = sheet_browser.open_html(html)
@@ -177,7 +185,11 @@ def test_definition_initial_draft_restores_from_indexeddb_and_json(
     build_services(conn, repository, multiplier=Decimal("2"))
     create_plan(repository, "initial-draft", datetime(2026, 2, 4, 4, tzinfo=UTC))
     MeasurementDefinitionService(
-        repository, repository, repository, transaction_factory=partial(transaction, conn)
+        repository,
+        repository,
+        repository,
+        reading_route_repository=repository,
+        transaction_factory=partial(transaction, conn),
     ).set_initial_reading(DEFINITION_ID, Decimal("10"))
     html = _build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html
     page = open_sheet(sheet_browser, html=html)
@@ -512,6 +524,7 @@ def _build_sheet_service(
         historical_reading_repository=repository,
         assignment_repository=repository,
         boundary_repository=repository,
+        reading_route_repository=repository,
         transaction_factory=transaction_factory,
         timezone_provider=lambda: business_timezone,
         clock=lambda: now,
@@ -526,24 +539,27 @@ def _add_definition(
     *,
     cycle: ReadingCycle,
     schedule_json: str,
+    location_id: str = LOCATION_ID,
+    location_name: str = "試験場所",
+    category: Category = Category.WATER,
 ) -> str:
     meter_id = f"meter-{definition_id}"
     with transaction(conn):
         repository.create_meter_master(
             MeterMasterCreateRequest(
                 meter_id=meter_id,
-                location_id=LOCATION_ID,
-                location_name="試験場所",
+                location_id=location_id,
+                location_name=location_name,
                 meter_name=f"メーター {definition_id}",
-                category=Category.WATER,
+                category=category,
             )
         )
         repository.create_measurement_definition(
             MeasurementDefinitionCreateRequest(
                 measurement_definition_id=definition_id,
-                location_id=LOCATION_ID,
+                location_id=location_id,
                 display_name=f"測定 {definition_id}",
-                category=Category.WATER,
+                category=category,
                 unit="m3",
                 value_schema=ValueSchema.DECIMAL_STRING,
                 multiplier=Decimal("1"),
@@ -559,6 +575,53 @@ def _add_definition(
             )
         )
     return meter_id
+
+
+def test_sheet_route_ranks_are_unique_and_use_names_from_all_location_meters(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    _add_definition(
+        conn,
+        repository,
+        "route-z",
+        cycle=ReadingCycle.DAILY_1X,
+        schedule_json=DAILY_0800,
+        location_id="loc-z",
+        location_name="Z target",
+    )
+    _add_definition(
+        conn,
+        repository,
+        "route-b",
+        cycle=ReadingCycle.DAILY_1X,
+        schedule_json=DAILY_0800,
+        location_id="loc-b",
+        location_name="B target",
+    )
+    conn.execute(
+        "INSERT INTO physical_meters "
+        "(meter_id, location_id, location_name, meter_name, category, is_active) "
+        "VALUES ('meter-route-z-decoy', 'loc-z', 'A candidate', '対象外メーター', 'water', 0)"
+    )
+
+    data = _extract_data(_build_sheet_service(conn, repository).create_sheet(date(2026, 2, 4)).html)
+
+    locations = {item["location_id"]: item["route_rank"] for item in data["locations"]}
+    definition_ranks: dict[str, set[int]] = {}
+    for item in data["definitions"]:
+        definition_ranks.setdefault(item["location_id"], set()).add(item["route_rank"])
+    assert locations["loc-z"] == 0
+    assert locations["loc-b"] == 1
+    assert len(set(locations.values())) == len(locations)
+    assert all(
+        len(ranks) == sum(item["location_id"] == location_id for item in data["definitions"])
+        for location_id, ranks in definition_ranks.items()
+    )
+    assert conn.execute("SELECT COUNT(*) FROM reading_route_locations").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM reading_route_categories").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM reading_route_definitions").fetchone() == (0,)
 
 
 def _slot_id(definition_id: str, day: str, session: str) -> str:
@@ -593,7 +656,9 @@ def test_create_sheet_embeds_auto_closed_slot_and_inactive_masters(
     assert data["generated_at"] == "2026-02-04 03:00:00"
     assert data["generated_at_local"] == "2026-02-04 12:00:00"
     assert data["filter"] == {"reading_sessions": None, "cycle_groups": None}
-    assert data["locations"] == [{"location_id": LOCATION_ID, "location_name": "試験場所"}]
+    assert data["locations"] == [
+        {"location_id": LOCATION_ID, "location_name": "試験場所", "route_rank": 0}
+    ]
     assert data["slots"] == [
         {
             "planned_reading_id": slot_id,
@@ -634,6 +699,7 @@ def test_create_sheet_embeds_auto_closed_slot_and_inactive_masters(
         {
             "measurement_definition_id": DEFINITION_ID,
             "location_id": LOCATION_ID,
+            "route_rank": 0,
             "display_name": "試験測定対象",
             "category": "water",
             "unit": "m3",
@@ -663,7 +729,11 @@ def test_sheet_local_dates_follow_day_offsets_and_one_timezone_snapshot(
             ),
         )
     MeasurementDefinitionService(
-        repository, repository, repository, transaction_factory=partial(transaction, conn)
+        repository,
+        repository,
+        repository,
+        reading_route_repository=repository,
+        transaction_factory=partial(transaction, conn),
     ).set_initial_reading(DEFINITION_ID, Decimal("10"))
     service = _build_sheet_service(conn, repository)
     timezone_calls: list[tzinfo] = []

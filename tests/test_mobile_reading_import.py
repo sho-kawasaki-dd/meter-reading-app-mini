@@ -276,6 +276,7 @@ def test_initial_reading_is_recomputed_for_mobile_preview_and_import(
         sqlite_repository,
         sqlite_repository,
         sqlite_repository,
+        reading_route_repository=sqlite_repository,
         transaction_factory=lambda: transaction(memory_conn),
     ).set_initial_reading(DEFINITION_ID, Decimal("10"))
     result = _result(_submission("initial", "13", 8))
