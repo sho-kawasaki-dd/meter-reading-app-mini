@@ -290,6 +290,12 @@ label.field > .field-label {
   font-size: 1.15rem;
 }
 
+.toggle-sign {
+  flex: 0 0 44px;
+  min-height: 44px;
+  font: inherit;
+}
+
 .field-error {
   margin: 0;
   color: var(--error);

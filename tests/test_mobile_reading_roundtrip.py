@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     MeasurementDefinitionCreateRequest,
 )
 from meter_reading_mini.core.mobile_reading import parse_mobile_reading_result, render_sheet_html
+from meter_reading_mini.core.mobile_reading_import import MobileReadingImportService
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
 
@@ -44,6 +47,43 @@ def _saved_json_download(page: Page, tmp_path: Path) -> str:
     result_path = tmp_path / download.suggested_filename
     download.save_as(result_path)
     return result_path.read_text(encoding="utf-8")
+
+
+def test_signed_raw_only_result_round_trip(
+    sheet_browser: SheetBrowser,
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    tmp_path: Path,
+) -> None:
+    conn, repository = file_database_repository
+    _, sync = build_services(conn, repository, calculation_method=CalculationMethod.RAW_ONLY)
+    create_plan(repository, "valid", datetime(2026, 2, 4, 4, tzinfo=UTC))
+    page = sheet_browser.open_html(
+        render_sheet_html(
+            sheet_data(
+                [slot("valid", DEFINITION_ID, METER_ID), slot("invalid", DEFINITION_ID, METER_ID)],
+                [definition(DEFINITION_ID, calculation_method="raw_only")],
+                [meter(METER_ID)],
+            )
+        )
+    )
+    valid = page.locator('.card[data-slot-id="valid"]')
+    valid.locator(".raw").fill(" -1.25 ")
+    valid.locator(".confirm").click()
+    page.locator('.card[data-slot-id="invalid"] .raw').fill("-0")
+    page.locator("#result-copy").click()
+    mr1 = parse_mobile_reading_result(page.locator("#result-export-text").input_value())
+    text = _saved_json_download(page, tmp_path)
+    assert [row["raw_reading"] for row in json.loads(text)["entries"]] == ["-1.25"]
+    result = parse_mobile_reading_result(text)
+    assert result.entries == mr1.entries
+    importer = MobileReadingImportService(
+        repository, sync_service=sync, transaction_factory=partial(transaction, conn)
+    )
+    preview = importer.preview(mr1)
+    assert importer.commit(result, preview, staff_id=STAFF_ID).summary.confirmed == 1
+    assert conn.execute(
+        "SELECT planned_reading_id, raw_reading, usage_delta FROM reading_transactions"
+    ).fetchall() == [("valid", "-1.25", None)]
 
 
 def test_browser_mr1_and_json_round_trip_through_sync(

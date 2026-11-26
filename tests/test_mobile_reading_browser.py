@@ -1006,6 +1006,7 @@ def test_all_operations_are_reachable_at_each_viewport(
                     "def-a",
                     location_id="loc-a",
                     display_name="長い測定項目名" * 8,
+                    calculation_method="raw_only",
                 ),
                 definition("def-b", location_id="loc-a", display_name="B"),
                 definition("def-c", location_id="loc-c", display_name="C"),
@@ -1039,7 +1040,27 @@ def test_all_operations_are_reachable_at_each_viewport(
     page.locator(".unentered-toggle").check()
     page.locator(".unentered-toggle").uncheck()
 
-    enter_and_confirm(page, "a-1", "10")
+    first = card(page, "a-1")
+    raw = first.get_by_label("今回値")
+    toggle = first.get_by_role("button", name="符号を切り替え")
+    for other in ("a-2", "pf-1"):
+        expect(card(page, other).get_by_role("button", name="符号を切り替え")).to_have_count(0)
+    toggle.click()
+    expect(raw).to_be_focused()
+    expect(raw).to_have_value("-")
+    raw.fill(" 10 ")
+    toggle.click()
+    expect(raw).to_have_value("-10")
+    first.locator("label", has_text="今回値").click()
+    expect(raw).to_be_focused()
+    expect(raw).to_have_value("-10")
+    raw.fill(" -10 ")
+    toggle.click()
+    expect(raw).to_have_value("10")
+    raw.press("Home")
+    raw.press("-")
+    expect(raw).to_have_value("-10")
+    first.locator(".confirm").click()
     card(page, "a-1").locator(".note").fill("メモ")
     card(page, "a-1").locator(".confirm").click()
     card(page, "a-1").locator(".confirm").click()

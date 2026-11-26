@@ -313,6 +313,7 @@ def _with_top(**changes: object) -> dict[str, object]:
         _with_entry(raw_reading=1234.5),
         _with_entry(raw_reading="1e3"),
         _with_entry(raw_reading="-0.00"),
+        _with_entry(raw_reading=" -1.25 "),
         _with_entry(raw_reading="__drop__"),
         _with_entry(note=5),
         _with_entry(note="x" * (MAX_NOTE_LENGTH + 1)),
