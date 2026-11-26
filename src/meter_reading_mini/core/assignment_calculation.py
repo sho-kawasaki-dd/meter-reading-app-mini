@@ -6,6 +6,11 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import Protocol
 
+from meter_reading_mini.core.contract_models import (
+    CalculationMethod,
+    ValueSchema,
+    allows_negative_reading,
+)
 from meter_reading_mini.core.errors import (
     AssignmentNeedsReviewError,
     MissingPlannedAssignmentError,
@@ -29,6 +34,12 @@ from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculatio
 class ReadingPrecision(Protocol):
     @property
     def decimal_places(self) -> int | None: ...
+
+    @property
+    def calculation_method(self) -> CalculationMethod: ...
+
+    @property
+    def value_schema(self) -> ValueSchema: ...
 
 
 def resolve_planned_assignment(
@@ -99,14 +110,16 @@ def resolve_planned_calculation_context(
                 f"交換境界と予定枠の割当が一致しません: {planned.planned_reading_id}"
             )
         if boundary.new_initial_reading is not None:
-            validate_persisted_assignment_reading(boundary.new_initial_reading, assignment)
+            validate_persisted_assignment_reading(
+                boundary.new_initial_reading, definition, assignment
+            )
     if previous is not None:
         if previous.scheduled_at is None:
             raise ValidationError(f"前回実測の予定日時がありません: {previous.planned_reading_id}")
         if previous.scheduled_at < assignment.effective_from:
             previous = None
         else:
-            validate_persisted_assignment_reading(previous.raw_reading, assignment)
+            validate_persisted_assignment_reading(previous.raw_reading, definition, assignment)
     if assignment.initial_reading is not None:
         validate_initial_reading(
             assignment.initial_reading,
@@ -137,16 +150,22 @@ def validate_assignment_reading(
         value,
         decimal_places=definition.decimal_places,
         rollover_value=assignment.rollover_value,
+        allow_negative=allows_negative_reading(
+            definition.calculation_method, definition.value_schema
+        ),
     )
 
 
 def validate_persisted_assignment_reading(
-    value: Decimal, assignment: MeterAssignmentRecord
+    value: Decimal, definition: ReadingPrecision, assignment: MeterAssignmentRecord
 ) -> None:
     validate_reading_value(
         value,
         decimal_places=None,
         rollover_value=None if assignment.needs_review else assignment.rollover_value,
+        allow_negative=allows_negative_reading(
+            definition.calculation_method, definition.value_schema
+        ),
     )
 
 
@@ -166,7 +185,9 @@ def calculate_boundary_usage(
             rollover_value=old_assignment.rollover_value,
         )
     if boundary.new_initial_reading is not None:
-        validate_persisted_assignment_reading(boundary.new_initial_reading, new_assignment)
+        validate_persisted_assignment_reading(
+            boundary.new_initial_reading, definition, new_assignment
+        )
     previous = historical_repository.get_latest_measured_reading(
         boundary.measurement_definition_id,
         boundary.old_meter_id,
@@ -183,7 +204,7 @@ def calculate_boundary_usage(
         previous = None
         if previous_boundary.new_initial_reading is not None:
             validate_persisted_assignment_reading(
-                previous_boundary.new_initial_reading, old_assignment
+                previous_boundary.new_initial_reading, definition, old_assignment
             )
     elif previous is not None:
         if previous.scheduled_at is None:
@@ -191,10 +212,12 @@ def calculate_boundary_usage(
         if previous.scheduled_at < old_assignment.effective_from:
             previous = None
         else:
-            validate_persisted_assignment_reading(previous.raw_reading, old_assignment)
+            validate_persisted_assignment_reading(previous.raw_reading, definition, old_assignment)
     usage_delta = None
     if boundary.old_final_reading is not None:
-        validate_persisted_assignment_reading(boundary.old_final_reading, old_assignment)
+        validate_persisted_assignment_reading(
+            boundary.old_final_reading, definition, old_assignment
+        )
         result = calculation_service.calculate_measured_reading(
             definition_with_assignment_conditions(definition, old_assignment),
             boundary.old_final_reading,

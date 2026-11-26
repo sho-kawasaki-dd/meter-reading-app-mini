@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from importlib.resources import files
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,9 +19,11 @@ import pytest
 from meter_reading_mini.core.backup_restore_contracts import RestoreSummary
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.errors import FileOutputError, InvalidBackupError, RestoreError
+from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
 from meter_reading_mini.db import restore
 from meter_reading_mini.db.connection import connect, connect_readonly
 from meter_reading_mini.db.migrations import SCHEMA_VERSION, create_schema, migrate_schema
+from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
 
 
@@ -167,6 +170,48 @@ def _assert_no_workspace(harness: RestoreHarness) -> None:
 
 def _backup_path(harness: RestoreHarness) -> Path:
     return harness.path.parent / "backups" / "pre-restore_20260204_120000.db"
+
+
+def test_legacy_negative_zero_settings_survive_use_and_restore(
+    harness: RestoreHarness, tmp_path: Path
+) -> None:
+    source = tmp_path / "legacy.db"
+    _create_source(source)
+    with closing(connect(source)) as conn:
+        _seed_formula(conn)
+        conn.execute("UPDATE measurement_definitions SET warning_threshold = '-0.00'")
+        conn.execute("UPDATE meter_assignments SET initial_reading = '-0.00'")
+
+    def check_settings(path: Path) -> None:
+        with closing(connect_readonly(path)) as conn:
+            repository = SQLiteRepository(conn)
+            (sheet_definition,) = repository.list_sheet_measurement_definitions(["definition"])
+            assert str(sheet_definition.warning_threshold) == "0.00"
+            (assignment,) = repository.list_meter_assignments("definition")
+            definition = repository.get_measurement_definition("definition")
+            assert definition is not None
+            result = UsageDeltaCalculationService().calculate_measured_reading(
+                definition,
+                Decimal("2.5"),
+                None,
+                definition_initial_reading=assignment.initial_reading,
+            )
+            assert str(result.last_reading) == "0.00"
+            assert result.usage_delta == Decimal("2.5")
+            assert conn.execute("SELECT initial_reading FROM meter_assignments").fetchone() == (
+                "-0.00",
+            )
+            assert conn.execute(
+                "SELECT warning_threshold FROM measurement_definitions"
+            ).fetchone() == ("-0.00",)
+
+    check_settings(source)
+    backup = tmp_path / "legacy-backup.db"
+    with closing(connect(source)) as conn:
+        SQLiteBackupRestoreRepository(conn, source).create_backup(backup)
+    harness.service.preview_restore(backup)
+    harness.service.restore_after_shutdown(harness.close)
+    check_settings(harness.path)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4])

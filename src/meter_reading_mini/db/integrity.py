@@ -17,9 +17,12 @@ from meter_reading_mini.core.aggregation_contracts import (
 )
 from meter_reading_mini.core.contract_models import (
     SIGNED_DECIMAL_STRING_PATTERN,
+    CalculationMethod,
     Category,
     PowerFactorReading,
     Purpose,
+    ValueSchema,
+    allows_negative_reading,
 )
 from meter_reading_mini.core.errors import FormulaValidationError, ValidationError
 from meter_reading_mini.core.reading_values import validate_initial_reading, validate_reading_value
@@ -63,6 +66,17 @@ _DECIMAL_FIELDS: dict[str, tuple[tuple[str, bool, bool], ...]] = {
 }
 
 _Numbers = dict[tuple[str, int, str], Decimal]
+
+_LEGACY_ZERO_SETTINGS = {
+    ("measurement_definitions", "warning_threshold"),
+    ("meter_assignments", "initial_reading"),
+}
+_SIGN_DEPENDS_ON_DEFINITION = {
+    ("reading_transactions", "raw_reading"),
+    ("replacement_boundaries", "previous_measured_reading"),
+    ("replacement_boundaries", "old_final_reading"),
+    ("replacement_boundaries", "new_initial_reading"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +136,15 @@ def _check_decimal_fields(conn: sqlite3.Connection, reasons: list[str]) -> _Numb
                     continue
                 if not number.is_finite() or format(number, "f") != raw:
                     reasons.append(f"{label}は有限の plain decimal 文字列ではありません。")
-                elif number < 0 or (positive and number == 0):
+                    continue
+                if number.is_signed() and number.is_zero():
+                    if (table, column) not in _LEGACY_ZERO_SETTINGS:
+                        reasons.append(f"{label}に負のゼロは指定できません。")
+                        continue
+                    number = number.copy_abs()
+                if (number < 0 and (table, column) not in _SIGN_DEPENDS_ON_DEFINITION) or (
+                    positive and number == 0
+                ):
                     qualifier = "正数" if positive else "0 以上"
                     reasons.append(f"{label}は{qualifier}でなければなりません。")
                 else:
@@ -225,7 +247,12 @@ def _check_assignments(
 
 
 def _check_reading_value(
-    value: Decimal | None, assignment: _Assignment, label: str, reasons: list[str]
+    value: Decimal | None,
+    assignment: _Assignment | None,
+    label: str,
+    reasons: list[str],
+    *,
+    allow_negative: bool = False,
 ) -> None:
     if value is None:
         return
@@ -233,7 +260,10 @@ def _check_reading_value(
         validate_reading_value(
             value,
             decimal_places=None,
-            rollover_value=None if assignment.needs_review else assignment.rollover,
+            rollover_value=assignment.rollover
+            if assignment and not assignment.needs_review
+            else None,
+            allow_negative=allow_negative,
         )
     except ValidationError as exc:
         reasons.append(f"{label}: {exc}")
@@ -307,14 +337,17 @@ def _check_planned_readings(
                 reasons.append(f"{label}の数値実測結果と入力形式が一致しません。")
             if method == "delta" and usage is None:
                 reasons.append(f"{label}の使用量がありません。")
-            if matching:
-                for column in ("raw_reading", "last_reading"):
-                    _check_reading_value(
-                        numbers.get(("reading_transactions", int(result_rowid), column)),
-                        matching[0],
-                        f"{label}の{column}",
-                        reasons,
-                    )
+            allow_negative = allows_negative_reading(
+                CalculationMethod(method), ValueSchema(value_schema)
+            )
+            for column in ("raw_reading", "last_reading"):
+                _check_reading_value(
+                    numbers.get(("reading_transactions", int(result_rowid), column)),
+                    matching[0] if matching else None,
+                    f"{label}の{column}",
+                    reasons,
+                    allow_negative=column == "raw_reading" and allow_negative,
+                )
         elif value_schema == "power_factor_percent_phase":
             if raw is not None or not isinstance(payload, str):
                 reasons.append(f"{label}の力率実測結果と入力形式が一致しません。")
@@ -368,7 +401,7 @@ def _check_boundaries(
         "b.previous_measured_planned_reading_id, b.old_final_reading, b.old_meter_usage_delta, "
         "e.location_id, e.old_meter_id, e.new_meter_id, "
         "e.replaced_at, e.old_final_reading, e.new_initial_reading, "
-        "d.location_id, d.calculation_method "
+        "d.location_id, d.calculation_method, d.value_schema "
         "FROM replacement_boundaries AS b "
         "JOIN replacement_events AS e USING (replacement_event_id) "
         "JOIN measurement_definitions AS d USING (measurement_definition_id) "
@@ -397,6 +430,7 @@ def _check_boundaries(
             event_initial,
             def_location,
             method,
+            value_schema,
         ) = row
         label = f"交換境界 {event_id}/{definition_id}"
         replaced_at = _read_datetime(replaced_text, f"{label}の交換日時", reasons)
@@ -422,6 +456,9 @@ def _check_boundaries(
         ):
             reasons.append(f"{label}と旧・新割当の期間が一致しません。")
         else:
+            allow_negative = allows_negative_reading(
+                CalculationMethod(method), ValueSchema(value_schema)
+            )
             for column, assignment in (
                 ("previous_measured_reading", old),
                 ("old_final_reading", old),
@@ -432,6 +469,7 @@ def _check_boundaries(
                     assignment,
                     f"{label}の{column}",
                     reasons,
+                    allow_negative=allow_negative,
                 )
         if (previous_id is None) != (previous_value is None):
             reasons.append(f"{label}の前回実測値と参照先が一致しません。")

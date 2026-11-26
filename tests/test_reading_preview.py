@@ -16,6 +16,7 @@ from reading_service_helpers import (
 )
 
 from meter_reading_mini.core.contract_models import (
+    CalculationMethod,
     Category,
     MeterReadingSyncRequest,
     MeterReplacementSubmission,
@@ -337,12 +338,54 @@ def test_preview_rejects_correction_that_makes_a_later_replacement_boundary_nega
     assert preview.error is not None and "ロールオーバー" in preview.error
 
 
-@pytest.mark.parametrize("value", ["-1", "-0"])
-def test_preview_and_save_reject_negative_decimal_objects(
-    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository], value: str
+def test_signed_raw_only_preview_save_and_correction(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:
     conn, repository = file_database_repository
-    writer, _ = build_services(conn, repository)
+    writer, _ = build_services(
+        conn,
+        repository,
+        calculation_method=CalculationMethod.RAW_ONLY,
+        rollover_value=Decimal("10"),
+    )
+    create_plan(repository, "first", _at(4))
+    for raw in ("-12", "-0.5", "-0.01"):
+        reading = _input("first", raw, 4)
+        changes = conn.total_changes
+        preview = _preview(repository).preview_manual_reading(reading)
+        assert preview.can_save and preview.usage_delta is None
+        assert changes == conn.total_changes
+        writer.save_manual_reading(reading, staff_id=STAFF_ID)
+        assert conn.execute(
+            "SELECT raw_reading, last_reading, usage_delta FROM reading_transactions"
+        ).fetchall() == [(raw, None, None)]
+        definition = next(
+            item
+            for item in repository.list_measurement_definition_data()
+            if item.measurement_definition_id == DEFINITION_ID
+        )
+        assert definition.last_reading == Decimal(raw)
+
+
+@pytest.mark.parametrize(
+    ("method", "value"),
+    [
+        (CalculationMethod.DELTA, "-1"),
+        (CalculationMethod.DELTA, "-0"),
+        (CalculationMethod.RAW_ONLY, "-0.00"),
+        (CalculationMethod.RAW_ONLY, "-0.001"),
+        (CalculationMethod.RAW_ONLY, "10"),
+    ],
+)
+def test_preview_and_save_reject_invalid_decimal_objects(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    method: CalculationMethod,
+    value: str,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(
+        conn, repository, calculation_method=method, rollover_value=Decimal("10")
+    )
     create_plan(repository, "first", _at(4))
     reading = _input("first", value, 4)
     for action in (

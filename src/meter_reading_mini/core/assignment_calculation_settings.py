@@ -33,6 +33,7 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReplacementBoundaryMaintenanceRepository,
     StaffRepository,
 )
+from meter_reading_mini.core.reading_values import validate_initial_reading
 from meter_reading_mini.core.timeutil import parse_utc, utc_now, utc_now_str
 from meter_reading_mini.core.timezone_settings import normalize_to_utc
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
@@ -189,7 +190,11 @@ class AssignmentCalculationSettingsService:
         issues: list[AssignmentCorrectionIssue] = []
         if proposed.initial_reading is not None:
             try:
-                validate_persisted_assignment_reading(proposed.initial_reading, proposed)
+                validate_initial_reading(
+                    proposed.initial_reading,
+                    decimal_places=None,
+                    rollover_value=proposed.rollover_value,
+                )
             except ValidationError as exc:
                 issues.append(AssignmentCorrectionIssue("initial_reading", str(exc)))
 
@@ -209,7 +214,7 @@ class AssignmentCalculationSettingsService:
                 )
                 if assignment != proposed:
                     raise ValidationError("予定枠と訂正対象の割当が一致しません。")
-                validate_persisted_assignment_reading(reading.raw_reading, assignment)
+                validate_persisted_assignment_reading(reading.raw_reading, definition, assignment)
                 result = self._calculation.calculate_measured_reading(
                     definition_with_assignment_conditions(definition, assignment),
                     reading.raw_reading,

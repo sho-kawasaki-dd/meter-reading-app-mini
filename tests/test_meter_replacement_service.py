@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+from pydantic import ValidationError as ContractValidationError
 from reading_service_helpers import (
     DEFINITION_ID,
     LOCATION_ID,
@@ -29,6 +30,8 @@ from meter_reading_mini.core.contract_models import (
     Purpose,
     ReadingCycle,
     ResultStatus,
+    SyncItemIgnoreCode,
+    SyncItemRejectCode,
     ValueSchema,
 )
 from meter_reading_mini.core.errors import (
@@ -294,6 +297,76 @@ def test_replacement_retains_nonmeasured_audit_and_correction_updates_both_sides
     assert check_business_integrity(conn) == []
 
 
+def test_signed_raw_only_exchange_and_correction_recalculate_boundary_and_successor(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, calculation_method=CalculationMethod.RAW_ONLY)
+    _meter(repository, "new-meter")
+    create_plan(repository, "before", _at(4))
+    create_plan(repository, "after", _at(6))
+    writer.save_manual_reading(
+        ManualReadingInput("before", ResultStatus.MEASURED, _at(4), Decimal("-2"), None),
+        staff_id=STAFF_ID,
+    )
+    service = _service(conn, repository, writer)
+    request = replace(
+        _request(), old_final_reading=Decimal("-3"), new_initial_reading=Decimal("-4")
+    )
+    preview = service.preview_replacement(request)
+    assert preview.can_register and preview.definitions[0].old_usage_delta is None
+    event = service.register_replacement(request)
+    boundary_sql = (
+        "SELECT previous_measured_reading, old_final_reading, new_initial_reading, "
+        "old_meter_usage_delta FROM replacement_boundaries"
+    )
+    assert conn.execute(boundary_sql).fetchall() == [("-2", "-3", "-4", None)]
+    slot = repository.get_planned_reading("after")
+    assert slot is not None and slot.superseded_by_planned_reading_id is not None
+    successor = slot.superseded_by_planned_reading_id
+    writer.save_manual_reading(
+        ManualReadingInput(successor, ResultStatus.MEASURED, _at(6), Decimal("-5"), None),
+        staff_id=STAFF_ID,
+    )
+    service.correct_replacement(
+        MeterReplacementCorrectionInput(
+            event.replacement_event_id, Decimal("-6"), Decimal("-7"), STAFF_ID
+        )
+    )
+    assert conn.execute(boundary_sql).fetchall() == [("-2", "-6", "-7", None)]
+    assert conn.execute(
+        "SELECT raw_reading, last_reading, usage_delta FROM reading_transactions "
+        "WHERE planned_reading_id = ?",
+        (successor,),
+    ).fetchone() == ("-5", None, None)
+
+
+@pytest.mark.parametrize(
+    ("method", "value"),
+    [
+        (CalculationMethod.DELTA, "-1"),
+        (CalculationMethod.DELTA, "-0"),
+        (CalculationMethod.RAW_ONLY, "-0.00"),
+    ],
+)
+@pytest.mark.parametrize("field", ["old_final_reading", "new_initial_reading"])
+def test_pc_exchange_rejects_disallowed_signed_value_without_changes(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+    method: CalculationMethod,
+    value: str,
+    field: str,
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, calculation_method=method)
+    _meter(repository, "new-meter")
+    service = _service(conn, repository, writer)
+    request = replace(_request(), **{field: Decimal(value)})
+    before = _database_state(conn)
+    with pytest.raises(ValidationError):
+        service.register_replacement(request)
+    assert _database_state(conn) == before
+
+
 def test_auto_closed_slot_creates_an_auto_closed_replacement_successor(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:
@@ -423,7 +496,7 @@ def test_mobile_sync_saves_replacement_readings_per_definition(
             decimal_places=2,
             warning_threshold=None,
             rollover_value=Decimal("100"),
-            calculation_method=CalculationMethod.DELTA,
+            calculation_method=CalculationMethod.RAW_ONLY,
             reading_cycle=ReadingCycle.DAILY_1X,
             purpose=Purpose.OPERATIONAL,
             generation_start_date=date(2026, 2, 1),
@@ -447,8 +520,8 @@ def test_mobile_sync_saves_replacement_readings_per_definition(
                 },
                 {
                     "measurement_definition_id": "second-definition",
-                    "old_final_reading": "35",
-                    "new_initial_reading": "2",
+                    "old_final_reading": "-35",
+                    "new_initial_reading": "-2",
                 },
             ],
             "updated_by": "mobile",
@@ -465,12 +538,72 @@ def test_mobile_sync_saves_replacement_readings_per_definition(
         "SELECT measurement_definition_id, old_final_reading, new_initial_reading "
         "FROM replacement_boundaries ORDER BY measurement_definition_id"
     ).fetchall() == [
-        ("second-definition", "35", "2"),
+        ("second-definition", "-35", "-2"),
         (DEFINITION_ID, "120", "5"),
     ]
     assert conn.execute(
         "SELECT old_final_reading, new_initial_reading FROM replacement_events"
     ).fetchone() == (None, None)
+
+
+@pytest.mark.parametrize("field", ["old_final_reading", "new_initial_reading"])
+def test_sync_delta_exchange_rolls_back_signed_resend_but_ignores_stale(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository], field: str
+) -> None:
+    conn, repository = file_database_repository
+    writer, sync, _ = _setup(conn, repository)
+    payload = {
+        "replacement_event_id": "exchange",
+        "location_id": LOCATION_ID,
+        "old_meter_id": METER_ID,
+        "new_meter_id": "new-meter",
+        "replaced_at": _at(5),
+        "client_updated_at": _at(6),
+        "old_final_reading": "120",
+        "new_initial_reading": "5",
+        "updated_by": "mobile",
+    }
+
+    def submit(item: MeterReplacementSubmission):
+        return sync.sync(
+            MeterReadingSyncRequest(reading_items=[], replacement_items=[item]),
+            confirmation_context(),
+        )
+
+    before = _database_state(conn)
+    rejected = submit(MeterReplacementSubmission.model_validate(payload | {field: "-1"}))
+    assert [r.code for r in rejected.rejected_replacement_items] == [
+        SyncItemRejectCode.INVALID_REPLACEMENT_SUBMISSION
+    ]
+    assert _database_state(conn) == before
+
+    assert (
+        submit(MeterReplacementSubmission.model_validate(payload)).accepted_replacement_items == 1
+    )
+    old = repository.get_planned_reading("open")
+    assert old is not None and old.superseded_by_planned_reading_id is not None
+    writer.save_manual_reading(
+        ManualReadingInput(
+            old.superseded_by_planned_reading_id, ResultStatus.MEASURED, _at(7), Decimal("7"), None
+        ),
+        staff_id=STAFF_ID,
+    )
+    before = _database_state(conn)
+    newer = payload | {"client_updated_at": _at(8), field: "-1"}
+    response = submit(MeterReplacementSubmission.model_validate(newer))
+    assert [r.code for r in response.rejected_replacement_items] == [
+        SyncItemRejectCode.INVALID_REPLACEMENT_SUBMISSION
+    ]
+    assert _database_state(conn) == before
+
+    stale = newer | {"client_updated_at": _at(5)}
+    response = submit(MeterReplacementSubmission.model_validate(stale))
+    assert [r.code for r in response.ignored_replacement_items] == [
+        SyncItemIgnoreCode.STALE_CLIENT_UPDATE
+    ]
+    with pytest.raises(ContractValidationError):
+        MeterReplacementSubmission.model_validate(stale | {field: "-0.00"})
+    assert _database_state(conn) == before
 
 
 def test_correction_recalculates_a_later_replacement_without_intermediate_readings(

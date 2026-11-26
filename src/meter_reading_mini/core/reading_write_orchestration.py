@@ -296,7 +296,9 @@ class ReadingWriteOrchestrationService:
         for measured_reading in following:
             current_planned = self._get_planned_reading(measured_reading.planned_reading_id)
             assignment = resolve_planned_assignment(self._assignment_repository, current_planned)
-            validate_persisted_assignment_reading(measured_reading.raw_reading, assignment)
+            validate_persisted_assignment_reading(
+                measured_reading.raw_reading, measurement_definition, assignment
+            )
             scoped_definition = definition_with_assignment_conditions(
                 measurement_definition, assignment
             )
@@ -395,7 +397,9 @@ class ReadingWriteOrchestrationService:
             if before_scheduled_at is not None and planned.scheduled_at >= before_scheduled_at:
                 break
             assignment = resolve_planned_assignment(self._assignment_repository, planned)
-            validate_persisted_assignment_reading(measured_reading.raw_reading, assignment)
+            validate_persisted_assignment_reading(
+                measured_reading.raw_reading, measurement_definition, assignment
+            )
             scoped_definition = definition_with_assignment_conditions(
                 measurement_definition, assignment
             )

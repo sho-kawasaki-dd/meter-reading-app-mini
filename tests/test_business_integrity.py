@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from decimal import Decimal
 from functools import partial
@@ -32,6 +33,7 @@ from meter_reading_mini.core.contract_models import (
     ResultStatus,
     ValueSchema,
 )
+from meter_reading_mini.core.errors import InvalidBackupError
 from meter_reading_mini.core.meter_reading_sync_repositories import (
     ManualReadingInput,
     MeasurementDefinitionCreateRequest,
@@ -45,6 +47,7 @@ from meter_reading_mini.db.integrity import (
 )
 from meter_reading_mini.db.migrations import create_schema
 from meter_reading_mini.db.repositories import SQLiteRepository
+from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
 
 
 def _at(hour: int) -> datetime:
@@ -174,6 +177,82 @@ def test_legacy_location_name_conflict_is_a_warning_not_a_restore_blocker(
         "場所 test-location に異なる場所名" in warning
         for warning in list_business_integrity_warnings(conn)
     )
+
+
+def test_restore_preserves_negative_raw_only_readings_across_replacement(
+    prepared_database: tuple[sqlite3.Connection, str], tmp_path: Path
+) -> None:
+    conn, _ = prepared_database
+    conn.execute("UPDATE measurement_definitions SET calculation_method = 'raw_only'")
+    conn.execute(
+        "UPDATE reading_transactions SET raw_reading = '-2.50', "
+        "last_reading = NULL, usage_delta = NULL"
+    )
+    conn.execute(
+        "UPDATE replacement_boundaries SET previous_measured_reading = '-2.50', "
+        "old_final_reading = '-1', new_initial_reading = '-3', old_meter_usage_delta = NULL"
+    )
+    path = tmp_path / "meter-reading.db"
+    backup = tmp_path / "signed.db"
+    restore = SQLiteBackupRestoreRepository(conn, path)
+    restore.create_backup(backup)
+    conn.execute("UPDATE reading_transactions SET raw_reading = '50'")
+    restore.preview_restore(backup)
+    restore.restore_after_shutdown(tmp_path / "before-restore.db", conn.close)
+    with closing(connect_readonly(path)) as restored:
+        assert restored.execute("SELECT raw_reading FROM reading_transactions").fetchall() == [
+            ("-2.50",),
+            ("-2.50",),
+        ]
+        assert restored.execute(
+            "SELECT previous_measured_reading, old_final_reading, new_initial_reading "
+            "FROM replacement_boundaries"
+        ).fetchall() == [("-2.50", "-1", "-3")]
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "value", "superseded"),
+    [
+        ("reading_transactions", "raw_reading", "-1", False),
+        ("reading_transactions", "raw_reading", "-1", True),
+        ("reading_transactions", "last_reading", "-1", False),
+        ("reading_transactions", "usage_delta", "-1", False),
+        ("reading_transactions", "raw_reading", "-0.00", True),
+        ("reading_transactions", "usage_delta", "-0.00", False),
+        ("replacement_boundaries", "previous_measured_reading", "-1", False),
+        ("replacement_boundaries", "old_final_reading", "-1", False),
+        ("replacement_boundaries", "new_initial_reading", "-1", False),
+        ("replacement_boundaries", "new_initial_reading", "-0.00", False),
+    ],
+)
+def test_restore_rejects_invalid_reading_sign(
+    prepared_database: tuple[sqlite3.Connection, str],
+    tmp_path: Path,
+    table: str,
+    column: str,
+    value: str,
+    superseded: bool,
+) -> None:
+    conn, successor = prepared_database
+    restore = SQLiteBackupRestoreRepository(conn, tmp_path / "meter-reading.db")
+    backup = tmp_path / "bad-sign.db"
+    restore.create_backup(backup)
+    with closing(connect(backup)) as candidate:
+        if superseded:
+            candidate.execute(
+                "UPDATE planned_readings SET task_state = 'superseded', "
+                "close_reason = 'schedule_recomposed' WHERE planned_reading_id = ?",
+                (successor,),
+            )
+        if table == "reading_transactions":
+            candidate.execute(
+                f"UPDATE reading_transactions SET {column} = ? WHERE planned_reading_id = ?",
+                (value, successor),
+            )
+        else:
+            candidate.execute(f"UPDATE replacement_boundaries SET {column} = ?", (value,))
+    with pytest.raises(InvalidBackupError, match=column):
+        restore.preview_restore(backup)
 
 
 @pytest.mark.parametrize(

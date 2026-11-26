@@ -19,6 +19,7 @@ from meter_reading_mini.core.contract_models import (
     PreviousReadingSource,
     ResultStatus,
     ValueSchema,
+    allows_negative_reading,
 )
 from meter_reading_mini.core.decimal_arithmetic import exact_add
 from meter_reading_mini.core.errors import ValidationError
@@ -419,7 +420,11 @@ class _HistoryBuilder:
                 )
         else:
             invalid |= any(value is not None for value in values)
-        invalid |= any(value is not None and value < 0 for value in values[:3])
+        invalid |= self._invalid_reading_sign(reading.raw_reading)
+        invalid |= any(
+            value is not None and value.is_signed()
+            for value in (reading.last_reading, reading.usage_delta)
+        )
         if invalid:
             issues.append(
                 ReadingHistoryIssue(
@@ -519,6 +524,18 @@ class _HistoryBuilder:
             tuple(issues),
         )
 
+    def _invalid_reading_sign(self, value: Decimal | None) -> bool:
+        return (
+            value is not None
+            and value.is_signed()
+            and (
+                value.is_zero()
+                or not allows_negative_reading(
+                    self.definition.calculation_method, self.definition.value_schema
+                )
+            )
+        )
+
     def _boundary(self, boundary: ReadingHistoryBoundaryRecord, *, old: bool) -> ReadingHistoryRow:
         issues: list[ReadingHistoryIssue] = []
         assignment = self._boundary_assignment(boundary, old=old)
@@ -534,9 +551,11 @@ class _HistoryBuilder:
         last = None
         source = None
         reference = None
-        if boundary.location_id != self.definition.location_id or any(
-            value is not None and value < 0
-            for value in (raw, usage, boundary.previous_measured_reading)
+        if (
+            boundary.location_id != self.definition.location_id
+            or self._invalid_reading_sign(raw)
+            or self._invalid_reading_sign(boundary.previous_measured_reading)
+            or (usage is not None and usage.is_signed())
         ):
             issues.append(
                 ReadingHistoryIssue(

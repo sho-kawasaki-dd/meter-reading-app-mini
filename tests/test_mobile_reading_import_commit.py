@@ -218,6 +218,11 @@ def test_parsed_result_warns_on_header_mismatch_and_partially_commits(
     services: ImportServices, as_mr1: bool
 ) -> None:
     create_plan(services.repository, "valid", _at(8))
+    services.conn.execute(
+        "UPDATE measurement_definitions SET calculation_method = 'raw_only' "
+        "WHERE measurement_definition_id = ?",
+        (DEFINITION_ID,),
+    )
     payload = {
         "kind": RESULT_KIND,
         "v": 1,
@@ -233,7 +238,7 @@ def test_parsed_result_warns_on_header_mismatch_and_partially_commits(
                 "recorded_at": "2026-02-04T17:00:00+09:00",
                 "client_updated_at": "2026-02-06T17:00:00+09:00",
             }
-            for slot, raw in (("missing", "1"), ("valid", "10"))
+            for slot, raw in (("missing", "1"), ("valid", "-10.25"))
         ],
     }
     text = encode_mr1_envelope(payload) if as_mr1 else json.dumps(payload, ensure_ascii=False)
@@ -266,10 +271,32 @@ def test_parsed_result_warns_on_header_mismatch_and_partially_commits(
     ].existing_result
     assert stored is not None
     assert (stored.raw_reading, stored.device_id, stored.result_source) == (
-        Decimal("10"),
+        Decimal("-10.25"),
         SHEET_ID,
         ResultSource.MOBILE_HTML,
     )
+    assert stored.last_reading is None and stored.usage_delta is None
+    verify_meter_reading_signature(
+        planned_reading_id="valid",
+        result_status=stored.result_status,
+        raw_reading=stored.raw_reading,
+        structured_payload_json=None,
+        recorded_at=stored.recorded_at,
+        device_id=stored.device_id,
+        signature=stored.signature,
+    )
+
+
+def test_negative_delta_reading_is_rejected_by_import_preview(services: ImportServices) -> None:
+    create_plan(services.repository, "delta", _at(8))
+    result = _result(_entry("delta", "-1", 8))
+    before = tuple(services.conn.iterdump())
+    preview = services.importer.preview(result)
+    assert preview.rows[0].reason is not None
+    assert preview.rows[0].reason.code is MobileReadingRejectCode.INVALID_INPUT
+    with pytest.raises(MobileReadingNothingToCommitError):
+        services.importer.commit(result, preview, staff_id=STAFF_ID)
+    assert tuple(services.conn.iterdump()) == before
 
 
 @pytest.mark.parametrize(

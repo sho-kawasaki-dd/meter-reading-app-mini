@@ -23,6 +23,7 @@ from meter_reading_mini.core.assignment_calculation_settings import (
     AssignmentCalculationSettingsService,
 )
 from meter_reading_mini.core.contract_models import (
+    CalculationMethod,
     Category,
     MeterReadingSyncRequest,
     MeterReplacementSubmission,
@@ -177,6 +178,44 @@ def _state(conn: sqlite3.Connection) -> tuple[list[tuple], ...]:
     )
 
 
+def test_condition_correction_accepts_negative_raw_only_reading(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    writer, _ = build_services(conn, repository, calculation_method=CalculationMethod.RAW_ONLY)
+    create_plan(repository, "pressure", _at(4))
+    writer.save_manual_reading(
+        ManualReadingInput("pressure", ResultStatus.MEASURED, _at(4), Decimal("-2"), None),
+        staff_id=STAFF_ID,
+    )
+    service = _service(conn, repository)
+    request = _request(repository, METER_ID, "2", "10")
+    assert service.preview_correction(request).can_apply
+    service.correct_assignment(request)
+    assert conn.execute(
+        "SELECT raw_reading, last_reading, usage_delta FROM reading_transactions"
+    ).fetchall() == [("-2", None, None)]
+
+
+def test_condition_correction_rejects_negative_assignment_initial_reading(
+    file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
+) -> None:
+    conn, repository = file_database_repository
+    build_services(conn, repository)
+    conn.execute(
+        "UPDATE meter_assignments SET initial_reading = '-1' WHERE meter_id = ?", (METER_ID,)
+    )
+    service = _service(conn, repository)
+    request = _request(repository, METER_ID, "2", None)
+    before = _state(conn)
+    assert "initial_reading" in {
+        issue.target for issue in service.preview_correction(request).issues
+    }
+    with pytest.raises(ValidationError):
+        service.correct_assignment(request)
+    assert _state(conn) == before
+
+
 def test_preview_and_correction_preserve_audit_and_use_each_period(
     file_database_repository: tuple[sqlite3.Connection, SQLiteRepository],
 ) -> None:
@@ -199,6 +238,7 @@ def test_preview_and_correction_preserve_audit_and_use_each_period(
         "SELECT old_meter_usage_delta FROM replacement_boundaries "
         "WHERE replacement_event_id = 'replace-1'"
     ).fetchone() == ("240",)
+
     assert conn.execute(
         "SELECT usage_delta FROM reading_transactions WHERE planned_reading_id = ?", (successor,)
     ).fetchone() == ("60",)

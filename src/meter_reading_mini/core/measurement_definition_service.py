@@ -343,7 +343,7 @@ def _validate_optional_decimal(
 ) -> None:
     if value is None:
         return
-    if not value.is_finite() or value < 0 or (not allow_zero and value == 0):
+    if not value.is_finite() or value.is_signed() or (not allow_zero and value == 0):
         qualifier = "0 以上" if allow_zero else "正数"
         raise ValidationError(f"{label}は有限の{qualifier}で指定してください。")
 

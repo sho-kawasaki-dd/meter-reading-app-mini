@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from meter_reading_mini.core.contract_models import (
+    CalculationMethod,
     Category,
     IgnoredReadingSyncItem,
     MeasurementDefinitionData,
@@ -148,6 +149,14 @@ def test_measurement_definition_rejects_negative_decimal_fields() -> None:
 @pytest.mark.parametrize("value", [Decimal("-1"), Decimal("-0")])
 def test_nonnegative_contract_rejects_signed_decimal_objects(value: Decimal) -> None:
     with pytest.raises(ValidationError):
+        PowerFactorReading.model_validate({"percent": value, "phase": "lead"})
+
+
+@pytest.mark.parametrize(
+    "value", [Decimal("-0"), "-0.00", "+1", "1e1", "-.5", "-1,5", " -1", "-1 "]
+)
+def test_signed_reading_contract_rejects_invalid_input(value: object) -> None:
+    with pytest.raises(ValidationError):
         MeterReadingSubmission.model_validate(
             {
                 "planned_reading_id": "plan-001",
@@ -157,8 +166,6 @@ def test_nonnegative_contract_rejects_signed_decimal_objects(value: Decimal) -> 
                 "client_updated_at": "2026-04-01T08:05:00+09:00",
             }
         )
-    with pytest.raises(ValidationError):
-        PowerFactorReading.model_validate({"percent": value, "phase": "lead"})
 
 
 def test_meter_reading_submission_requires_raw_reading_for_measured() -> None:
@@ -330,6 +337,7 @@ def test_resolved_meter_reading_submission_validates_power_factor_payload() -> N
         transport_submission,
         measurement_definition_id="md-pf-001",
         value_schema=ValueSchema.POWER_FACTOR_PERCENT_PHASE,
+        calculation_method=CalculationMethod.RAW_ONLY,
         decimal_places=None,
         rollover_value=None,
     )
@@ -360,6 +368,7 @@ def test_resolved_meter_reading_submission_validates_power_factor_payload() -> N
             invalid_transport_submission,
             measurement_definition_id="md-pf-001",
             value_schema=ValueSchema.POWER_FACTOR_PERCENT_PHASE,
+            calculation_method=CalculationMethod.RAW_ONLY,
             decimal_places=None,
             rollover_value=None,
         )
@@ -380,6 +389,7 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
         raw_transport,
         measurement_definition_id="md-decimal-001",
         value_schema=ValueSchema.DECIMAL_STRING,
+        calculation_method=CalculationMethod.DELTA,
         decimal_places=1,
         rollover_value=Decimal("100000"),
     )
@@ -393,6 +403,7 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
             raw_transport,
             measurement_definition_id="md-pf-001",
             value_schema=ValueSchema.POWER_FACTOR_PERCENT_PHASE,
+            calculation_method=CalculationMethod.RAW_ONLY,
             decimal_places=None,
             rollover_value=None,
         )
@@ -415,6 +426,7 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
             structured_transport,
             measurement_definition_id="md-decimal-001",
             value_schema=ValueSchema.DECIMAL_STRING,
+            calculation_method=CalculationMethod.DELTA,
             decimal_places=1,
             rollover_value=Decimal("100000"),
         )
@@ -432,6 +444,7 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
             ),
             measurement_definition_id="md-decimal-001",
             value_schema=ValueSchema.DECIMAL_STRING,
+            calculation_method=CalculationMethod.DELTA,
             decimal_places=1,
             rollover_value=Decimal("100000"),
         )
@@ -441,6 +454,7 @@ def test_resolved_meter_reading_submission_requires_value_schema_specific_payloa
             raw_transport,
             measurement_definition_id="md-decimal-001",
             value_schema=ValueSchema.DECIMAL_STRING,
+            calculation_method=CalculationMethod.DELTA,
             decimal_places=1,
             rollover_value=Decimal("10.0"),
         )

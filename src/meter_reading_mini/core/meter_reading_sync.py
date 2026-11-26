@@ -17,6 +17,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from meter_reading_mini.core.assignment_calculation import resolve_planned_assignment
 from meter_reading_mini.core.contract_models import (
+    CalculationMethod,
     IgnoredReadingSyncItem,
     IgnoredReplacementSyncItem,
     MeterReadingSubmission,
@@ -121,7 +122,7 @@ class InvalidReadingSubmissionError(MeterReadingSyncServiceError):
 
 
 ReadingSubmissionResolver = Callable[
-    [MeterReadingSubmission, str, ValueSchema, int | None, Decimal | None],
+    [MeterReadingSubmission, str, ValueSchema, CalculationMethod, int | None, Decimal | None],
     ResolvedMeterReadingSubmission,
 ]
 
@@ -130,6 +131,7 @@ def _default_reading_submission_resolver(
     submission: MeterReadingSubmission,
     measurement_definition_id: str,
     value_schema: ValueSchema,
+    calculation_method: CalculationMethod,
     decimal_places: int | None,
     rollover_value: Decimal | None,
 ) -> ResolvedMeterReadingSubmission:
@@ -139,6 +141,7 @@ def _default_reading_submission_resolver(
         submission,
         measurement_definition_id=measurement_definition_id,
         value_schema=value_schema,
+        calculation_method=calculation_method,
         decimal_places=decimal_places,
         rollover_value=rollover_value,
     )
@@ -172,6 +175,7 @@ def build_reading_upsert_request(
             submission,
             measurement_definition.measurement_definition_id,
             measurement_definition.value_schema,
+            measurement_definition.calculation_method,
             measurement_definition.decimal_places,
             assignment.rollover_value,
         )

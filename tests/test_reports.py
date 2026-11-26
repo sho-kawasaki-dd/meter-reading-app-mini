@@ -972,23 +972,48 @@ def test_history_matches_direct_aggregation_with_rollover_and_replacement(
 def test_history_raw_only_replacement_allows_previous_measured_value(scenario: Scenario) -> None:
     scenario.definition("a", calculation=CalculationMethod.RAW_ONLY)
     scenario.meter("new", "location-a")
-    scenario.plan("before", "a", date(2026, 2, 9), value="100")
+    day = date(2026, 2, 10)
+    spec = AggregationExportPeriodSpec(AggregationPeriodUnit.MONTH, day.replace(day=1))
+    reports = scenario.context.aggregation_reports
+    expected = json.loads(build_aggregation_json(reports.get_export_snapshot(spec)))["results"]
+    scenario.plan("before", "a", date(2026, 2, 9), value="-100")
     scenario.context.meter_replacement.register_replacement(
         MeterReplacementInput(
             old_meter_id="meter-a",
             new_meter_id="new",
             replaced_at=datetime(2026, 2, 10, 3, tzinfo=UTC),
-            old_final_reading=Decimal("110"),
-            new_initial_reading=Decimal("5"),
+            old_final_reading=Decimal("-110"),
+            new_initial_reading=Decimal("-5"),
             staff_id=scenario.staff_id,
         )
     )
-    day = date(2026, 2, 10)
-    history = scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+    history = scenario.context.reading_history.get_history(
+        ReadingHistoryQuery("a", day.replace(day=9), day)
+    )
     assert history.total_usage is None
     assert history.warning_count == 0
-    assert history.rows[0].raw_reading == Decimal("110")
-    assert history.rows[0].last_reading is None
+    assert [row.raw_reading for row in history.rows] == [
+        Decimal("-100"),
+        Decimal("-110"),
+        Decimal("-5"),
+    ]
+    assert all(row.last_reading is None for row in history.rows)
+    assert scenario.result("a", day, day.replace(day=11)).exclusion_reason
+    assert (
+        json.loads(build_aggregation_json(reports.get_export_snapshot(spec)))["results"] == expected
+    )
+
+
+@pytest.mark.parametrize("value", ["-0.00", "-2"])
+def test_delta_history_and_reports_reject_signed_readings(scenario: Scenario, value: str) -> None:
+    day = date(2026, 2, 10)
+    scenario.definition("a")
+    scenario.plan("a-day", "a", day, value="0")
+    scenario.conn.execute("UPDATE reading_transactions SET raw_reading = ?", (value,))
+    history = scenario.context.reading_history.get_history(ReadingHistoryQuery("a", day, day))
+    assert ReadingHistoryCode.STATE_MISMATCH in {issue.code for issue in history.rows[0].issues}
+    with pytest.raises(ValidationError, match="負数"):
+        scenario.result("a", day, day.replace(day=11))
 
 
 def test_history_reports_overlapping_assignments_without_aborting(scenario: Scenario) -> None:

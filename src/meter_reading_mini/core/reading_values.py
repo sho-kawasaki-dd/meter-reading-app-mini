@@ -8,9 +8,17 @@ from meter_reading_mini.core.errors import ValidationError
 
 
 def validate_reading_value(
-    value: Decimal, *, decimal_places: int | None, rollover_value: Decimal | None
+    value: Decimal,
+    *,
+    decimal_places: int | None,
+    rollover_value: Decimal | None,
+    allow_negative: bool = False,
 ) -> None:
-    if not value.is_finite() or value < 0:
+    if not value.is_finite():
+        raise ValidationError("読値は有限の数値で指定してください。")
+    if value.is_zero() and value.is_signed():
+        raise ValidationError("読値に負のゼロは指定できません。0 を入力してください。")
+    if not allow_negative and value < 0:
         raise ValidationError("読値は有限の 0 以上の数値で指定してください。")
     exponent = value.as_tuple().exponent
     if (

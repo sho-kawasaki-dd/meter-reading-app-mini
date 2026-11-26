@@ -44,6 +44,7 @@ def build_services(
     multiplier: Decimal = Decimal("1"),
     decimal_places: int | None = 2,
     rollover_value: Decimal | None = None,
+    calculation_method: CalculationMethod = CalculationMethod.DELTA,
 ) -> tuple[ReadingWriteOrchestrationService, MeterReadingSyncService]:
     with transaction(conn):
         repository.create_meter_master(
@@ -67,7 +68,7 @@ def build_services(
                 decimal_places=decimal_places,
                 warning_threshold=None,
                 rollover_value=rollover_value,
-                calculation_method=CalculationMethod.DELTA,
+                calculation_method=calculation_method,
                 reading_cycle=ReadingCycle.DAILY_1X,
                 purpose=Purpose.OPERATIONAL,
                 generation_start_date=date(2026, 2, 1),
