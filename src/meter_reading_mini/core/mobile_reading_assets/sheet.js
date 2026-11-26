@@ -9,7 +9,6 @@
     meter_fault: "メーター故障",
   };
   var PHASE_LABELS = { lag: "遅れ (lag)", lead: "進み (lead)", unity: "1 (unity)" };
-  var CATEGORY_ORDER = { electricity: 0, gas: 1, water: 2 };
   var CYCLE_LABELS = {
     daily_1x: "日次1回",
     daily_2x: "日次2回",
@@ -112,8 +111,10 @@
     meters[meter.meter_id] = meter;
   });
   var locationNames = {};
+  var locationRanks = {};
   sheet.locations.forEach(function (location) {
     locationNames[location.location_id] = location.location_name;
+    locationRanks[location.location_id] = location.route_rank;
   });
 
   function nowIso() {
@@ -480,6 +481,7 @@
   var summary;
   var emptyMessage;
   var sections = {};
+  var locationOrder = [];
   var tabButtons = {};
   var toolbarNode;
   var locationsNode;
@@ -536,22 +538,29 @@
     return node;
   }
 
-  function categoryRank(definition) {
-    return Object.prototype.hasOwnProperty.call(CATEGORY_ORDER, definition.category)
-      ? CATEGORY_ORDER[definition.category]
-      : 3;
+  function isValidRouteRank(rank) {
+    return typeof rank === "number" && isFinite(rank) && rank >= 0 && Math.floor(rank) === rank;
+  }
+
+  function compareRouteRanks(left, right) {
+    var leftValid = isValidRouteRank(left);
+    var rightValid = isValidRouteRank(right);
+    if (leftValid !== rightValid) {
+      return leftValid ? -1 : 1;
+    }
+    if (!leftValid || left === right) {
+      return 0;
+    }
+    return left < right ? -1 : 1;
   }
 
   function compareSlotsForDisplay(a, b) {
     if (a.tabKey !== b.tabKey) {
       return a.tabKey < b.tabKey ? -1 : 1;
     }
-    var rank = categoryRank(a.definition) - categoryRank(b.definition);
+    var rank = compareRouteRanks(a.definition.route_rank, b.definition.route_rank);
     if (rank !== 0) {
       return rank;
-    }
-    if (a.definition.display_name !== b.definition.display_name) {
-      return a.definition.display_name < b.definition.display_name ? -1 : 1;
     }
     return compareKey(a.base.scheduled_at, a.id, b.base.scheduled_at, b.id);
   }
@@ -940,7 +949,7 @@
     if (view.location !== "" && !present[view.location]) {
       view.location = "";
     }
-    var keys = Object.keys(sections).filter(function (key) {
+    var keys = locationOrder.filter(function (key) {
       return present[key];
     });
     var signature = keys.join("\u0000");
@@ -2538,14 +2547,18 @@
 
   function compareLocationKeys(a, b) {
     if (a === UNSET_LOCATION || b === UNSET_LOCATION) {
-      return a === UNSET_LOCATION ? 1 : -1;
+      if (a !== b) {
+        return a === UNSET_LOCATION ? 1 : -1;
+      }
     }
-    var nameA = locationLabel(a);
-    var nameB = locationLabel(b);
-    if (nameA !== nameB) {
-      return nameA < nameB ? -1 : 1;
+    if (a === UNSET_LOCATION) {
+      return 0;
     }
-    return a < b ? -1 : 1;
+    var rank = compareRouteRanks(locationRanks[a], locationRanks[b]);
+    if (rank !== 0) {
+      return rank;
+    }
+    return a === b ? 0 : a < b ? -1 : 1;
   }
 
   function buildSection(key) {
@@ -2590,12 +2603,11 @@
     slots.forEach(function (slot) {
       keys[slot.locationKey] = true;
     });
-    Object.keys(keys)
-      .sort(compareLocationKeys)
-      .forEach(function (key) {
-        sections[key] = buildSection(key);
-        list.appendChild(sections[key].node);
-      });
+    locationOrder = Object.keys(keys).sort(compareLocationKeys);
+    locationOrder.forEach(function (key) {
+      sections[key] = buildSection(key);
+      list.appendChild(sections[key].node);
+    });
     locationsNode = list;
     app.appendChild(locationsNode);
     emptyMessage = element("p", "empty-message", "表示できる検針枠がありません。");

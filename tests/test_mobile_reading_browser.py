@@ -8,10 +8,24 @@ from typing import Any
 import pytest
 from conftest import SheetBrowser
 from mobile_draft_helpers import export_draft, import_text, reload_and_wait, wait_saved
-from mobile_sheet_helpers import definition, meter, sheet_html, simple_sheet_html, slot
+from mobile_sheet_helpers import (
+    definition,
+    meter,
+    sheet_data,
+    sheet_html,
+    simple_sheet_html,
+    slot,
+)
 from playwright.sync_api import Locator, Page, expect
 
+from meter_reading_mini.core.contract_models import Category
 from meter_reading_mini.core.decimal_arithmetic import exact_multiply, exact_subtract
+from meter_reading_mini.core.meter_reading_sync_repositories import (
+    ReadingRouteCategoryRecord,
+    ReadingRouteDefinitionRecord,
+    ReadingRouteLocationRecord,
+)
+from meter_reading_mini.core.mobile_reading import render_sheet_html
 
 VIEWPORTS = {
     "phone-portrait": (360, 640),
@@ -335,6 +349,205 @@ def test_slots_are_grouped_by_location_in_category_then_name_order(
         "s-misc",
     ]
     assert page.locator('.location[data-location-id=""] .card').count() == 1
+
+
+def test_configured_route_ranks_order_sections_cards_dropdown_and_next(
+    sheet_browser: SheetBrowser,
+) -> None:
+    html = sheet_html(
+        [
+            slot("z-water-a", "z-water-a", "m-z-water", session="14:00"),
+            slot("z-water-b", "z-water-b", "m-z-water", session="14:00"),
+            slot("z-gas", "z-gas", "m-z-gas", session="14:00"),
+            slot("a-elec", "a-elec", "m-a-elec", session="14:00"),
+            slot("a-gas", "a-gas", "m-a-gas", session="14:00"),
+            slot("no-location", "no-location", "m-none", session="14:00"),
+            slot("no-location-gas", "no-location-gas", "m-none-gas", session="14:00"),
+        ],
+        [
+            definition("z-water-a", location_id="10", display_name="水 A", category="water"),
+            definition("z-water-b", location_id="10", display_name="水 B", category="water"),
+            definition("z-gas", location_id="10", display_name="ガス", category="gas"),
+            definition("a-elec", location_id="2", display_name="電気", category="electricity"),
+            definition("a-gas", location_id="2", display_name="ガス", category="gas"),
+            definition("no-location", location_id=None, display_name="場所なし"),
+            definition(
+                "no-location-gas", location_id=None, display_name="場所なしガス", category="gas"
+            ),
+        ],
+        [
+            meter("m-z-water", location_id="10", location_name="Z棟"),
+            meter("m-z-gas", location_id="10", location_name="Z棟"),
+            meter("m-a-elec", location_id="2", location_name="A棟"),
+            meter("m-a-gas", location_id="2", location_name="A棟"),
+            meter("m-none", location_id=None),
+            meter("m-none-gas", location_id=None),
+        ],
+        route_locations=[
+            ReadingRouteLocationRecord("10", 0),
+            ReadingRouteLocationRecord("2", 1),
+        ],
+        route_categories=[
+            ReadingRouteCategoryRecord("10", Category.GAS, 0),
+            ReadingRouteCategoryRecord("10", Category.WATER, 1),
+            ReadingRouteCategoryRecord("2", Category.ELECTRICITY, 0),
+            ReadingRouteCategoryRecord("2", Category.GAS, 1),
+        ],
+        route_definitions=[
+            ReadingRouteDefinitionRecord("z-water-a", 1),
+            ReadingRouteDefinitionRecord("z-water-b", 0),
+            ReadingRouteDefinitionRecord("z-gas", 0),
+            ReadingRouteDefinitionRecord("a-elec", 0),
+            ReadingRouteDefinitionRecord("a-gas", 0),
+        ],
+    )
+    page = sheet_browser.open_html(html)
+    page.locator('.tab[data-tab="all"]').click()
+
+    assert section_titles(page) == ["Z棟", "A棟", "場所未設定"]
+    assert page.locator('.location[data-location-id="10"] .card').evaluate_all(
+        "nodes => nodes.map(node => node.dataset.slotId)"
+    ) == ["z-gas", "z-water-b", "z-water-a"]
+    assert page.locator('.location[data-location-id="2"] .card').evaluate_all(
+        "nodes => nodes.map(node => node.dataset.slotId)"
+    ) == ["a-elec", "a-gas"]
+    assert page.locator('.location[data-location-id=""] .card').evaluate_all(
+        "nodes => nodes.map(node => node.dataset.slotId)"
+    ) == ["no-location-gas", "no-location"]
+    assert page.locator(".location-select option").all_text_contents() == [
+        "すべての場所",
+        "Z棟",
+        "A棟",
+        "場所未設定",
+    ]
+
+    page.locator(".location-select").select_option("10")
+    page.locator(".unentered-toggle").check()
+    card(page, "z-gas").locator(".next").click()
+    expect(card(page, "z-water-b").locator(".raw")).to_be_focused()
+    enter_and_confirm(page, "z-gas", "1")
+    card(page, "z-water-b").locator(".next").click()
+    expect(card(page, "z-water-a").locator(".raw")).to_be_focused()
+    enter_and_confirm(page, "z-water-b", "1")
+    card(page, "z-water-a").locator(".next").click()
+    expect(card(page, "z-water-a").locator(".next-message")).to_have_text(
+        "この場所に未入力の枠はありません。"
+    )
+    expect(card(page, "a-elec").locator(".raw")).not_to_be_focused()
+
+
+def test_all_tab_orders_time_period_before_route_rank(
+    sheet_browser: SheetBrowser,
+) -> None:
+    page = open_all_tab(
+        sheet_browser,
+        sheet_html(
+            [
+                slot("route-first-late", "route-first", "meter", session="14:00"),
+                slot("route-second-early", "route-second", "meter", session="08:00"),
+                slot("route-third-late", "route-third", "meter", session="14:00"),
+            ],
+            [
+                definition("route-first", display_name="先", category="gas"),
+                definition("route-second", display_name="次", category="water"),
+                definition("route-third", display_name="後", category="water"),
+            ],
+            [meter("meter")],
+            route_categories=[
+                ReadingRouteCategoryRecord("loc-main", Category.GAS, 0),
+                ReadingRouteCategoryRecord("loc-main", Category.WATER, 1),
+            ],
+            route_definitions=[
+                ReadingRouteDefinitionRecord("route-first", 0),
+                ReadingRouteDefinitionRecord("route-second", 0),
+                ReadingRouteDefinitionRecord("route-third", 1),
+            ],
+        ),
+    )
+
+    assert visible_slot_ids(page) == [
+        "route-second-early",
+        "route-first-late",
+        "route-third-late",
+    ]
+    page.locator('.tab[data-tab="d:2026-02-04T14:00"]').click()
+    assert visible_slot_ids(page) == ["route-first-late", "route-third-late"]
+
+
+def test_default_same_name_definitions_use_definition_id_before_slot_time(
+    sheet_browser: SheetBrowser,
+) -> None:
+    page = open_all_tab(
+        sheet_browser,
+        sheet_html(
+            [
+                slot(
+                    "slot-a",
+                    "a-definition",
+                    "meter",
+                    scheduled_at="2026-02-04 10:00:00",
+                ),
+                slot(
+                    "slot-z",
+                    "z-definition",
+                    "meter",
+                    scheduled_at="2026-02-04 09:00:00",
+                ),
+            ],
+            [
+                definition("a-definition", display_name="同名"),
+                definition("z-definition", display_name="同名"),
+            ],
+            [meter("meter")],
+        ),
+    )
+
+    assert visible_slot_ids(page) == ["slot-a", "slot-z"]
+
+
+def test_missing_or_invalid_route_ranks_fall_back_without_moving_unset_location(
+    sheet_browser: SheetBrowser,
+) -> None:
+    data = sheet_data(
+        [
+            slot("invalid-rank", "invalid-rank", "meter-2", session="08:00"),
+            slot("missing-rank", "missing-rank", "meter-2", session="08:00"),
+            slot("valid-rank", "valid-rank", "meter-2", session="08:00"),
+            slot("location-10", "location-10", "meter-10", session="08:00"),
+            slot("location-unset", "location-unset", "meter-unset", session="08:00"),
+        ],
+        [
+            definition("invalid-rank", location_id="2", display_name="先に見える名前"),
+            definition("missing-rank", location_id="2", display_name="次の名前"),
+            definition("valid-rank", location_id="2", display_name="最後の名前"),
+            definition("location-10", location_id="10", display_name="10"),
+            definition("location-unset", location_id=None, display_name="場所なし"),
+        ],
+        [
+            meter("meter-2", location_id="2", location_name="Z棟"),
+            meter("meter-10", location_id="10", location_name="A棟"),
+            meter("meter-unset", location_id=None),
+        ],
+    )
+    data["locations"][0]["route_rank"] = -1
+    data["locations"][1]["route_rank"] = "invalid"
+    definitions = {item["measurement_definition_id"]: item for item in data["definitions"]}
+    definitions["invalid-rank"]["route_rank"] = "invalid"
+    del definitions["missing-rank"]["route_rank"]
+    definitions["valid-rank"]["route_rank"] = 0
+    page = sheet_browser.open_html(render_sheet_html(data))
+    page.locator('.tab[data-tab="all"]').click()
+
+    assert section_titles(page) == ["A棟", "Z棟", "場所未設定"]
+    assert page.locator('.location[data-location-id="2"] .card').evaluate_all(
+        "nodes => nodes.map(node => node.dataset.slotId)"
+    ) == ["valid-rank", "invalid-rank", "missing-rank"]
+    assert page.locator(".location-select option").all_text_contents() == [
+        "すべての場所",
+        "A棟",
+        "Z棟",
+        "場所未設定",
+    ]
 
 
 def test_same_date_session_slots_use_scheduled_time_then_id_as_tiebreaker(
