@@ -126,8 +126,11 @@ def test_current_raw_only_negative_plan_is_included_in_source_snapshot() -> None
     )
 
 
-def test_current_reading_route_plan_is_included_in_source_snapshot() -> None:
-    assert "docs/plan/v0.3.0_検針順路並び順設定計画.md" in builder.snapshot_source_files()
+def test_implemented_reading_route_plan_is_included_in_source_snapshot() -> None:
+    assert (
+        "docs/plan/implemented/v0.3.0_検針順路並び順設定計画.md"
+        in builder.snapshot_source_files()
+    )
 
 
 def test_project_version_is_read_from_pyproject(
