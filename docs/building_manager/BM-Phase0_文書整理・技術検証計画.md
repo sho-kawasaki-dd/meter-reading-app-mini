@@ -103,7 +103,7 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 #### 実行環境ごとの確認
 
 - [x] WeasyPrint: 開発 PC (Windows) に MSYS2 で Pango を入れて動作を確認し、手順を記録する。Linux (WSL または CI 相当の Ubuntu) でも同じ試料で動作を確認する。
-- [ ] WeasyPrint: GitHub Actions の Windows ランナーで Pango を用意し、PyInstaller で必要な DLL を同梱できる手順を確認する。
+- [x] WeasyPrint: GitHub Actions の Windows ランナーで Pango を用意し、PyInstaller で必要な DLL を同梱できる手順を確認する。
 - [x] Qt WebEngine: `QWebEnginePage.printToPdf` (非同期) で、カスタムのページ寸法を指定して出力できることを確認する。内容の高さを測る方法が、出力する HTML の CSP (スクリプト禁止) と両立するかを確認する。
 - [ ] Qt WebEngine: `setHtml()` のエンコード後約 2 MB の制限を踏まえ、写真入りの大きな月次 HTML を一時ファイルから読み込み、外部通信なしで PDF を生成できることを確認する。
 - [x] Qt WebEngine: Windows で、`QT_QPA_PLATFORM` を指定しない場合に動作することを確認する。Linux のヘッドレス環境 (offscreen) で動作するかも確認する。
@@ -196,7 +196,7 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 | HTML と PDF の記載内容の一致 | 部分確認。必須文言・ヘッダー・日付は確認したが、全文・画像の一致は未確認。 | 部分確認。必須文言・ヘッダー・日付は確認したが、全文・画像の一致は未確認。 |
 | ファイルサイズ (1 日・写真 10 枚 / 月次 31 日) | Windows 日次/超長日次/月次: 637/656/705 KiB、各 2.289/3.348/3.545秒。WSL: 713/813/778 KiB、各 0.974/2.829/2.951秒。 | Windows 日次/超長日次/月次: 831/923/907 KiB、各 2.854/3.019/3.266秒。WSL: 881/968/956 KiB、各 2.517/3.105/4.013秒。 |
 | Windows (開発 PC)・Linux での動作 | 合格。Windows は MSYS2 UCRT64 Pango、WSL Ubuntu で実行。 | 合格。Windows は `QT_QPA_PLATFORM` 未指定、WSL は offscreen。WSL で Vulkan/GLX 初期化警告あり。 |
-| Windows CI での試作 exe ビルド・Sandbox / VM での PDF 生成 | 未確認。 | 未確認。 |
+| Windows CI での試作 exe ビルド・Sandbox / VM での PDF 生成 | 部分確認。Windows CI の試作ビルド・3 試料の PDF 生成は成功。Sandbox / VM は未確認。 | 部分確認。Windows CI の試作ビルド・3 試料の PDF 生成は成功。Sandbox / VM は未確認。 |
 | 導入負荷・試作 exe の配布一式のサイズ | 開発 PC 試作の合計 68,901,863 byte (65.7 MiB)。Pango などの DLL を明示して収集。未導入環境・製品との差分は未確認。 | 開発 PC 試作の合計 593,218,730 byte (565.7 MiB)。PyInstaller の自動収集に Qt Quick 等も含まれる。未導入環境・製品との差分は未確認。 |
 | 第三者通知に加えるライセンス | [WeasyPrint](https://github.com/Kozea/WeasyPrint/blob/main/LICENSE) は BSD-3-Clause、[Pango](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pango) は LGPL-2.1。Pillow・Fontconfig・HarfBuzz 等、実際に同梱する全依存の通知と対応ソースは要確認。 | [Qt の公式説明](https://doc.qt.io/qtforpython-6/overviews/qtwebengine-licensing.html)では Qt 部分と Chromium の各ライセンスに対応が必要。実際に同梱する版の全通知と対応ソースは要確認。 |
 | 推奨 | 保留。Windows CI の PyInstaller・Sandbox/VM 実行と配布条件を満たすまで採用候補にできない。 | 保留。Windows CI の PyInstaller・Sandbox/VM 実行と配布条件、Linux のフォント表現を確認するまで採用候補にできない。 |
@@ -205,7 +205,9 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 
 Windows の開発 PC (Python 3.13.12、PyInstaller 6.22.3、WeasyPrint 70.0、Pango 1.58.2、PySide6 6.12.0) で両試作を PyInstaller の `onedir` でビルドし、PATH を Windows のシステムディレクトリに限定して実行した。事前生成した架空の HTML を各試作の `_internal/out/pdf/` に置き、日次・超長日次・月次の PDF を生成した。ページ数は両方式とも 1・2・31。試作の配布サイズは HTML・生成 PDF を除いた非圧縮ファイルの合計で、検査用 pypdf や試作の依存を含む。各試作を独立してビルドした値であり、既存製品に統合した場合の増分や最適化後の値ではない。Qt 側の Qt6WebEngineCore.dll 単体は 203,489,592 byte。手順は試作の README に記録した。
 
-PATH の制限は未導入環境の代わりにならず、フォントや Fontconfig の設定などの開発 PC 上の資産に依存している可能性がある。Windows Sandbox の存在は確認できず、機能状態の確認には管理者権限が必要だった。GitHub Actions の Windows ランナーでのビルドと、依存未導入 Sandbox/VM での実行は両候補とも未確認のため、必須採用条件を満たす候補はまだない。したがって Q13 は未決のままとし、要件定義書は変更しない。
+[Windows CI の試作実行](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/actions/runs/46047564586) (Windows Server 2025、Python 3.13.17、PyInstaller 6.22.3) では、両方式の exe ビルドと日次・超長日次・月次の PDF 出力が成功した。Pango は CI 上で MSYS2 UCRT64 に導入し、必要な DLL を試作に収集した。非圧縮の試作一式は WeasyPrint 69,185,741 byte (66.0 MiB)、Qt 600,328,183 byte (572.5 MiB)。生成時間は日次・超長日次・月次の順でそれぞれ WeasyPrint 2.866・1.955・2.023 秒、Qt 2.333・1.653・1.961 秒だった。試作成果物は CI に 7 日間保存される。
+
+PATH の制限やビルド環境での実行は未導入環境の代わりにならず、フォントや Fontconfig の設定などのホスト上の資産に依存している可能性がある。Windows Sandbox の存在は確認できず、機能状態の確認には管理者権限が必要だった。依存未導入 Sandbox/VM での実行は両候補とも未確認のため、必須採用条件を満たす候補はまだない。したがって Q13 は未決のままとし、要件定義書は変更しない。
 
 ### 5.2 気象庁ページの取得・解析 (4.5 で記入)
 
