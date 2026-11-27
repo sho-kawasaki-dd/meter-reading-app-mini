@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import sqlite3
 import subprocess
 import sys
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from meter_reading_mini.core.timeutil import utc_now
+from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.timezone_settings import DEFAULT_APP_TIMEZONE
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "create_manual_test_data.py"
+
+spec = importlib.util.spec_from_file_location("create_manual_test_data", SCRIPT_PATH)
+assert spec is not None and spec.loader is not None
+generator = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = generator
+spec.loader.exec_module(generator)
 
 
 def _run_generator(
@@ -52,7 +60,6 @@ def test_create_manual_test_data_builds_representative_database(tmp_path: Path) 
     assert "'open':" in result.stdout
     assert "'auto_closed':" in result.stdout
 
-    today = utc_now().astimezone(DEFAULT_APP_TIMEZONE).date().isoformat()
     with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM staff").fetchone()[0] == 1
         assert (
@@ -63,8 +70,7 @@ def test_create_manual_test_data_builds_representative_database(tmp_path: Path) 
         )
         assert connection.execute("SELECT COUNT(*) FROM measurement_definitions").fetchone()[0] == 4
         past_slots = connection.execute(
-            "SELECT COUNT(*) FROM planned_readings WHERE business_date < ?",
-            (today,),
+            "SELECT COUNT(*) FROM planned_readings WHERE task_state IN ('completed', 'auto_closed')"
         ).fetchone()[0]
         measured_count = connection.execute(
             "SELECT COUNT(*) FROM reading_transactions WHERE result_status = 'measured'"
@@ -78,9 +84,7 @@ def test_create_manual_test_data_builds_representative_database(tmp_path: Path) 
         )
         assert (
             connection.execute(
-                "SELECT COUNT(*) FROM planned_readings "
-                "WHERE task_state = 'auto_closed' AND business_date < ?",
-                (today,),
+                "SELECT COUNT(*) FROM planned_readings WHERE task_state = 'auto_closed'"
             ).fetchone()[0]
             == past_slots - measured_count
         )
@@ -120,23 +124,67 @@ def test_create_manual_test_data_applies_measured_percentage(
     result = _run_generator(data_dir, measured_percent=measured_percent)
 
     assert result.returncode == 0, result.stderr
-    today = utc_now().astimezone(DEFAULT_APP_TIMEZONE).date().isoformat()
     with closing(sqlite3.connect(data_dir / "meter_reading.db")) as connection:
         past_slots = connection.execute(
-            "SELECT COUNT(*) FROM planned_readings WHERE business_date < ?",
-            (today,),
+            "SELECT COUNT(*) FROM planned_readings WHERE task_state IN ('completed', 'auto_closed')"
         ).fetchone()[0]
         measured_count = connection.execute(
             "SELECT COUNT(*) FROM reading_transactions WHERE result_status = 'measured'"
         ).fetchone()[0]
         auto_closed_count = connection.execute(
-            "SELECT COUNT(*) FROM planned_readings "
-            "WHERE task_state = 'auto_closed' AND business_date < ?",
-            (today,),
+            "SELECT COUNT(*) FROM planned_readings WHERE task_state = 'auto_closed'"
         ).fetchone()[0]
 
+    assert past_slots > 0
     assert measured_count == (past_slots * measured_percent + 50) // 100
     assert (auto_closed_count > 0) is expected_auto_closed
+
+
+@pytest.mark.parametrize(("hour", "minute", "yesterday_is_open"), [(6, 59, True), (7, 0, False)])
+@pytest.mark.parametrize("measured_percent", [0, 50, 100])
+def test_create_manual_test_data_respects_cutoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hour: int,
+    minute: int,
+    yesterday_is_open: bool,
+    measured_percent: int,
+) -> None:
+    now = datetime(2026, 11, 28, hour, minute, tzinfo=DEFAULT_APP_TIMEZONE)
+    monkeypatch.setattr(generator, "utc_now", lambda: now)
+    monkeypatch.setattr(
+        generator,
+        "create_app_context",
+        lambda connection: create_app_context(connection, clock=lambda: now),
+    )
+    generator.create_manual_test_data(tmp_path, days_back=7, measured_percent=measured_percent)
+
+    with closing(sqlite3.connect(tmp_path / "meter_reading.db")) as connection:
+        eligible_slots = connection.execute(
+            "SELECT COUNT(*) FROM planned_readings WHERE business_date <= ?",
+            ("2026-11-26" if yesterday_is_open else "2026-11-27",),
+        ).fetchone()[0]
+        measured_count = connection.execute(
+            "SELECT COUNT(*) FROM reading_transactions WHERE result_status = 'measured'"
+        ).fetchone()[0]
+        auto_closed_count = connection.execute(
+            "SELECT COUNT(*) FROM planned_readings WHERE task_state = 'auto_closed'"
+        ).fetchone()[0]
+        yesterday_states = {
+            row[0]
+            for row in connection.execute(
+                "SELECT task_state FROM planned_readings WHERE business_date = '2026-11-27'"
+            )
+        }
+
+    assert eligible_slots > 0
+    assert measured_count == (eligible_slots * measured_percent + 50) // 100
+    assert auto_closed_count == eligible_slots - measured_count
+    assert yesterday_states
+    if yesterday_is_open:
+        assert yesterday_states == {"open"}
+    else:
+        assert "open" not in yesterday_states
 
 
 @pytest.mark.parametrize("measured_percent", [-1, 101])
