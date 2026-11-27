@@ -6,8 +6,20 @@ root = Path(SPECPATH).parent
 package = root / "src" / "meter_reading_mini"
 
 datas = [
-    (str(package / "db" / name), str(Path("meter_reading_mini") / "db"))
-    for name in ("schema.sql", "schema_v1.sql", "schema_v3.sql", "schema_v4.sql", "schema_v5.sql")
+    (
+        str(package / "assets" / "meter-reading-mini.ico"),
+        str(Path("meter_reading_mini") / "assets"),
+    ),
+    *[
+        (str(package / "db" / name), str(Path("meter_reading_mini") / "db"))
+        for name in (
+            "schema.sql",
+            "schema_v1.sql",
+            "schema_v3.sql",
+            "schema_v4.sql",
+            "schema_v5.sql",
+        )
+    ],
 ]
 datas += [
     (
@@ -75,6 +87,7 @@ exe = EXE(
     pyz,
     analysis.scripts,
     [],
+    icon=str(package / "assets" / "meter-reading-mini.ico"),
     exclude_binaries=True,
     name="meter-reading-mini",
     console=False,

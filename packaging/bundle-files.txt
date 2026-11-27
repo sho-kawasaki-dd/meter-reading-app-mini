@@ -83,6 +83,7 @@ _internal/base_library.zip
 _internal/libcrypto-3-x64.dll
 _internal/libffi-8.dll
 _internal/libssl-3-x64.dll
+_internal/meter_reading_mini/assets/meter-reading-mini.ico
 _internal/meter_reading_mini/core/mobile_reading_assets/sheet.css
 _internal/meter_reading_mini/core/mobile_reading_assets/sheet.html
 _internal/meter_reading_mini/core/mobile_reading_assets/sheet.js

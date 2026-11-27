@@ -96,6 +96,7 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
     def run_loop(application: QApplication) -> int:
         events.append("loop")
         assert application is qapp
+        assert not application.windowIcon().isNull()
         assert connection.execute("SELECT 1").fetchone() == (1,)
         assert "lock.release" not in events
         assert "db.close" not in events

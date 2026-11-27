@@ -76,6 +76,7 @@ src/meter_reading_mini/__init__.py
 src/meter_reading_mini/__main__.py
 src/meter_reading_mini/app.py
 src/meter_reading_mini/app_context.py
+src/meter_reading_mini/assets/meter-reading-mini.ico
 src/meter_reading_mini/config.py
 src/meter_reading_mini/core/__init__.py
 src/meter_reading_mini/core/aggregation_contracts.py
