@@ -291,10 +291,13 @@ def _save_example_readings(
 def _format_launch_instructions(data_dir: Path) -> str:
     path = str(data_dir).replace("'", "''")
     if os.name == "nt":
-        return f"$env:METER_READING_MINI_DATA_DIR = '{path}'\nuv run python -m meter_reading_mini"
+        return (
+            f"$env:BUILDING_MANAGER_MINI_DATA_DIR = '{path}'\n"
+            "uv run python -m building_manager_mini"
+        )
     return (
-        f"export METER_READING_MINI_DATA_DIR={quote(str(data_dir))}\n"
-        "uv run python -m meter_reading_mini"
+        f"export BUILDING_MANAGER_MINI_DATA_DIR={quote(str(data_dir))}\n"
+        "uv run python -m building_manager_mini"
     )
 
 
@@ -329,7 +332,7 @@ def main() -> None:
             "--measured-percent は "
             f"{MIN_MEASURED_PERCENT} から {MAX_MEASURED_PERCENT} の範囲で指定してください。"
         )
-    data_dir = args.data_dir or Path(tempfile.mkdtemp(prefix="meter-reading-mini-manual-"))
+    data_dir = args.data_dir or Path(tempfile.mkdtemp(prefix="building-manager-mini-manual-"))
 
     try:
         summary = create_manual_test_data(

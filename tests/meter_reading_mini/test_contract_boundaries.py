@@ -160,8 +160,9 @@ def test_shared_package_does_not_import_meter_reading_or_qt() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for module in _absolute_imported_modules(tree):
             assert not _is_module_or_submodule(module, "meter_reading_mini"), path
-            assert not _is_module_or_submodule(module, "PySide6"), path
-            assert not _is_module_or_submodule(module, "shiboken6"), path
+            if "ui" not in path.relative_to(BUILDING_MANAGER_ROOT).parts:
+                assert not _is_module_or_submodule(module, "PySide6"), path
+                assert not _is_module_or_submodule(module, "shiboken6"), path
 
 
 def test_meter_core_and_db_do_not_import_shared_launcher() -> None:

@@ -20,7 +20,13 @@ def _populate_distribution(directory: Path) -> None:
     for relative in build_windows.REQUIRED_FILES:
         target = directory / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"test")
+        if relative == build_windows.APP_ENTRY_POINTS:
+            target.write_text(
+                f"[building_manager_mini.application]\n{build_windows.METER_READING_ENTRY_POINT}\n",
+                encoding="utf-8",
+            )
+        else:
+            target.write_bytes(b"test")
     header = bytearray(0x86)
     header[:2] = b"MZ"
     struct.pack_into("<I", header, 60, 0x80)
@@ -158,8 +164,40 @@ def test_distribution_rejects_missing_or_changed_assets(tmp_path: Path, name: st
 
 
 def test_frozen_v4_schema_is_included_in_pyinstaller_spec() -> None:
-    assert '"schema_v4.sql"' in build_windows.SPEC.read_text(encoding="utf-8")
-    assert '"schema_v5.sql"' in build_windows.SPEC.read_text(encoding="utf-8")
+    spec_source = build_windows.SPEC.read_text(encoding="utf-8")
+    assert '"schema_v4.sql"' in spec_source
+    assert '"schema_v5.sql"' in spec_source
+    assert 'root / "src" / "building_manager_mini" / "__main__.py"' in spec_source
+    assert '"meter_reading_mini.app"' in spec_source
+    assert 'Path(application_metadata_source) / "entry_points.txt"' in spec_source
+
+
+def test_installation_guard_keeps_the_legacy_path_across_exe_and_installer() -> None:
+    root = build_windows.ROOT
+    guard_source = (root / "src" / "meter_reading_mini" / "installation_guard.py").read_text(
+        encoding="utf-8"
+    )
+    launcher_source = (root / "packaging" / "windows_launcher.cs").read_text(encoding="utf-8")
+    installer_source = (root / "packaging" / "meter_reading_mini.iss").read_text(encoding="utf-8")
+
+    assert build_windows.APP_NAME == "meter-reading-mini"
+    assert '_INSTALLATION_GUARD_APP_NAME = "meter-reading-mini"' in guard_source
+    assert 'Path.Combine(local, "meter-reading-mini", "installation.guard")' in launcher_source
+    assert "ExpandConstant('{localappdata}\\meter-reading-mini')" in installer_source
+    assert "AddBackslash(DirectoryName) + 'installation.guard'" in installer_source
+
+
+def test_distribution_requires_the_meter_reading_entry_point_metadata(tmp_path: Path) -> None:
+    _populate_distribution(tmp_path)
+    entry_points = tmp_path / build_windows.APP_ENTRY_POINTS
+    entry_points.unlink()
+    with pytest.raises(RuntimeError, match="実行時資産が不足"):
+        build_windows._validate_distribution(tmp_path)
+
+    entry_points.parent.mkdir(parents=True, exist_ok=True)
+    entry_points.write_text("[other.application]\nwrong = app:start\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="起動登録"):
+        build_windows._validate_distribution(tmp_path)
 
 
 @pytest.mark.parametrize(

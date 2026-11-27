@@ -73,9 +73,14 @@ scripts/create_manual_test_data.py
 scripts/fetch_dependency_sources.py
 scripts/verify_windows_exe.ps1
 src/building_manager_mini/__init__.py
+src/building_manager_mini/__main__.py
+src/building_manager_mini/entrypoint.py
 src/building_manager_mini/launcher.py
 src/building_manager_mini/paths.py
 src/building_manager_mini/settings.py
+src/building_manager_mini/ui/__init__.py
+src/building_manager_mini/ui/application_host.py
+src/building_manager_mini/ui/application_selection.py
 src/meter_reading_mini/__init__.py
 src/meter_reading_mini/__main__.py
 src/meter_reading_mini/app.py
@@ -191,6 +196,7 @@ src/meter_reading_mini/ui/widgets/staff_master_page.py
 src/meter_reading_mini/ui/widgets/wall_datetime_edit.py
 tests/__init__.py
 tests/building_manager_mini/__init__.py
+tests/building_manager_mini/test_application_host.py
 tests/building_manager_mini/test_launcher.py
 tests/building_manager_mini/test_paths.py
 tests/building_manager_mini/test_settings.py

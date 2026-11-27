@@ -58,6 +58,8 @@ def test_create_manual_test_data_builds_representative_database(tmp_path: Path) 
     assert "測定定義: 4 件" in result.stdout
     assert "予定枠:" in result.stdout
     assert "実測入力割合: 50%" in result.stdout
+    assert "BUILDING_MANAGER_MINI_DATA_DIR" in result.stdout
+    assert "uv run python -m building_manager_mini" in result.stdout
     assert "'open':" in result.stdout
     assert "'auto_closed':" in result.stdout
 

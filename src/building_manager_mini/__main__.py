@@ -1,5 +1,8 @@
+"""アプリケーションの起動入口。"""
+
 import sys
 
-from meter_reading_mini.app import run_app
+from building_manager_mini.entrypoint import main
 
-sys.exit(run_app())
+if __name__ == "__main__":
+    sys.exit(main())

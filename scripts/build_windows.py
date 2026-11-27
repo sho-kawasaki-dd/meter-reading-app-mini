@@ -11,14 +11,19 @@ import subprocess
 import sys
 import tempfile
 from contextlib import ExitStack
+from importlib.metadata import version
 from pathlib import Path
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "packaging" / "meter_reading_mini.spec"
 APP_NAME = "meter-reading-mini"
+APP_DISTRIBUTION_NAME = "building-manager-mini"
+APP_VERSION = version(APP_DISTRIBUTION_NAME)
 PACKAGE = ROOT / "src" / "meter_reading_mini"
 INTERNAL = Path("_internal")
+APP_ENTRY_POINTS = INTERNAL / f"building_manager_mini-{APP_VERSION}.dist-info" / "entry_points.txt"
+METER_READING_ENTRY_POINT = "meter-reading = meter_reading_mini.app:run_app"
 APP_RESOURCES = (
     Path("assets") / "meter-reading-mini.ico",
     *(
@@ -38,6 +43,7 @@ APP_RESOURCES = (
 )
 REQUIRED_FILES = (
     Path(f"{APP_NAME}.exe"),
+    APP_ENTRY_POINTS,
     *(INTERNAL / "meter_reading_mini" / name for name in APP_RESOURCES),
     INTERNAL / "tzdata" / "zoneinfo" / "Asia" / "Tokyo",
     INTERNAL / "tzdata" / "zoneinfo" / "America" / "New_York",
@@ -64,6 +70,13 @@ def _validate_distribution(directory: Path) -> None:
     missing = [name for name in REQUIRED_FILES if not (directory / name).is_file()]
     if missing:
         raise RuntimeError(f"実行時資産が不足しています: {', '.join(map(str, missing))}")
+
+    entry_points = (directory / APP_ENTRY_POINTS).read_text(encoding="utf-8")
+    if (
+        "[building_manager_mini.application]" not in entry_points
+        or METER_READING_ENTRY_POINT not in entry_points
+    ):
+        raise RuntimeError("検針アプリの起動登録が実行時メタデータにありません。")
 
     _validate_executable(directory / f"{APP_NAME}.exe")
     for name in APP_RESOURCES:

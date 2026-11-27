@@ -79,3 +79,12 @@ jobs:
 
       - name: Check db coverage threshold
         run: uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
+
+      - name: Check common paths coverage threshold
+        run: uv run coverage report --include="*/building_manager_mini/paths.py" --fail-under=90
+
+      - name: Check common entrypoint coverage threshold
+        run: uv run coverage report --include="*/building_manager_mini/entrypoint.py" --fail-under=90
+
+      - name: Check common launcher coverage threshold
+        run: uv run coverage report --include="*/building_manager_mini/launcher.py" --fail-under=90

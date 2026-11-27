@@ -21,6 +21,47 @@ wheels = [
 ]
 
 [[package]]
+name = "building-manager-mini"
+version = "0.3.0"
+source = { editable = "." }
+dependencies = [
+    { name = "platformdirs" },
+    { name = "pydantic" },
+    { name = "pyside6" },
+    { name = "tzdata" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "playwright" },
+    { name = "pyinstaller" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-qt" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "platformdirs", specifier = ">=4.3.0" },
+    { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "pyside6", specifier = ">=6.8.0" },
+    { name = "tzdata", specifier = ">=2025.2" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "playwright", specifier = ">=1.50.0" },
+    { name = "pyinstaller", specifier = ">=6.12.0" },
+    { name = "pyright", specifier = ">=1.1.390" },
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "pytest-qt", specifier = ">=4.4.0" },
+    { name = "ruff", specifier = ">=0.9.0" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -201,47 +242,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/10/2f/97589876ea967487978071c9042518d28b958d87b17dceb7cdc1d881f963/macholib-1.16.4.tar.gz", hash = "sha256:f408c93ab2e995cd2c46e34fe328b130404be143469e41bc366c807448979362", size = 59427, upload-time = "2025-11-22T08:28:38.373Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/d1/a9f36f8ecdf0fb7c9b1e78c8d7af12b8c8754e74851ac7b94a8305540fc7/macholib-1.16.4-py2.py3-none-any.whl", hash = "sha256:da1a3fa8266e30f0ce7e97c6a54eefaae8edd1e5f86f3eb8b95457cae90265ea", size = 38117, upload-time = "2025-11-22T08:28:36.939Z" },
-]
-
-[[package]]
-name = "meter-reading-mini"
-version = "0.3.0"
-source = { editable = "." }
-dependencies = [
-    { name = "platformdirs" },
-    { name = "pydantic" },
-    { name = "pyside6" },
-    { name = "tzdata" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "playwright" },
-    { name = "pyinstaller" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-qt" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "platformdirs", specifier = ">=4.3.0" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pyside6", specifier = ">=6.8.0" },
-    { name = "tzdata", specifier = ">=2025.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "playwright", specifier = ">=1.50.0" },
-    { name = "pyinstaller", specifier = ">=6.12.0" },
-    { name = "pyright", specifier = ">=1.1.390" },
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest-cov", specifier = ">=6.0.0" },
-    { name = "pytest-qt", specifier = ">=4.4.0" },
-    { name = "ruff", specifier = ">=0.9.0" },
 ]
 
 [[package]]

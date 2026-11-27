@@ -196,7 +196,7 @@ function Save-FileDialog(
 }
 
 function Wait-LockProcess([string]$DataDirectory, [int]$PreviousProcessId = 0) {
-    $lock = Join-Path $DataDirectory 'meter_reading.lock'
+    $lock = Join-Path $DataDirectory 'app.lock'
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         if (Test-Path -LiteralPath $lock) {
@@ -222,6 +222,7 @@ function Wait-LockProcess([string]$DataDirectory, [int]$PreviousProcessId = 0) {
 }
 
 function Check-DatabasePath([int]$ProcessId, [string]$Expected) {
+    Open-MeterReading $ProcessId
     $main = Wait-Window $ProcessId '検針管理 mini'
     Open-FileAction $main 'データベースの保存先'
     $notice = Wait-Window $ProcessId 'データベースの保存先'
@@ -229,7 +230,18 @@ function Check-DatabasePath([int]$ProcessId, [string]$Expected) {
     Close-Notice $notice
 }
 
+function Open-MeterReading([int]$ProcessId) {
+    if ([MeterSmokeNative]::FindWindow($ProcessId, '検針管理 mini') -ne [IntPtr]::Zero) {
+        return
+    }
+    $selection = Wait-Window $ProcessId '建物管理 mini'
+    $button = Find-Name $selection '開く' ([System.Windows.Automation.ControlType]::Button)
+    Send-Click ([IntPtr]$selection.Current.NativeWindowHandle) $button
+    $null = Wait-Window $ProcessId '検針管理 mini'
+}
+
 function Check-Timezone([int]$ProcessId, [string]$Expected) {
+    Open-MeterReading $ProcessId
     $main = Wait-Window $ProcessId '検針管理 mini'
     $button = Find-Name $main '設定' ([System.Windows.Automation.ControlType]::Button)
     Send-Click ([IntPtr]$main.Current.NativeWindowHandle) $button
@@ -281,7 +293,13 @@ $sheetPath = Join-Path $runDirectory 'sheet.html'
 $chartPath = Join-Path $runDirectory 'chart.png'
 $processes = [System.Collections.Generic.Dictionary[int, DateTime]]::new()
 $unverifiedProcesses = [System.Collections.Generic.HashSet[int]]::new()
-$environmentNames = @('METER_READING_MINI_DATA_DIR', 'PYTHONTZPATH', 'QT_QPA_PLATFORM', 'PYTHONUTF8')
+$environmentNames = @(
+    'BUILDING_MANAGER_MINI_DATA_DIR',
+    'METER_READING_MINI_DATA_DIR',
+    'PYTHONTZPATH',
+    'QT_QPA_PLATFORM',
+    'PYTHONUTF8'
+)
 $previousEnvironment = @{}
 $restorePending = $false
 foreach ($name in $environmentNames) {
@@ -291,16 +309,17 @@ foreach ($name in $environmentNames) {
 Push-Location $projectRoot
 try {
     $env:PYTHONUTF8 = '1'
+    [Environment]::SetEnvironmentVariable('METER_READING_MINI_DATA_DIR', $null, 'Process')
     New-Item -ItemType Directory -Path $emptyTimezoneDirectory | Out-Null
     $env:PYTHONTZPATH = $emptyTimezoneDirectory
     [Environment]::SetEnvironmentVariable('QT_QPA_PLATFORM', $null, 'Process')
     Invoke-ProjectPython @('scripts\create_manual_test_data.py', '--data-dir', $dataDirectory, '--days-back', '14', '--measured-percent', '100')
-    $env:METER_READING_MINI_DATA_DIR = $dataDirectory
+    $env:BUILDING_MANAGER_MINI_DATA_DIR = $dataDirectory
     $initial = Start-Process -FilePath $exePath -WorkingDirectory $runDirectory -PassThru
     Register-Process $initial.Id
     $processId = Wait-LockProcess $dataDirectory
     Register-Process $processId
-    Check-DatabasePath $processId (Join-Path $dataDirectory 'meter_reading.db')
+    Check-DatabasePath $processId (Join-Path $dataDirectory 'meter_reading\meter_reading.db')
     Check-Timezone $processId 'Asia/Tokyo'
     Write-Output '起動・DB 保存先・Asia/Tokyo の同梱データを確認しました。'
 
@@ -447,7 +466,7 @@ try:
 finally:
     connection.close()
 '@
-    Invoke-ProjectPython @('-c', $marker, (Join-Path $dataDirectory 'meter_reading.db'))
+    Invoke-ProjectPython @('-c', $marker, (Join-Path $dataDirectory 'meter_reading\meter_reading.db'))
     $source = Find-IdSuffix $backup 'restoreSource'
     $source.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($backupPath)
     $button = Find-Name $backup '復元候補を検査' ([System.Windows.Automation.ControlType]::Button)
@@ -479,8 +498,8 @@ finally:
         throw '保全バックアップの通知がありません。'
     }
     Close-Notice $notice
-    Check-DatabasePath $restartedId (Join-Path $dataDirectory 'meter_reading.db')
-    $preserved = @(Get-ChildItem -LiteralPath (Join-Path $dataDirectory 'backups') -Filter 'pre-restore_*.db' -File)
+    Check-DatabasePath $restartedId (Join-Path $dataDirectory 'meter_reading\meter_reading.db')
+    $preserved = @(Get-ChildItem -LiteralPath (Join-Path $dataDirectory 'backups\meter_reading') -Filter 'pre-restore_*.db' -File)
     if ($preserved.Count -ne 1) {
         throw '復元前の保全バックアップを特定できません。'
     }
@@ -494,7 +513,7 @@ for path, expected in ((sys.argv[1], 0), (sys.argv[2], 1)):
         if count != expected:
             raise RuntimeError(f"復元後または保全バックアップの内容が不正: {path}")
 '@
-    Invoke-ProjectPython @('-c', $checkRestore, (Join-Path $dataDirectory 'meter_reading.db'), $preserved[0].FullName)
+    Invoke-ProjectPython @('-c', $checkRestore, (Join-Path $dataDirectory 'meter_reading\meter_reading.db'), $preserved[0].FullName)
     $main = Wait-Window $restartedId '検針管理 mini'
     $main.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     Write-Output 'バックアップ・DB 置換・旧 DB 保全・exe の再起動と保存先引継ぎを確認しました。'
@@ -504,12 +523,12 @@ for path, expected in ((sys.argv[1], 0), (sys.argv[2], 1)):
 import sys
 from pathlib import Path
 from meter_reading_mini.app_context import create_app_context
-from meter_reading_mini.config import AppPaths, ensure_dirs
+from building_manager_mini.paths import AppPaths, ensure_dirs
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
 from meter_reading_mini.db.migrations import open_database
 
 data = Path(sys.argv[1])
-paths = AppPaths.from_dirs(data, data / "logs")
+paths = AppPaths.from_root(data)
 ensure_dirs(paths)
 connection = open_database(paths.db_path, paths.backup_dir, backup_timestamp=local_timestamp_for_filename)
 try:
@@ -520,7 +539,7 @@ finally:
     connection.close()
 '@
     Invoke-ProjectPython @('-c', $prepareTimezone, $otherData)
-    $env:METER_READING_MINI_DATA_DIR = $otherData
+    $env:BUILDING_MANAGER_MINI_DATA_DIR = $otherData
     $other = Start-Process -FilePath $exePath -WorkingDirectory $runDirectory -PassThru
     Register-Process $other.Id
     $otherId = Wait-LockProcess $otherData
@@ -530,12 +549,12 @@ finally:
     $main.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     Write-Output 'OS 標準のタイムゾーン検索先を除外して America/New_York を確認しました。'
 
-    $env:METER_READING_MINI_DATA_DIR = $emptyDataDirectory
+    $env:BUILDING_MANAGER_MINI_DATA_DIR = $emptyDataDirectory
     $empty = Start-Process -FilePath $exePath -WorkingDirectory $runDirectory -PassThru
     Register-Process $empty.Id
     $emptyId = Wait-LockProcess $emptyDataDirectory
     Register-Process $emptyId
-    Check-DatabasePath $emptyId (Join-Path $emptyDataDirectory 'meter_reading.db')
+    Check-DatabasePath $emptyId (Join-Path $emptyDataDirectory 'meter_reading\meter_reading.db')
     $main = Wait-Window $emptyId '検針管理 mini'
     $main.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     $emptyProcess = Get-Process -Id $emptyId -ErrorAction SilentlyContinue
@@ -551,7 +570,7 @@ with sqlite3.connect(Path(sys.argv[1]).as_uri() + "?mode=ro", uri=True) as conne
     if actual != 6:
         raise RuntimeError(f"空の保存先から作成した DB のスキーマ版が不正: {actual}")
 '@
-    Invoke-ProjectPython @('-c', $schemaCheck, (Join-Path $emptyDataDirectory 'meter_reading.db'))
+    Invoke-ProjectPython @('-c', $schemaCheck, (Join-Path $emptyDataDirectory 'meter_reading\meter_reading.db'))
     Write-Output '空の保存先で exe がスキーマ v6 の DB を作成したことを確認しました。'
 
     $invalidDataPath = Join-Path $runDirectory 'not-a-directory'
@@ -559,7 +578,7 @@ with sqlite3.connect(Path(sys.argv[1]).as_uri() + "?mode=ro", uri=True) as conne
     if (-not (Test-Path -LiteralPath $invalidDataPath -PathType Leaf)) {
         throw '不正な保存先の検証用ファイルを作成できませんでした。'
     }
-    $env:METER_READING_MINI_DATA_DIR = $invalidDataPath
+    $env:BUILDING_MANAGER_MINI_DATA_DIR = $invalidDataPath
     $failed = Start-Process -FilePath $exePath -WorkingDirectory $runDirectory -PassThru
     Register-Process $failed.Id
     $notice = Wait-Window $failed.Id 'アプリケーションを起動できません'

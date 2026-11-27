@@ -99,6 +99,10 @@ def test_current_schema_is_included_in_source_and_bundle_allowlists() -> None:
     assert "_internal/meter_reading_mini/db/schema_v5.sql" in builder.read_allowlist(
         builder.BUNDLE_ALLOWLIST
     )
+    assert (
+        "_internal/building_manager_mini-0.3.0.dist-info/entry_points.txt"
+        in builder.read_allowlist(builder.BUNDLE_ALLOWLIST)
+    )
 
 
 def test_current_history_plan_is_included_in_source_snapshot() -> None:

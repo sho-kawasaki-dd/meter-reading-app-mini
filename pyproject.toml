@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "meter-reading-mini"
+name = "building-manager-mini"
 version = "0.3.0"
 description = "ローカル完結型 検針管理デスクトップアプリ (PySide6 + 単一HTMLスマホ検針)"
 readme = "README.md"
@@ -14,6 +14,9 @@ dependencies = [
     "pydantic>=2.12.5",
     "tzdata>=2025.2",
 ]
+
+[project.entry-points."building_manager_mini.application"]
+meter-reading = "meter_reading_mini.app:run_app"
 
 [dependency-groups]
 dev = [

@@ -953,13 +953,25 @@ def test_run_app_does_not_show_window_when_initial_refresh_has_domain_error(
     ]
 
 
-def test_module_entry_point_exits_with_run_app_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(app_module, "run_app", lambda: 23)
+def test_legacy_module_entry_point_guides_to_new_command_without_creating_data(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "legacy-data"
+    environment = os.environ.copy()
+    environment[DATA_DIR_ENV] = str(data_dir)
+    environment["PYTHONIOENCODING"] = "utf-8"
+    completed = subprocess.run(
+        [sys.executable, "-m", "meter_reading_mini"],
+        env=environment,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
 
-    with pytest.raises(SystemExit) as exc:
-        runpy.run_module("meter_reading_mini", run_name="__main__")
-
-    assert exc.value.code == 23
+    assert completed.returncode == 2
+    assert "uv run python -m building_manager_mini" in completed.stderr
+    assert not data_dir.exists()
 
 
 def test_common_module_entry_point_exits_with_run_app_result(
@@ -980,9 +992,10 @@ def test_real_event_loop_and_environment_data_directory(tmp_path: Path) -> None:
     script = """
 from pathlib import Path
 import os
+import runpy
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMainWindow
-from meter_reading_mini.app import run_app
+from meter_reading_mini import app as app_module
 
 def run_loop(application):
     data_dir = Path(os.environ["BUILDING_MANAGER_MINI_DATA_DIR"])
@@ -993,12 +1006,14 @@ def run_loop(application):
     QTimer.singleShot(0, application.quit)
     return application.exec()
 
-raise SystemExit(
-    run_app(
+run_app = app_module.run_app
+def configured_run_app():
+    return run_app(
         application_selector=lambda applications, *, last_application=None: "meter-reading",
         event_loop_runner=run_loop,
     )
-)
+app_module.run_app = configured_run_app
+runpy.run_module("building_manager_mini", run_name="__main__")
 """
 
     completed = subprocess.run(

@@ -42,6 +42,8 @@ def test_restart_preserves_paths_and_requires_the_child_ready_signal(
     def launch(command: list[str], *, env: Mapping[str, str]) -> RunningProcess:
         assert command == restart.restart_command()
         assert Path(env[DATA_DIR_ENV]) == paths.data_dir.resolve()
+        assert "_BUILDING_MANAGER_MINI_RESTART_READY" in env
+        assert not any(key.startswith("_METER_READING_MINI_RESTART_") for key in env)
         copied = dict(env)
         notice = restart.take_restart_notice(copied, paths.data_dir)
         assert notice is not None

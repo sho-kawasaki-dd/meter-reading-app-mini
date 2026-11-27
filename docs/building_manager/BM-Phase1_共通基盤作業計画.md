@@ -1,7 +1,7 @@
 # BM-Phase 1 共通基盤 作業計画
 
 - 作成日: 2026-11-28
-- 状態: 実装中 (タスク①〜③完了)。残りのチェックは対応する検証に成功してから付ける。
+- 状態: 実装中 (タスク①〜③完了。④の実装・Windows 自動検証完了。Ubuntu CI と④の手動業務確認は未完了)。
 - 正本: [業務日誌アプリ要件定義](業務日誌アプリ要件定義.md) 3.1〜3.4 節・8 章 (D2・D3・D10・D11・D17・D20)
 - 前提: [BM-Phase 0](implemented/BM-Phase0_文書整理・技術検証計画.md) の限定付きクローズにより着手可能。PDF の正式採用・配布検証の完了を意味しない。
 - 2026-11-28 レビュー後の利用者確認: インストール用ガード・exe 名・インストーラーは Phase 7 まで旧名で据え置く。単体復元後の再起動に限り選択画面を省く。ログは常にデータルート配下に置く (要件定義 3.2 を修正済み)。
@@ -60,10 +60,10 @@
 
 ### ④ 起動契約・配布設定・回帰確認
 
-- [ ] [プロジェクト設定](../../pyproject.toml) の配布名を `building-manager-mini` に変更し、`uv lock` でロックを更新する。wheel に共通・検針の両パッケージと既存資産を収録する。旧 `python -m meter_reading_mini` は新コマンドを案内し、アプリ・DB を開かず終了する。復元後の再起動コマンドを `-m building_manager_mini` に、再起動用の環境変数を `_BUILDING_MANAGER_MINI_RESTART_*` に切り替える。新旧両入口を一時ルートで実行して確認する。
-- [ ] インストール用ガードの保存先 (`{localappdata}\meter-reading-mini\installation.guard`)・exe 名・インストーラーは Phase 7 まで旧名のまま据え置く。ガードの保存先は共通基盤の `APP_NAME` から導かず、インストーラー専用の定数として保持する。exe とインストーラーが同じガードを参照することを既存の配布検証で確認する。
-- [ ] Ruff の first-party、Pyright の strict、coverage 対象、[CI](../../.github/workflows/ci.yml)、配布用 spec・収録一覧・ビルド／exe 検証・テストデータ作成スクリプトを新しい構成・入口・環境変数に追随させる。旧名を一括置換せず、検針パッケージ名、旧 DB 探索、過去版の識別は保持する。
-- [ ] `uv sync --locked`、Ruff の検査・整形確認、`uv run pyright`、Chromium 準備後の `uv run pytest --cov` を通す。カバレッジは検針 core / db と、共通基盤の core / db・`paths.py`・ランチャーの非 UI 部分に、それぞれ別の 90% ゲートを設ける。合算だけにしない。Windows は通常環境、Ubuntu は `QT_QPA_PLATFORM=offscreen` で実行する。
+- [x] [プロジェクト設定](../../pyproject.toml) の配布名を `building-manager-mini` に変更し、`uv lock` でロックを更新する。wheel に共通・検針の両パッケージと既存資産を収録する。旧 `python -m meter_reading_mini` は新コマンドを案内し、アプリ・DB を開かず終了する。復元後の再起動コマンドを `-m building_manager_mini` に、再起動用の環境変数を `_BUILDING_MANAGER_MINI_RESTART_*` に切り替える。新旧両入口を一時ルートで実行して確認する。
+- [x] インストール用ガードの保存先 (`{localappdata}\meter-reading-mini\installation.guard`)・exe 名・インストーラーは Phase 7 まで旧名のまま据え置く。ガードの保存先は共通基盤の `APP_NAME` から導かず、インストーラー専用の定数として保持する。exe とインストーラーが同じガードを参照することを既存の配布検証で確認する。
+- [x] Ruff の first-party、Pyright の strict、coverage 対象、[CI](../../.github/workflows/ci.yml)、配布用 spec・収録一覧・ビルド／exe 検証・テストデータ作成スクリプトを新しい構成・入口・環境変数に追随させる。旧名を一括置換せず、検針パッケージ名、旧 DB 探索、過去版の識別は保持する。
+- [ ] `uv sync --locked`、Ruff の検査・整形確認、`uv run pyright`、Chromium 準備後の `uv run pytest --cov` を通す。カバレッジは検針 core / db と、共通基盤の core / db・`paths.py`・ランチャーの非 UI 部分に、それぞれ別の 90% ゲートを設ける。合算だけにしない。Windows は通常環境、Ubuntu は `QT_QPA_PLATFORM=offscreen` で実行する。Windows の検証は完了。Ubuntu CI の結果確認後にチェックする。
 - [ ] 一時ルートで新規起動と旧 DB からの初回起動を各 1 回以上行い、予定枠・検針結果・監査履歴の保持、入力保存、単体バックアップ／復元、終了後の再起動を確認する。開発 PC の実データ・既定保存先は使用しない。
 
 ## 4. 完了・引継ぎ
