@@ -17,3 +17,4 @@ dist/
 *.log
 packaging/dependency-sources/*
 !packaging/dependency-sources/manifest.json
+/prototypes/bm_phase0/out/

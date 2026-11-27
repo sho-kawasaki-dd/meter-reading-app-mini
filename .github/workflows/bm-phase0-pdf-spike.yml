@@ -1,0 +1,109 @@
+name: BM Phase 0 PDF spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/bm-phase0-tech-spike]
+    paths:
+      - .github/workflows/bm-phase0-pdf-spike.yml
+      - prototypes/bm_phase0/pdf_spike.py
+
+permissions:
+  contents: read
+
+jobs:
+  pdf-spike:
+    name: PDF 試作 (${{ matrix.engine }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [weasyprint, qtwebengine]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.32"
+
+      - name: 依存関係を同期
+        run: uv sync --locked
+
+      - name: 架空の試料を生成
+        run: uv run --with pillow --with fonttools --with pypdf==7.2.0 python prototypes\bm_phase0\pdf_spike.py prepare
+
+      - name: Pango の準備
+        id: msys
+        if: matrix.engine == 'weasyprint'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-pango
+
+      - name: WeasyPrint 試作のビルド
+        if: matrix.engine == 'weasyprint'
+        env:
+          MSYS_LOCATION: ${{ steps.msys.outputs.msys2-location }}
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          $dllDir = Join-Path $env:MSYS_LOCATION 'ucrt64\bin'
+          $env:PATH = "$dllDir;$env:PATH"
+          $env:WEASYPRINT_DLL_DIRECTORIES = $dllDir
+          $dllArgs = @()
+          foreach ($name in @('libgobject-2.0-0', 'libpango-1.0-0', 'libharfbuzz-0',
+              'libharfbuzz-subset-0', 'libfontconfig-1', 'libpangoft2-1.0-0')) {
+            $dllArgs += '--add-binary', "$(Join-Path $dllDir "$name.dll");."
+          }
+          uv run --with weasyprint==70.0 --with pypdf==7.2.0 python -m PyInstaller `
+            --noconfirm --onedir --name pdf-spike --distpath 'dist' --workpath 'build' `
+            --specpath 'build' --exclude-module PySide6 --collect-all weasyprint `
+            @dllArgs prototypes\bm_phase0\pdf_spike.py
+          if ($LASTEXITCODE -ne 0) { throw 'WeasyPrint のビルドに失敗しました。' }
+
+      - name: Qt WebEngine 試作のビルド
+        if: matrix.engine == 'qtwebengine'
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          uv run --with pypdf==7.2.0 python -m PyInstaller --noconfirm --onedir `
+            --name pdf-spike --distpath 'dist' --workpath 'build' --specpath 'build' `
+            --exclude-module weasyprint --exclude-module PIL --exclude-module fontTools `
+            prototypes\bm_phase0\pdf_spike.py
+          if ($LASTEXITCODE -ne 0) { throw 'Qt WebEngine のビルドに失敗しました。' }
+
+      - name: 試作 exe の PDF 出力を検査
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          $bundle = Join-Path $PWD 'dist\pdf-spike'
+          $size = (Get-ChildItem $bundle -Recurse -File | Measure-Object Length -Sum).Sum
+          Write-Host "試作配布一式: $size bytes"
+          $dest = Join-Path $bundle '_internal\out\pdf'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item 'prototypes\bm_phase0\out\pdf\*.html' $dest
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          & "$bundle\pdf-spike.exe" render --engine $env:ENGINE
+          if ($LASTEXITCODE -ne 0) { throw 'PDF 出力に失敗しました。' }
+          $results = Get-Content "$dest\$env:ENGINE-results-win32.json" -Raw | ConvertFrom-Json
+          if ($results.Count -ne 3) { throw '結果の件数が不正です。' }
+          foreach ($result in $results) {
+            foreach ($field in @('pages_within_200_inch_limit', 'page_count_as_expected',
+                'all_pages_have_text', 'all_pages_have_header_and_number',
+                'content_matches_samples', 'all_monthly_days_start_on_new_pages',
+                'continued_marker_on_later_pages')) {
+              if ($result.$field -ne $true) {
+                throw "$($result.sample): $field の検査に失敗しました。"
+              }
+            }
+          }
+
+      - name: 架空の試作成果物を保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: bm-phase0-pdf-${{ matrix.engine }}
+          path: dist/pdf-spike/
+          if-no-files-found: error
+          retention-days: 7
