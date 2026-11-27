@@ -199,7 +199,7 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 | Windows CI での試作 exe ビルド・Sandbox / VM での PDF 生成 | 部分確認。Windows CI の試作ビルド・3 試料の PDF 生成は成功。Sandbox / VM は未確認。 | 部分確認。Windows CI の試作ビルド・3 試料の PDF 生成は成功。Sandbox / VM は未確認。 |
 | 導入負荷・試作 exe の配布一式のサイズ | 開発 PC 試作の合計 68,901,863 byte (65.7 MiB)。Pango などの DLL を明示して収集。未導入環境・製品との差分は未確認。 | 開発 PC 試作の合計 593,218,730 byte (565.7 MiB)。PyInstaller の自動収集に Qt Quick 等も含まれる。未導入環境・製品との差分は未確認。 |
 | 第三者通知に加えるライセンス | [WeasyPrint](https://github.com/Kozea/WeasyPrint/blob/main/LICENSE) は BSD-3-Clause、[Pango](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pango) は LGPL-2.1。Pillow・Fontconfig・HarfBuzz 等、実際に同梱する全依存の通知と対応ソースは要確認。 | [Qt の公式説明](https://doc.qt.io/qtforpython-6/overviews/qtwebengine-licensing.html)では Qt 部分と Chromium の各ライセンスに対応が必要。実際に同梱する版の全通知と対応ソースは要確認。 |
-| 推奨 | 保留。Windows CI の PyInstaller・Sandbox/VM 実行と配布条件を満たすまで採用候補にできない。 | 保留。Windows CI の PyInstaller・Sandbox/VM 実行と配布条件、Linux のフォント表現を確認するまで採用候補にできない。 |
+| 推奨・暫定方針 | 利用者の意向により暫定方針とする。未完了の出力・配布条件を満たすまで正式採用は保留。 | 正式採用は保留。未完了の出力・配布条件と Linux のフォント表現は未確認。 |
 
 試作は [README](../../prototypes/bm_phase0/README.md) の手順で再実行できる。HTML は日次 946,470 byte、超長日次 1,189,303 byte、月次 4,903,495 byte (Qt の `setHtml()` 目安 2 MiB を超える)。フォントは実行時取得した Noto Sans JP 9,589,900 byte を約 100 KB にサブセット化した。計測時間はレンダリング処理の所要時間で、初回のパッケージ導入・フォント取得時間を含まない。HTML の描画と PDF 出力はデータ URI のみを利用する構成で検査し、ネットワークのパケットキャプチャはしていない。
 
@@ -207,7 +207,9 @@ Windows の開発 PC (Python 3.13.12、PyInstaller 6.22.3、WeasyPrint 70.0、Pa
 
 [Windows CI の試作実行](https://github.com/sho-kawasaki-dd/meter-reading-app-mini/actions/runs/46047564586) (Windows Server 2025、Python 3.13.17、PyInstaller 6.22.3) では、両方式の exe ビルドと日次・超長日次・月次の PDF 出力が成功した。Pango は CI 上で MSYS2 UCRT64 に導入し、必要な DLL を試作に収集した。非圧縮の試作一式は WeasyPrint 69,185,741 byte (66.0 MiB)、Qt 600,328,183 byte (572.5 MiB)。生成時間は日次・超長日次・月次の順でそれぞれ WeasyPrint 2.866・1.955・2.023 秒、Qt 2.333・1.653・1.961 秒だった。試作成果物は CI に 7 日間保存される。
 
-PATH の制限やビルド環境での実行は未導入環境の代わりにならず、フォントや Fontconfig の設定などのホスト上の資産に依存している可能性がある。Windows Sandbox の存在は確認できず、機能状態の確認には管理者権限が必要だった。依存未導入 Sandbox/VM での実行は両候補とも未確認のため、必須採用条件を満たす候補はまだない。したがって Q13 は未決のままとし、要件定義書は変更しない。
+PATH の制限やビルド環境での実行は未導入環境の代わりにならず、フォントや Fontconfig の設定などのホスト上の資産に依存している可能性がある。Windows Sandbox の存在は確認できず、機能状態の確認には管理者権限が必要だった。依存未導入 Sandbox/VM での実行は両候補とも未確認のため、必須採用条件を満たす候補はまだない。
+
+2026-11-28、利用者の意向により WeasyPrint を暫定方針として設計・実装を進める。出力品質・外部通信・PDF 内容の未検証項目、未導入環境での実行、同梱依存のライセンス・対応ソースの確認は引き続き必要とし、検証条件の免除や BM-Phase 0 の完了とは扱わない。Q13 は未決のまま、[要件定義書 7.1 節](業務日誌アプリ要件定義.md#71-pdf-生成手段の比較-q13) に暫定方針を記録する。
 
 ### 5.2 気象庁ページの取得・解析 (4.5 で記入)
 
