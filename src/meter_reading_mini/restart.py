@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from meter_reading_mini.config import DATA_DIR_ENV, AppPaths, resolve_paths
+from building_manager_mini.paths import DATA_DIR_ENV, AppPaths, resolve_paths
 
 _READY_PATH_ENV = "_METER_READING_MINI_RESTART_READY"
 _READY_TOKEN_ENV = "_METER_READING_MINI_RESTART_TOKEN"

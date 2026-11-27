@@ -74,6 +74,8 @@ scripts/fetch_dependency_sources.py
 scripts/verify_windows_exe.ps1
 src/building_manager_mini/__init__.py
 src/building_manager_mini/launcher.py
+src/building_manager_mini/paths.py
+src/building_manager_mini/settings.py
 src/meter_reading_mini/__init__.py
 src/meter_reading_mini/__main__.py
 src/meter_reading_mini/app.py
@@ -133,6 +135,7 @@ src/meter_reading_mini/db/bootstrap_seeds.py
 src/meter_reading_mini/db/connection.py
 src/meter_reading_mini/db/integrity.py
 src/meter_reading_mini/db/migrations.py
+src/meter_reading_mini/db/legacy_migration.py
 src/meter_reading_mini/db/repositories.py
 src/meter_reading_mini/db/restore.py
 src/meter_reading_mini/db/schema.sql
@@ -189,6 +192,8 @@ src/meter_reading_mini/ui/widgets/wall_datetime_edit.py
 tests/__init__.py
 tests/building_manager_mini/__init__.py
 tests/building_manager_mini/test_launcher.py
+tests/building_manager_mini/test_paths.py
+tests/building_manager_mini/test_settings.py
 tests/meter_reading_mini/__init__.py
 tests/meter_reading_mini/conftest.py
 tests/meter_reading_mini/mobile_draft_helpers.py
@@ -204,7 +209,6 @@ tests/meter_reading_mini/test_assignment_calculation_settings.py
 tests/meter_reading_mini/test_backup.py
 tests/meter_reading_mini/test_backup_restore_dialog.py
 tests/meter_reading_mini/test_business_integrity.py
-tests/meter_reading_mini/test_config.py
 tests/meter_reading_mini/test_connection.py
 tests/meter_reading_mini/test_contract_boundaries.py
 tests/meter_reading_mini/test_csv_export.py
@@ -218,6 +222,7 @@ tests/meter_reading_mini/test_distribution_build.py
 tests/meter_reading_mini/test_error_handling.py
 tests/meter_reading_mini/test_errors.py
 tests/meter_reading_mini/test_installation_guard.py
+tests/meter_reading_mini/test_legacy_migration.py
 tests/meter_reading_mini/test_logging_config.py
 tests/meter_reading_mini/test_main_window.py
 tests/meter_reading_mini/test_manual_test_data.py

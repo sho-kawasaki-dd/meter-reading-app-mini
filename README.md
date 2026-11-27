@@ -118,7 +118,7 @@ uv run python -m meter_reading_mini
 実データと分離して動作を確認するときは、一時フォルダを指定して起動します。
 
 ```powershell
-$env:METER_READING_MINI_DATA_DIR = "<一時フォルダ>"
+$env:BUILDING_MANAGER_MINI_DATA_DIR = "<一時フォルダ>"
 uv run python -m meter_reading_mini
 ```
 
@@ -150,9 +150,9 @@ if ($LASTEXITCODE -ne 0) {
     throw '手動確認用データの生成に失敗しました。'
 }
 
-$previousDataDir = $env:METER_READING_MINI_DATA_DIR
+$previousDataDir = $env:BUILDING_MANAGER_MINI_DATA_DIR
 try {
-    $env:METER_READING_MINI_DATA_DIR = $dataDir
+    $env:BUILDING_MANAGER_MINI_DATA_DIR = $dataDir
     Write-Host "確認用データの保存先: $dataDir"
     uv run python -X faulthandler -m meter_reading_mini
     $exitCode = $LASTEXITCODE
@@ -162,7 +162,7 @@ try {
     }
 }
 finally {
-    $env:METER_READING_MINI_DATA_DIR = $previousDataDir
+    $env:BUILDING_MANAGER_MINI_DATA_DIR = $previousDataDir
 }
 ```
 
@@ -386,24 +386,31 @@ UTF-8 BOM なしの JSON 形式 v1 (`kind: "mrm-usage-aggregation"`, `v: 1`) で
 
 ## データ保存先
 
-パス解決は [config.py](src/meter_reading_mini/config.py) に実装済みです。
+保存先の定義は共通基盤の [paths.py](src/building_manager_mini/paths.py) に集約しています。
 
-- DB・バックアップ・表示設定・ロック: `%APPDATA%\meter-reading-mini`
-- ログ: `%LOCALAPPDATA%\meter-reading-mini\Logs`
-- DB 名: `meter_reading.db`、ロック: `meter_reading.lock`、表示設定: `ui_settings.json`
+- データルート: `%APPDATA%\building-manager-mini`
+- 共通ロック・表示設定: `app.lock`、`ui_settings.json`
+- 検針 DB: `meter_reading\meter_reading.db`
+- 検針の単体バックアップ・移行前バックアップ: `backups\meter_reading\`
+- ログ: `logs\app.log` (環境変数の有無にかかわらずデータルート配下)
 
-起動前に `METER_READING_MINI_DATA_DIR` を設定すると、DB 等は指定先、ログはその `logs` 配下になります。
+`BUILDING_MANAGER_MINI_DATA_DIR` は一時保存先の指定に使います。旧変数
+`METER_READING_MINI_DATA_DIR` だけが設定されている場合は、誤って実データを使わないよう起動を中止します。
+環境変数をどちらも指定しない場合は旧版の既定保存先も初回複製元として確認しますが、新変数だけを指定した場合は旧版の既定保存先を探索しません。
+明示した旧保存先から移行する場合は、新変数に新しい保存先、旧変数に旧 DB の保存先を設定してください。
+新しい保存先に DB が既にあれば優先し、不正な DB であっても旧 DB から上書きしません。
+旧 DB・旧バックアップは変更せず、複製後に旧版で入力した内容は新 DB に反映されません。
 一時的な動作確認では、次のように通常データと分離します。
 
 ```powershell
-$env:METER_READING_MINI_DATA_DIR = Join-Path $env:TEMP ("meter-reading-mini-" + [guid]::NewGuid().ToString('N'))
+$env:BUILDING_MANAGER_MINI_DATA_DIR = Join-Path $env:TEMP ("building-manager-mini-" + [guid]::NewGuid().ToString('N'))
 uv run python -m meter_reading_mini
 ```
 
 Linux の指定例:
 
 ```sh
-export METER_READING_MINI_DATA_DIR="$HOME/.local/share/meter-reading-mini-test"
+export BUILDING_MANAGER_MINI_DATA_DIR="$HOME/.local/share/building-manager-mini-test"
 uv run python -m meter_reading_mini
 ```
 
@@ -412,7 +419,7 @@ uv run python -m meter_reading_mini
 1. メイン画面の「ファイル」→「バックアップ・復元」を開きます。
 2. 「バックアップを保存」で保存先を選びます。既定名は業務タイムゾーンによる `meter_reading_YYYYMMDD_HHMMSS.db` です。既存ファイルは上書きできないため、別の名前を選んでください。
 3. 復元する場合は復元元を指定し、「復元候補を検査」でスキーマ版・データ件数・警告を確認します。復元元の変更、参照のキャンセル、検査失敗、最終確認のキャンセル後は再検査が必要です。
-4. 「内容を確認して復元」で現行 DB の上書き・自動保全・再起動を確認します。操作とタイマーを停止し、現行 DB を `backups/pre-restore_日時.db` に保全してから置換します。
+4. 「内容を確認して復元」で現行 DB の上書き・自動保全・再起動を確認します。操作とタイマーを停止し、現行 DB を `backups/meter_reading/pre-restore_日時.db` に保全してから置換します。
 5. 新プロセスの起動完了を確認して通知します。再起動を確認できない場合は保全バックアップの場所を案内します。アプリが起動していなければ手動で起動し、必要に応じて保全先を確認してください。
 
 [バックアップ・復元 Service](src/meter_reading_mini/core/backup_restore_service.py) と
@@ -449,7 +456,7 @@ uv run --locked python scripts\build_windows.py
 
 ```powershell
 $exe = 'C:\ビルド完了時に表示されたパス\meter-reading-mini.exe'
-$env:METER_READING_MINI_DATA_DIR = Join-Path $env:TEMP ("meter-reading-mini-exe-" + [guid]::NewGuid().ToString('N'))
+$env:BUILDING_MANAGER_MINI_DATA_DIR = Join-Path $env:TEMP ("building-manager-mini-exe-" + [guid]::NewGuid().ToString('N'))
 & $exe
 ```
 
@@ -503,7 +510,7 @@ SHA256 は破損・変更検出であり、発行者の認証ではありませ�
 ランチャーは本体の読み込み前から共有ガードを取得し、
 インストーラー・アンインストーラーは同じガードを排他取得する設計です。
 ガードは `%LOCALAPPDATA%\meter-reading-mini\installation.guard` にあり、
-`METER_READING_MINI_DATA_DIR` で指定する DB 保存先とは独立しています。
+`BUILDING_MANAGER_MINI_DATA_DIR` で指定する DB 保存先とは独立しています。
 実 Windows API で競合を検証しましたが、インストーラー自体の実行は未検証です。
 アンインストールは DB・バックアップ・ログを削除しない設計です。
 

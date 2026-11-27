@@ -19,7 +19,7 @@ from meter_reading_mini.ui.display_settings import (
     save_display_settings,
 )
 
-LOGGER_NAME = "meter_reading_mini.ui.display_settings"
+LOGGER_NAME = "building_manager_mini.settings"
 
 
 def _write(path: Path, content: str) -> Path:
@@ -51,8 +51,13 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
 
     assert load_display_settings(path) == settings
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "font_family": "日本語フォント",
-        "font_scale_percent": 125,
+        "format_version": 1,
+        "shared": {
+            "font_family": "日本語フォント",
+            "font_scale_percent": 125,
+        },
+        "last_application": None,
+        "applications": {},
     }
     assert [p.name for p in tmp_path.iterdir()] == ["ui_settings.json"]
 
@@ -65,7 +70,7 @@ def test_save_and_load_default_font(tmp_path: Path) -> None:
     assert load_display_settings(path) == DisplaySettings(None, 90)
 
 
-def test_load_missing_file_returns_defaults_with_warning(
+def test_load_missing_file_returns_defaults_without_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.WARNING)
@@ -73,7 +78,7 @@ def test_load_missing_file_returns_defaults_with_warning(
     result = load_display_settings(tmp_path / "missing.json")
 
     assert result == default_display_settings()
-    assert len(_warnings(caplog)) == 1
+    assert _warnings(caplog) == []
 
 
 @pytest.mark.parametrize(
@@ -103,7 +108,8 @@ def test_load_invalid_scale_falls_back(
 ) -> None:
     path = _write(
         tmp_path / "ui_settings.json",
-        f'{{"font_family": "Meiryo", "font_scale_percent": {scale_json}}}',
+        f'{{"format_version": 1, "shared": {{"font_family": "Meiryo", '
+        f'"font_scale_percent": {scale_json}}}}}',
     )
     caplog.set_level(logging.WARNING)
 
@@ -117,9 +123,18 @@ def test_load_invalid_scale_falls_back(
 def test_load_invalid_family_falls_back_and_keeps_valid_scale(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, family_json: str
 ) -> None:
-    path = _write(
-        tmp_path / "ui_settings.json",
-        f'{{"font_family": {family_json}, "font_scale_percent": 125}}',
+    path = tmp_path / "ui_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "shared": {
+                    "font_family": json.loads(family_json),
+                    "font_scale_percent": 125,
+                },
+            }
+        ),
+        encoding="utf-8",
     )
     caplog.set_level(logging.WARNING)
 
@@ -132,7 +147,10 @@ def test_load_invalid_family_falls_back_and_keeps_valid_scale(
 def test_load_missing_keys_use_defaults_without_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    path = _write(tmp_path / "ui_settings.json", "{}")
+    path = _write(
+        tmp_path / "ui_settings.json",
+        '{"format_version": 1, "shared": {}}',
+    )
     caplog.set_level(logging.WARNING)
 
     assert load_display_settings(path) == default_display_settings()

@@ -14,12 +14,18 @@ import pytest
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
+from building_manager_mini.paths import (
+    DATA_DIR_ENV,
+    LEGACY_DATA_DIR_ENV,
+    AppPaths,
+    StartupPaths,
+    resolve_paths,
+)
 from meter_reading_mini import app as app_module
-from meter_reading_mini.config import AppPaths, resolve_paths
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
-from meter_reading_mini.db.connection import transaction
-from meter_reading_mini.db.migrations import SCHEMA_VERSION
+from meter_reading_mini.db.connection import connect_readonly, transaction
+from meter_reading_mini.db.migrations import SCHEMA_VERSION, open_database
 from meter_reading_mini.ui.display_settings import DisplaySettings
 
 
@@ -67,7 +73,7 @@ def _tracked_database(events: list[str]) -> sqlite3.Connection:
 def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
     connection = _tracked_database(events)
     factory_calls: list[bool] = []
@@ -168,7 +174,7 @@ def test_run_app_lock_contention_stops_before_logging_database_and_ui(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
 
     monkeypatch.setattr(
@@ -192,7 +198,7 @@ def test_run_app_lock_contention_stops_before_logging_database_and_ui(
 def test_install_guard_contention_stops_before_logging_and_releases_data_lock(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
 
     class BusyGuard:
@@ -219,7 +225,7 @@ def test_install_guard_contention_stops_before_logging_and_releases_data_lock(
 def test_install_guard_failure_notifies_and_releases_data_lock(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
 
     class BrokenGuard:
@@ -244,7 +250,7 @@ def test_install_guard_failure_notifies_and_releases_data_lock(
 def test_windowed_startup_reports_lock_contention_without_stderr(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "stderr", None)
     monkeypatch.setattr(
@@ -286,7 +292,7 @@ def test_windowed_startup_reports_database_failure_without_stderr(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "stderr", None)
     monkeypatch.setattr(
@@ -318,7 +324,7 @@ def test_windowed_startup_reports_database_failure_without_stderr(
 def test_windowed_startup_reports_domain_failure_without_stderr(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "stderr", None)
     monkeypatch.setattr(
@@ -349,7 +355,7 @@ def test_windowed_startup_reports_domain_failure_without_stderr(
 def test_windowed_startup_reports_failure_before_logging_without_stderr(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "stderr", None)
     monkeypatch.setattr(
@@ -396,7 +402,7 @@ def test_windowed_startup_reports_failure_before_ui_without_stderr(
     failure: Exception,
     message: str,
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "stderr", None)
     monkeypatch.setattr(QApplication, "instance", lambda: None)
@@ -425,7 +431,7 @@ def test_windowed_startup_reports_failure_before_ui_without_stderr(
 def test_run_app_reports_database_open_failure_and_releases_lock(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
 
     def fail_open(
@@ -453,7 +459,7 @@ def test_run_app_closes_database_before_releasing_lock_on_ui_failure(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
     connection = _tracked_database(events)
     monkeypatch.setattr(app_module, "ensure_dirs", lambda actual_paths: None)
@@ -485,7 +491,7 @@ def test_run_app_startup_failure_notifies_after_rollback(
     qapp: QApplication,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
     connection = _tracked_database(events)
     connection.execute("CREATE TABLE startup_probe (value TEXT NOT NULL)")
@@ -528,7 +534,7 @@ def test_run_app_migrates_database_and_writes_log_to_app_paths(
     restore_root_handlers: None,
 ) -> None:
     data_dir = tmp_path / "configured-data"
-    paths = resolve_paths({"METER_READING_MINI_DATA_DIR": str(data_dir)})
+    paths = resolve_paths({DATA_DIR_ENV: str(data_dir)})
 
     result = app_module.run_app(paths, event_loop_runner=lambda application: 0)
 
@@ -540,10 +546,121 @@ def test_run_app_migrates_database_and_writes_log_to_app_paths(
         assert connection.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
 
 
+def test_legacy_environment_alone_stops_before_creating_paths_or_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    legacy_data = tmp_path / "old-data"
+    monkeypatch.setenv(LEGACY_DATA_DIR_ENV, str(legacy_data))
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    calls: list[str] = []
+
+    result = app_module.run_app(
+        lock_factory=lambda path: calls.append("lock") or FakeLock([]),
+        database_opener=lambda *args, **kwargs: (
+            calls.append("database") or sqlite3.connect(":memory:")
+        ),
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert calls == []
+    assert not legacy_data.exists()
+    assert DATA_DIR_ENV in capsys.readouterr().err
+
+
+def test_legacy_environment_error_is_explained_without_stderr(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(LEGACY_DATA_DIR_ENV, str(tmp_path / "old-data"))
+    monkeypatch.delenv(DATA_DIR_ENV, raising=False)
+    monkeypatch.setattr(sys, "stderr", None)
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
+
+    result = app_module.run_app()
+
+    assert result == app_module.STARTUP_FAILURE
+    assert messages[0][1].startswith(f"{LEGACY_DATA_DIR_ENV} は廃止されました")
+
+
+def test_run_app_migrates_legacy_database_after_lock_and_notifies_user(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_database_path = tmp_path / "old" / "meter_reading.db"
+    old_database_path.parent.mkdir()
+    with closing(
+        open_database(
+            old_database_path,
+            old_database_path.parent / "backups",
+            backup_timestamp=lambda: "test",
+        )
+    ) as old_connection:
+        old_connection.execute("INSERT INTO staff (name) VALUES (?)", ("旧版担当者",))
+    old_ui_settings = old_database_path.parent / "ui_settings.json"
+    old_ui_settings.write_bytes(b"old display settings")
+
+    paths = AppPaths.from_root(tmp_path / "new")
+    monkeypatch.setattr(
+        app_module,
+        "resolve_startup_paths",
+        lambda env: StartupPaths(paths, old_database_path),
+    )
+    monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
+    events: list[str] = []
+    notified: list[tuple[Path, Path]] = []
+
+    class OldDatabaseLock:
+        def __init__(self, path: Path) -> None:
+            assert path == old_database_path.parent / "meter_reading.lock"
+            events.append("legacy_lock.create")
+
+        def try_acquire(self, timeout_ms: int = 100) -> bool:
+            events.append("legacy_lock.acquire")
+            return True
+
+        def release(self) -> None:
+            events.append("legacy_lock.release")
+
+    monkeypatch.setattr(app_module, "SingleInstanceLock", OldDatabaseLock)
+
+    def open_db(
+        path: Path, backup_dir: Path, *, backup_timestamp: Callable[[], str]
+    ) -> sqlite3.Connection:
+        events.append("database.open")
+        return open_database(path, backup_dir, backup_timestamp=backup_timestamp)
+
+    result = app_module.run_app(
+        lock_factory=lambda path: events.append("app_lock.acquire") or FakeLock(events),
+        logging_configurator=lambda *, log_dir: events.append("logging"),
+        database_opener=open_db,
+        startup_preparer=lambda conn: events.append("startup.prepare"),
+        migration_notifier=lambda legacy_database_path, new_database_path: (
+            notified.append((legacy_database_path, new_database_path))
+            or events.append("migration.notice")
+        ),
+        main_window_factory=lambda context: events.append("window.create") or QMainWindow(),
+        event_loop_runner=lambda application: events.append("event_loop") or 0,
+    )
+
+    assert result == app_module.STARTUP_SUCCESS
+    assert notified == [(old_database_path, paths.db_path)]
+    assert events.index("app_lock.acquire") < events.index("legacy_lock.acquire")
+    assert events.index("logging") < events.index("legacy_lock.acquire")
+    assert events.index("legacy_lock.release") < events.index("database.open")
+    assert events.index("database.open") < events.index("migration.notice")
+    assert old_ui_settings.read_bytes() == b"old display settings"
+    assert not paths.ui_settings_path.exists()
+    with closing(connect_readonly(paths.db_path)) as migrated:
+        assert migrated.execute("SELECT name FROM staff").fetchall() == [("旧版担当者",)]
+
+
 def test_run_app_releases_resources_when_event_loop_fails(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
     connection = _tracked_database(events)
     original_excepthook = sys.excepthook
@@ -576,7 +693,7 @@ def test_run_app_releases_resources_when_event_loop_fails(
 def test_run_app_does_not_show_window_when_initial_refresh_has_domain_error(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     events: list[str] = []
     connection = _tracked_database(events)
     monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
@@ -621,7 +738,7 @@ def test_module_entry_point_exits_with_run_app_result(monkeypatch: pytest.Monkey
 def test_real_event_loop_and_environment_data_directory(tmp_path: Path) -> None:
     data_dir = tmp_path / "temporary-data"
     environment = os.environ.copy()
-    environment["METER_READING_MINI_DATA_DIR"] = str(data_dir)
+    environment[DATA_DIR_ENV] = str(data_dir)
     script = """
 from pathlib import Path
 import os
@@ -630,9 +747,9 @@ from PySide6.QtWidgets import QMainWindow
 from meter_reading_mini.app import run_app
 
 def run_loop(application):
-    data_dir = Path(os.environ["METER_READING_MINI_DATA_DIR"])
-    assert (data_dir / "meter_reading.db").is_file()
-    assert (data_dir / "meter_reading.lock").is_file()
+    data_dir = Path(os.environ["BUILDING_MANAGER_MINI_DATA_DIR"])
+    assert (data_dir / "meter_reading" / "meter_reading.db").is_file()
+    assert (data_dir / "app.lock").is_file()
     assert any(isinstance(widget, QMainWindow) and widget.isVisible()
                for widget in application.topLevelWidgets())
     QTimer.singleShot(0, application.quit)
@@ -652,8 +769,8 @@ raise SystemExit(run_app(event_loop_runner=run_loop))
 
     assert completed.returncode == 0, completed.stderr
     assert (data_dir / "logs" / "app.log").is_file()
-    assert not (data_dir / "meter_reading.lock").exists()
-    with closing(sqlite3.connect(data_dir / "meter_reading.db")) as connection:
+    assert not (data_dir / "app.lock").exists()
+    with closing(sqlite3.connect(data_dir / "meter_reading" / "meter_reading.db")) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
 
 
@@ -672,7 +789,7 @@ def test_invalid_application_instance_fails_without_a_dialog(
     tmp_path: Path, setup: str, argument: str, expected: str
 ) -> None:
     environment = os.environ.copy()
-    environment["METER_READING_MINI_DATA_DIR"] = str(tmp_path / "temporary-data")
+    environment[DATA_DIR_ENV] = str(tmp_path / "temporary-data")
     environment["PYTHONIOENCODING"] = "utf-8"
     script = f"""
 {setup}

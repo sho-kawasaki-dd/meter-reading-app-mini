@@ -7,9 +7,8 @@ from pathlib import Path
 
 from platformdirs import user_data_dir
 
-from meter_reading_mini.config import APP_NAME
-
 _GENERIC_READ = 0x80000000
+_INSTALLATION_GUARD_APP_NAME = "meter-reading-mini"
 _FILE_SHARE_READ = 0x00000001
 _OPEN_ALWAYS = 4
 _FILE_ATTRIBUTE_NORMAL = 0x00000080
@@ -81,5 +80,5 @@ class InstallationGuard:
 def create_installation_guard() -> InstallationGuard | None:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return None
-    directory = Path(user_data_dir(APP_NAME, appauthor=False, roaming=False))
+    directory = Path(user_data_dir(_INSTALLATION_GUARD_APP_NAME, appauthor=False, roaming=False))
     return InstallationGuard(directory / "installation.guard")

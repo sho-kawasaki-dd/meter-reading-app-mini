@@ -14,8 +14,8 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
 
+from building_manager_mini.paths import DATA_DIR_ENV, AppPaths
 from meter_reading_mini import app, restart
-from meter_reading_mini.config import DATA_DIR_ENV, AppPaths
 from meter_reading_mini.core.backup_restore_contracts import BackupRestoreRepository
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.db import restore
@@ -78,9 +78,10 @@ def _staff(path: Path) -> list[str]:
 
 
 def _prepare_paths(tmp_path: Path) -> tuple[AppPaths, Path, bytes]:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     paths.data_dir.mkdir()
-    paths.backup_dir.mkdir()
+    paths.meter_reading_dir.mkdir()
+    paths.backup_dir.mkdir(parents=True)
     paths.log_dir.mkdir()
     _create_database(paths.db_path, "現行担当")
     source = tmp_path / "source.db"
@@ -476,12 +477,12 @@ def test_restore_and_restart_failures_preserve_data_and_notify(
     assert paths.ui_settings_path.read_bytes() == settings_before
     _assert_lock_released(paths.lock_path)
     if failure in {"cleanup", "cleanup-after-error"}:
-        workspace = list(paths.data_dir.glob(".meter-reading-restore-*"))
+        workspace = list(paths.meter_reading_dir.glob(".meter-reading-restore-*"))
         assert len(workspace) == 1
         if failure == "cleanup-after-error":
             (workspace[0] / "candidate.db").unlink()
         workspace[0].rmdir()
-    assert not list(paths.data_dir.glob(".meter-reading-restore-*"))
+    assert not list(paths.meter_reading_dir.glob(".meter-reading-restore-*"))
 
 
 @pytest.mark.parametrize("failure", ["replace", "restart"])
@@ -497,14 +498,12 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 from meter_reading_mini.app import run_app
-from meter_reading_mini.config import AppPaths
+from building_manager_mini.paths import AppPaths
 from meter_reading_mini.db import restore
 from meter_reading_mini.ui.dialogs.backup_restore_dialog import BackupRestoreDialog
 from meter_reading_mini.ui.main_window import MainWindow
 
-paths = AppPaths.from_dirs(
-    Path(os.environ["METER_READING_MINI_DATA_DIR"]), Path(os.environ["RESTORE_LOG_DIR"])
-)
+paths = AppPaths.from_root(Path(os.environ["BUILDING_MANAGER_MINI_DATA_DIR"]))
 source = Path(os.environ["RESTORE_SOURCE"])
 mode = os.environ["RESTORE_FAILURE"]
 messages = []
@@ -654,14 +653,12 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 from meter_reading_mini.app import run_app
-from meter_reading_mini.config import AppPaths
+from building_manager_mini.paths import AppPaths
 from meter_reading_mini.ui.dialogs.backup_restore_dialog import BackupRestoreDialog
 from meter_reading_mini.ui.main_window import MainWindow
 from meter_reading_mini.ui.single_instance import SingleInstanceLock
 
-paths = AppPaths.from_dirs(
-    Path(os.environ["METER_READING_MINI_DATA_DIR"]), Path(os.environ["RESTORE_LOG_DIR"])
-)
+paths = AppPaths.from_root(Path(os.environ["BUILDING_MANAGER_MINI_DATA_DIR"]))
 source = Path(os.environ["RESTORE_SOURCE"])
 events = []
 errors = []

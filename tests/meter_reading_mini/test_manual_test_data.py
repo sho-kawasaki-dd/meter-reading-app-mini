@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from building_manager_mini.paths import AppPaths
 from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.timezone_settings import DEFAULT_APP_TIMEZONE
 
@@ -51,7 +52,7 @@ def _run_generator(
 def test_create_manual_test_data_builds_representative_database(tmp_path: Path) -> None:
     data_dir = tmp_path / "manual-check"
     result = _run_generator(data_dir)
-    database_path = data_dir / "meter_reading.db"
+    database_path = AppPaths.from_root(data_dir).db_path
 
     assert result.returncode == 0, result.stderr
     assert "測定定義: 4 件" in result.stdout
@@ -124,7 +125,7 @@ def test_create_manual_test_data_applies_measured_percentage(
     result = _run_generator(data_dir, measured_percent=measured_percent)
 
     assert result.returncode == 0, result.stderr
-    with closing(sqlite3.connect(data_dir / "meter_reading.db")) as connection:
+    with closing(sqlite3.connect(AppPaths.from_root(data_dir).db_path)) as connection:
         past_slots = connection.execute(
             "SELECT COUNT(*) FROM planned_readings WHERE task_state IN ('completed', 'auto_closed')"
         ).fetchone()[0]
@@ -159,7 +160,7 @@ def test_create_manual_test_data_respects_cutoff(
     )
     generator.create_manual_test_data(tmp_path, days_back=7, measured_percent=measured_percent)
 
-    with closing(sqlite3.connect(tmp_path / "meter_reading.db")) as connection:
+    with closing(sqlite3.connect(AppPaths.from_root(tmp_path).db_path)) as connection:
         eligible_slots = connection.execute(
             "SELECT COUNT(*) FROM planned_readings WHERE business_date <= ?",
             ("2026-11-26" if yesterday_is_open else "2026-11-27",),

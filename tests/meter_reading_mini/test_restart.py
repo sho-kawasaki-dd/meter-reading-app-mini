@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from building_manager_mini.paths import DATA_DIR_ENV, AppPaths
 from meter_reading_mini import restart
-from meter_reading_mini.config import DATA_DIR_ENV, AppPaths
 
 
 class RunningProcess:
@@ -33,7 +33,7 @@ def test_restart_commands_follow_python_and_frozen_execution(
 def test_restart_preserves_paths_and_requires_the_child_ready_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "separate-logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     paths.data_dir.mkdir()
     monkeypatch.setenv(DATA_DIR_ENV, str(paths.data_dir))
     backup = paths.backup_dir / "pre-restore.db"
@@ -61,7 +61,7 @@ def test_restart_preserves_paths_and_requires_the_child_ready_signal(
 def test_explicit_paths_are_propagated_without_an_existing_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     paths.data_dir.mkdir()
     monkeypatch.delenv(DATA_DIR_ENV, raising=False)
 
@@ -78,7 +78,7 @@ def test_explicit_paths_are_propagated_without_an_existing_override(
 def test_frozen_restart_uses_the_executable_and_preserves_the_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     paths.data_dir.mkdir()
     monkeypatch.setenv(DATA_DIR_ENV, str(paths.data_dir))
     monkeypatch.setattr(sys, "frozen", True, raising=False)
@@ -97,7 +97,7 @@ def test_frozen_restart_uses_the_executable_and_preserves_the_override(
 
 
 def test_process_exit_and_missing_ready_signal_are_failures(tmp_path: Path) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     paths.data_dir.mkdir()
     backup = paths.backup_dir / "saved.db"
     with pytest.raises(RuntimeError, match="終了コード: 2"):
@@ -112,7 +112,7 @@ def test_process_exit_and_missing_ready_signal_are_failures(tmp_path: Path) -> N
 
 
 def test_signal_without_a_live_child_is_not_success(tmp_path: Path) -> None:
-    paths = AppPaths.from_dirs(tmp_path / "data", tmp_path / "logs")
+    paths = AppPaths.from_root(tmp_path / "data")
     paths.data_dir.mkdir()
 
     class ExitsAfterSignal:

@@ -14,13 +14,19 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from shiboken6 import delete as delete_qobject
 
+from building_manager_mini.paths import (
+    AppPaths,
+    PathConfigurationError,
+    ensure_dirs,
+    resolve_startup_paths,
+)
 from meter_reading_mini.app_context import AppContext, create_app_context
-from meter_reading_mini.config import AppPaths, ensure_dirs, resolve_paths
 from meter_reading_mini.core.backup_restore_contracts import RestoreResult
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.errors import DomainError, InvalidBackupError, RestoreError
 from meter_reading_mini.core.logging_config import configure_logging
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
+from meter_reading_mini.db.legacy_migration import migrate_legacy_database
 from meter_reading_mini.db.migrations import open_database
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
 from meter_reading_mini.installation_guard import InstallationGuardError, create_installation_guard
@@ -67,6 +73,10 @@ class StartupPreparer(Protocol):
 
 class StartupErrorNotifier(Protocol):
     def __call__(self, error: BaseException) -> None: ...
+
+
+class MigrationNotifier(Protocol):
+    def __call__(self, legacy_database_path: Path, new_database_path: Path) -> None: ...
 
 
 class InstanceLock(Protocol):
@@ -218,6 +228,7 @@ def run_app(
     logging_configurator: LoggingConfigurator | None = None,
     startup_preparer: StartupPreparer | None = None,
     startup_error_notifier: StartupErrorNotifier | None = None,
+    migration_notifier: MigrationNotifier | None = None,
     main_window_factory: Callable[[AppContext], QMainWindow] | None = None,
     event_loop_runner: Callable[[QApplication], int] | None = None,
     restart_launcher: RestartLauncher | None = None,
@@ -226,10 +237,15 @@ def run_app(
     logging_initialized = False
 
     try:
-        resolved_paths = paths or resolve_paths()
+        startup_paths = resolve_startup_paths(os.environ)
+        resolved_paths = paths if paths is not None else startup_paths.paths
+        legacy_database_path = startup_paths.legacy_meter_reading_db_path if paths is None else None
         restart_notice = take_restart_notice(os.environ, resolved_paths.data_dir)
-        if restart_notice is not None and paths is None:
-            resolved_paths = AppPaths.from_dirs(resolved_paths.data_dir, restart_notice.log_dir)
+        if (
+            restart_notice is not None
+            and restart_notice.log_dir.resolve() != resolved_paths.log_dir
+        ):
+            raise RuntimeError("復元後の再起動情報に含まれるログ保存先が不正です。")
         ensure_dirs(resolved_paths)
 
         lock = (lock_factory or SingleInstanceLock)(resolved_paths.lock_path)
@@ -263,6 +279,14 @@ def run_app(
                     install_excepthook(resolved_paths.log_path)
                     resources.callback(setattr, sys, "excepthook", previous_excepthook)
 
+                    migration_completed = False
+                    if legacy_database_path is not None:
+                        migration_completed = migrate_legacy_database(
+                            resolved_paths.db_path,
+                            legacy_database_path,
+                            lock_factory=SingleInstanceLock,
+                        )
+
                     connection = (database_opener or open_database)(
                         resolved_paths.db_path,
                         resolved_paths.backup_dir,
@@ -282,6 +306,17 @@ def run_app(
                         application = _initialize_ui(
                             ui_resources, application_factory, resolved_paths
                         )
+                        if migration_completed and legacy_database_path is not None:
+                            if migration_notifier is not None:
+                                migration_notifier(legacy_database_path, resolved_paths.db_path)
+                            else:
+                                QMessageBox.information(
+                                    None,
+                                    "検針 DB の移行が完了しました",
+                                    "旧版の検針 DB を新しい保存先へ複製しました。\n"
+                                    "旧 DB と旧バックアップは変更していません。\n"
+                                    "以後、旧版で入力した内容は新しい DB には反映されません。",
+                                )
                         context = create_app_context(connection)
                         try:
                             if startup_preparer is not None:
@@ -403,7 +438,7 @@ def run_app(
             logger.exception("アプリケーションの起動に失敗しました")
         if isinstance(error, DomainError):
             gui_message = f"アプリケーションの起動に失敗しました: {error.message}"
-        elif isinstance(error, InstallationGuardError):
+        elif isinstance(error, (InstallationGuardError, PathConfigurationError)):
             gui_message = str(error)
         elif logging_initialized:
             gui_message = "予期しないエラーが発生しました。詳細はログを確認してください。"
