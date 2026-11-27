@@ -10,23 +10,11 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
-from conftest import SheetBrowser
 from playwright.sync_api import expect
 from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt
 from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QWidget
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    SHEET_ID,
-    STAFF_ID,
-    build_services,
-    confirmation_context,
-    create_plan,
-)
-from test_mobile_reading_import import _replace_meter
 
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core.contract_models import (
@@ -60,6 +48,19 @@ from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDia
 from meter_reading_mini.ui.models.mobile_reading_preview_model import HEADERS
 from meter_reading_mini.ui.sheet_save_directory_memory import SheetSaveDirectoryMemory
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
+
+from .conftest import SheetBrowser
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    SHEET_ID,
+    STAFF_ID,
+    build_services,
+    confirmation_context,
+    create_plan,
+)
+from .test_mobile_reading_import import _replace_meter
 
 NOW = datetime(2026, 2, 4, 3, tzinfo=UTC)
 

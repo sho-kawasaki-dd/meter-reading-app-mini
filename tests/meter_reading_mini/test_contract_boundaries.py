@@ -15,7 +15,9 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
 )
 from meter_reading_mini.core.mobile_reading import ASSET_FILENAMES, read_sheet_asset
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "meter_reading_mini"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = REPOSITORY_ROOT / "src" / "meter_reading_mini"
+BUILDING_MANAGER_ROOT = REPOSITORY_ROOT / "src" / "building_manager_mini"
 CORE_ROOT = PACKAGE_ROOT / "core"
 DB_ROOT = PACKAGE_ROOT / "db"
 UI_ROOT = PACKAGE_ROOT / "ui"
@@ -73,6 +75,16 @@ def _imported_modules(tree: ast.AST, path: Path) -> list[str]:
                     modules.append(".".join((*base_parts, *node.module.split("."))))
                 else:
                     modules.extend(".".join((*base_parts, alias.name)) for alias in node.names)
+    return modules
+
+
+def _absolute_imported_modules(tree: ast.AST) -> list[str]:
+    modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            modules.append(node.module or "")
     return modules
 
 
@@ -141,6 +153,22 @@ def test_core_and_db_do_not_import_pyside6() -> None:
         assert not any(
             _is_module_or_submodule(module, "PySide6") for module in _imported_modules(tree, path)
         ), path
+
+
+def test_shared_package_does_not_import_meter_reading_or_qt() -> None:
+    for path in _python_files(BUILDING_MANAGER_ROOT):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for module in _absolute_imported_modules(tree):
+            assert not _is_module_or_submodule(module, "meter_reading_mini"), path
+            assert not _is_module_or_submodule(module, "PySide6"), path
+            assert not _is_module_or_submodule(module, "shiboken6"), path
+
+
+def test_meter_core_and_db_do_not_import_shared_launcher() -> None:
+    for path in (*_python_files(CORE_ROOT), *_python_files(DB_ROOT)):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for module in _imported_modules(tree, path):
+            assert not _is_module_or_submodule(module, "building_manager_mini"), path
 
 
 def test_database_does_not_import_services_or_ui() -> None:

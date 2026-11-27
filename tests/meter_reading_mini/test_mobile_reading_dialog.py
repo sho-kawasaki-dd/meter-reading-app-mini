@@ -10,13 +10,6 @@ from PySide6.QtCore import QDate
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QScrollArea, QWidget
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import DEFINITION_ID, build_services
-from test_mobile_reading_sheet import (
-    DAILY_TWICE,
-    WEEKLY_WEDNESDAY,
-    _add_definition,
-    _extract_data,
-)
 
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core import mobile_reading_sheet
@@ -28,6 +21,14 @@ from meter_reading_mini.ui.dialogs.mobile_reading_dialog import MobileReadingDia
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.sheet_save_directory_memory import SheetSaveDirectoryMemory
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
+
+from .reading_service_helpers import DEFINITION_ID, build_services
+from .test_mobile_reading_sheet import (
+    DAILY_TWICE,
+    WEEKLY_WEDNESDAY,
+    _add_definition,
+    _extract_data,
+)
 
 NOW = datetime(2026, 2, 4, 3, 0, tzinfo=UTC)
 

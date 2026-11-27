@@ -7,16 +7,6 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    SHEET_ID,
-    STAFF_ID,
-    build_services,
-    confirmation_context,
-    create_plan,
-)
 
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
@@ -51,6 +41,17 @@ from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrch
 from meter_reading_mini.core.usage_delta_calculation import UsageDeltaCalculationService
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    SHEET_ID,
+    STAFF_ID,
+    build_services,
+    confirmation_context,
+    create_plan,
+)
 
 
 def _at(hour: int) -> datetime:

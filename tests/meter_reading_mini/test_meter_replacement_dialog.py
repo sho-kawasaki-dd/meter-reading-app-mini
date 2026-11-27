@@ -10,14 +10,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QWidget
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    STAFF_ID,
-    build_services,
-    create_plan,
-)
 
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core.contract_models import (
@@ -43,6 +35,15 @@ from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.dialogs.meter_replacement_dialog import MeterReplacementDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    STAFF_ID,
+    build_services,
+    create_plan,
+)
 
 NOW = datetime(2026, 2, 5, tzinfo=UTC)
 DAY = date(2026, 2, 4)

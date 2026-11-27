@@ -12,8 +12,6 @@ import pytest
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import DEFINITION_ID, STAFF_ID, build_services, create_plan
-from test_reading_history import REPLACED, START, ZONE, _assignments, _boundary, _build, _reading
 
 from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.contract_models import CalculationMethod, Category
@@ -34,6 +32,9 @@ from meter_reading_mini.ui.reading_history_export import (
     save_reading_history_csv,
 )
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
+
+from .reading_service_helpers import DEFINITION_ID, STAFF_ID, build_services, create_plan
+from .test_reading_history import REPLACED, START, ZONE, _assignments, _boundary, _build, _reading
 
 
 def _mismatched_history():

@@ -4,17 +4,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    SHEET_ID,
-    build_services,
-    confirmation_context,
-    create_plan,
-    mobile_submission,
-    sync_request,
-)
 
 from meter_reading_mini.core.contract_models import (
     Category,
@@ -36,6 +25,18 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
 from meter_reading_mini.core.reading_signature import verify_meter_reading_signature
 from meter_reading_mini.core.timeutil import parse_utc
 from meter_reading_mini.db.connection import transaction
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    SHEET_ID,
+    build_services,
+    confirmation_context,
+    create_plan,
+    mobile_submission,
+    sync_request,
+)
 
 
 def _scheduled(hour: int) -> datetime:

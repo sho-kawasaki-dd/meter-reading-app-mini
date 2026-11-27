@@ -26,7 +26,7 @@ lock.release()
 def start_lock_holder(path: Path) -> subprocess.Popen[str]:
     env = os.environ.copy()
     env[LOCK_PATH_ENV] = str(path)
-    src_dir = str(Path(__file__).resolve().parents[1] / "src")
+    src_dir = str(Path(__file__).resolve().parents[2] / "src")
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         f"{src_dir}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else src_dir

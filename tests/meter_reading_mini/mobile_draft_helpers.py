@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from conftest import SheetBrowser
-from mobile_sheet_helpers import simple_sheet_html
 from playwright.sync_api import BrowserContext, Page, expect
+
+from .conftest import SheetBrowser
+from .mobile_sheet_helpers import simple_sheet_html
 
 SLOT_1_RAW = ".card[data-slot-id='slot-1'] .raw"
 

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 spec = importlib.util.spec_from_file_location(
     "fetch_dependency_sources",
-    Path(__file__).resolve().parents[1] / "scripts" / "fetch_dependency_sources.py",
+    Path(__file__).resolve().parents[2] / "scripts" / "fetch_dependency_sources.py",
 )
 assert spec is not None and spec.loader is not None
 sources = importlib.util.module_from_spec(spec)

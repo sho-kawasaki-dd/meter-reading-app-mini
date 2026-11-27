@@ -5,15 +5,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    STAFF_ID,
-    build_services,
-    confirmation_context,
-    create_plan,
-)
 
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
@@ -37,6 +28,16 @@ from meter_reading_mini.core.previous_reading import PreviousReadingSource
 from meter_reading_mini.core.reading_preview import ReadingPreviewService
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    STAFF_ID,
+    build_services,
+    confirmation_context,
+    create_plan,
+)
 
 NOW = datetime(2026, 2, 5, tzinfo=UTC)
 

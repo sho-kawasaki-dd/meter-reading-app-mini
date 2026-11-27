@@ -20,15 +20,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    STAFF_ID,
-    build_services,
-    create_plan,
-)
-from test_assignment_calculation_settings import _setup_replacement
 
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core.aggregation_contracts import (
@@ -62,6 +53,16 @@ from meter_reading_mini.ui.display_settings import DisplaySettings, apply_displa
 from meter_reading_mini.ui.main_window import MainWindow
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 from meter_reading_mini.ui.widgets.aggregation_formula_page import AggregationFormulaPage
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    STAFF_ID,
+    build_services,
+    create_plan,
+)
+from .test_assignment_calculation_settings import _setup_replacement
 
 
 @dataclass

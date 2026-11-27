@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows ランチャーの検証")
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")

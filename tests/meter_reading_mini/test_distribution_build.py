@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
 spec = importlib.util.spec_from_file_location(
     "build_distribution", SCRIPTS / "build_distribution.py"

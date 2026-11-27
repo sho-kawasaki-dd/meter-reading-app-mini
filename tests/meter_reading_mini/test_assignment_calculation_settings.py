@@ -8,15 +8,6 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    STAFF_ID,
-    build_services,
-    confirmation_context,
-    create_plan,
-)
 
 from meter_reading_mini.core.assignment_calculation_settings import (
     AssignmentCalculationCorrectionInput,
@@ -41,6 +32,16 @@ from meter_reading_mini.db.bootstrap_seeds import bootstrap_default_settings
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.migrations import create_schema
 from meter_reading_mini.db.repositories import SQLiteRepository
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    STAFF_ID,
+    build_services,
+    confirmation_context,
+    create_plan,
+)
 
 NOW = datetime(2026, 2, 5, tzinfo=UTC)
 

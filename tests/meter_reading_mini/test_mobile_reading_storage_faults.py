@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 
-from conftest import SheetBrowser
-from mobile_draft_helpers import (
+from playwright.sync_api import Locator, Page, expect
+
+from meter_reading_mini.core.mobile_reading import render_sheet_html
+
+from .conftest import SheetBrowser
+from .mobile_draft_helpers import (
     SHORT_TIMEOUT_SCRIPT,
     SLOT_1_RAW,
     STATUS_RECORDER_SCRIPT,
@@ -16,10 +20,7 @@ from mobile_draft_helpers import (
     reload_and_wait,
     wait_saved,
 )
-from mobile_sheet_helpers import SHEET_ID, definition, meter, sheet_data, slot
-from playwright.sync_api import Locator, Page, expect
-
-from meter_reading_mini.core.mobile_reading import render_sheet_html
+from .mobile_sheet_helpers import SHEET_ID, definition, meter, sheet_data, slot
 
 
 def status(page: Page) -> Locator:

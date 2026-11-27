@@ -6,16 +6,6 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from conftest import SheetBrowser
-from mobile_draft_helpers import export_draft, import_text, reload_and_wait, wait_saved
-from mobile_sheet_helpers import (
-    definition,
-    meter,
-    sheet_data,
-    sheet_html,
-    simple_sheet_html,
-    slot,
-)
 from playwright.sync_api import Locator, Page, expect
 
 from meter_reading_mini.core.contract_models import Category
@@ -26,6 +16,17 @@ from meter_reading_mini.core.meter_reading_sync_repositories import (
     ReadingRouteLocationRecord,
 )
 from meter_reading_mini.core.mobile_reading import render_sheet_html
+
+from .conftest import SheetBrowser
+from .mobile_draft_helpers import export_draft, import_text, reload_and_wait, wait_saved
+from .mobile_sheet_helpers import (
+    definition,
+    meter,
+    sheet_data,
+    sheet_html,
+    simple_sheet_html,
+    slot,
+)
 
 VIEWPORTS = {
     "phone-portrait": (360, 640),

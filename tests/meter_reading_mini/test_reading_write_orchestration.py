@@ -5,14 +5,6 @@ from decimal import Decimal
 from functools import partial
 
 import pytest
-from reading_service_helpers import (
-    DEFINITION_ID,
-    METER_ID,
-    STAFF_ID,
-    TEST_NOW,
-    build_services,
-    create_plan,
-)
 
 from meter_reading_mini.core.contract_models import ResultStatus
 from meter_reading_mini.core.errors import InactiveMasterError, ValidationError
@@ -33,6 +25,15 @@ from meter_reading_mini.core.reading_write_orchestration import (
 from meter_reading_mini.core.staff_service import StaffService
 from meter_reading_mini.core.timeutil import parse_utc
 from meter_reading_mini.db.connection import transaction
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    METER_ID,
+    STAFF_ID,
+    TEST_NOW,
+    build_services,
+    create_plan,
+)
 
 
 def _recorded_at(hour: int) -> datetime:
@@ -171,7 +172,7 @@ def test_manual_write_generates_pc_signature_and_monotonic_update_time(
     conn, repository = file_database_repository
     writer, sync_service = build_services(conn, repository)
     create_plan(repository, "plan-manual", _recorded_at(4))
-    from reading_service_helpers import (
+    from .reading_service_helpers import (
         confirmation_context,
         mobile_submission,
         sync_request,

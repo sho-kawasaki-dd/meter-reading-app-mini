@@ -10,15 +10,6 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    STAFF_ID,
-    TEST_NOW,
-    build_services,
-    create_plan,
-)
 
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
@@ -62,6 +53,16 @@ from meter_reading_mini.core.staff_service import (
 )
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    STAFF_ID,
+    TEST_NOW,
+    build_services,
+    create_plan,
+)
 
 
 def _meter_service(conn, repository: SQLiteRepository) -> MeterMasterService:

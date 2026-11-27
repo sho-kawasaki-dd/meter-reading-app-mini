@@ -51,6 +51,7 @@ REQUIRED_ROOT_FILES = (
 )
 AUDITED_MODULES = frozenset(
     {
+        "building_manager_mini",
         "meter_reading_mini",
         "PySide6",
         "shiboken6",

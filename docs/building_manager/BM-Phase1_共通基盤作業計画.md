@@ -1,7 +1,7 @@
 # BM-Phase 1 共通基盤 作業計画
 
 - 作成日: 2026-11-28
-- 状態: 計画・実装未着手。チェックは対応する検証に成功してから付ける。
+- 状態: 実装中 (タスク①完了)。残りのチェックは対応する検証に成功してから付ける。
 - 正本: [業務日誌アプリ要件定義](業務日誌アプリ要件定義.md) 3.1〜3.4 節・8 章 (D2・D3・D10・D11・D17・D20)
 - 前提: [BM-Phase 0](implemented/BM-Phase0_文書整理・技術検証計画.md) の限定付きクローズにより着手可能。PDF の正式採用・配布検証の完了を意味しない。
 - 2026-11-28 レビュー後の利用者確認: インストール用ガード・exe 名・インストーラーは Phase 7 まで旧名で据え置く。単体復元後の再起動に限り選択画面を省く。ログは常にデータルート配下に置く (要件定義 3.2 を修正済み)。
@@ -38,9 +38,9 @@
 
 ### ① パッケージ・テストの分離 (正本 3.1)
 
-- [ ] 現行の [起動処理](../../src/meter_reading_mini/app.py)・[保存先](../../src/meter_reading_mini/config.py) と復元後の再起動経路を棚卸しする。全アプリで使う処理だけを `src/building_manager_mini/` に移し、検針の Service・DB 移行・UI は `src/meter_reading_mini/` に残す。
-- [ ] 共通ランチャーは登録されたアプリを開く契約だけを持ち、具体的な検針実装を import しない。起動時の組み立てで検針側のアダプターを登録する。依存方向と `core`・`db` の Qt 非依存を既存の層検査に加える。
-- [ ] 検針テスト・専用フィクスチャを `tests/meter_reading_mini/`、共通基盤テストを `tests/building_manager_mini/` に配置し、全体共通のフィクスチャだけをルートに残す。pytest は `--import-mode=importlib` とし、`*_helpers.py` は検針テスト側へ移して import を更新する。移動前後の `uv run pytest --collect-only -q` の結果をディレクトリを除いた `モジュール名::テスト名` の集合で比べ、既存ケースの欠落・同名モジュール衝突がないことを照合する。
+- [x] 現行の [起動処理](../../src/meter_reading_mini/app.py)・[保存先](../../src/meter_reading_mini/config.py) と復元後の再起動経路を棚卸しする。全アプリで使う処理だけを `src/building_manager_mini/` に移し、検針の Service・DB 移行・UI は `src/meter_reading_mini/` に残す。
+- [x] 共通ランチャーは登録されたアプリを開く契約だけを持ち、具体的な検針実装を import しない。起動時の組み立てで検針側のアダプターを登録する。依存方向と `core`・`db` の Qt 非依存を既存の層検査に加える。
+- [x] 検針テスト・専用フィクスチャを `tests/meter_reading_mini/`、共通基盤テストを `tests/building_manager_mini/` に配置し、全体共通のフィクスチャだけをルートに残す。pytest は `--import-mode=importlib` とし、`*_helpers.py` は検針テスト側へ移して import を更新する。移動前後の `uv run pytest --collect-only -q` の結果をディレクトリを除いた `モジュール名::テスト名` の集合で比べ、既存ケースの欠落・同名モジュール衝突がないことを照合する。
 
 ### ② 保存先の一元化と安全な初回複製 (正本 3.2)
 

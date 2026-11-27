@@ -10,16 +10,6 @@ from functools import partial
 from typing import cast
 
 import pytest
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    SHEET_ID,
-    STAFF_ID,
-    build_services,
-    confirmation_context,
-    create_plan,
-)
 
 from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.contract_models import (
@@ -79,6 +69,17 @@ from meter_reading_mini.core.reading_signature import verify_meter_reading_signa
 from meter_reading_mini.core.reading_write_orchestration import ReadingWriteOrchestrationService
 from meter_reading_mini.db.connection import transaction
 from meter_reading_mini.db.repositories import SQLiteRepository
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    SHEET_ID,
+    STAFF_ID,
+    build_services,
+    confirmation_context,
+    create_plan,
+)
 
 
 @dataclass(frozen=True)

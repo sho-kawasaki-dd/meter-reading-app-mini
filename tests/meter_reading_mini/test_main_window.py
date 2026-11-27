@@ -12,15 +12,6 @@ from PySide6.QtCore import QDate, Qt, QTime, QTimer
 from PySide6.QtGui import QBrush, QFont
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QToolBar
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    SHEET_ID,
-    STAFF_ID,
-    build_services,
-    create_plan,
-)
 
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core import mobile_reading_sheet
@@ -56,6 +47,16 @@ from meter_reading_mini.ui.display_settings import DisplaySettings, apply_displa
 from meter_reading_mini.ui.main_window import MainWindow, _ReviewAssignment
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 from meter_reading_mini.ui.widgets.dashboard import DashboardWindow
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    SHEET_ID,
+    STAFF_ID,
+    build_services,
+    create_plan,
+)
 
 DAY = date(2026, 2, 4)
 

@@ -5,8 +5,10 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from conftest import SheetBrowser
-from mobile_draft_helpers import (
+from playwright.sync_api import FilePayload, Locator, Page, expect
+
+from .conftest import SheetBrowser
+from .mobile_draft_helpers import (
     SLOT_1_RAW,
     export_draft,
     get_record,
@@ -17,8 +19,7 @@ from mobile_draft_helpers import (
     reload_and_wait,
     wait_saved,
 )
-from mobile_sheet_helpers import SHEET_ID, definition, meter, sheet_html, slot
-from playwright.sync_api import FilePayload, Locator, Page, expect
+from .mobile_sheet_helpers import SHEET_ID, definition, meter, sheet_html, slot
 
 VIEWPORTS = {
     "phone-portrait": (360, 640),

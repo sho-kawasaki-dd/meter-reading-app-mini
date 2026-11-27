@@ -11,14 +11,6 @@ import pytest
 from PySide6.QtCore import QDate, QTime
 from PySide6.QtWidgets import QMessageBox
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import (
-    DEFINITION_ID,
-    LOCATION_ID,
-    METER_ID,
-    STAFF_ID,
-    build_services,
-    create_plan,
-)
 
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core.contract_models import (
@@ -40,6 +32,15 @@ from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.ui.dialogs.direct_reading_dialog import DirectReadingDialog
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 from meter_reading_mini.ui.widgets.wall_datetime_edit import WallDateTimeEdit
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    LOCATION_ID,
+    METER_ID,
+    STAFF_ID,
+    build_services,
+    create_plan,
+)
 
 NOW = datetime(2026, 2, 5, 0, 0, tzinfo=UTC)
 DAY = date(2026, 2, 4)

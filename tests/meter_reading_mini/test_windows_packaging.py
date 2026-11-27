@@ -9,7 +9,7 @@ from uuid import UUID
 import pytest
 
 spec = importlib.util.spec_from_file_location(
-    "build_windows", Path(__file__).resolve().parents[1] / "scripts" / "build_windows.py"
+    "build_windows", Path(__file__).resolve().parents[2] / "scripts" / "build_windows.py"
 )
 assert spec is not None and spec.loader is not None
 build_windows = importlib.util.module_from_spec(spec)

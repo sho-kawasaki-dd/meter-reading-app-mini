@@ -14,7 +14,7 @@ import pytest
 from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.timezone_settings import DEFAULT_APP_TIMEZONE
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "create_manual_test_data.py"
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "create_manual_test_data.py"
 
 spec = importlib.util.spec_from_file_location("create_manual_test_data", SCRIPT_PATH)
 assert spec is not None and spec.loader is not None

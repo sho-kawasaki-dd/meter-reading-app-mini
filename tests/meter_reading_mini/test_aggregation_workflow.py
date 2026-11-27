@@ -12,12 +12,6 @@ from PySide6.QtCore import QDate
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QComboBox, QFileDialog, QLineEdit, QMessageBox
 from pytestqt.qtbot import QtBot
-from reading_service_helpers import (
-    DEFINITION_ID,
-    STAFF_ID,
-    build_services,
-    create_plan,
-)
 
 from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.aggregation_contracts import AggregationTargetType
@@ -28,6 +22,13 @@ from meter_reading_mini.db.repositories import SQLiteRepository
 from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 from meter_reading_mini.ui.widgets.dashboard import DashboardWindow
+
+from .reading_service_helpers import (
+    DEFINITION_ID,
+    STAFF_ID,
+    build_services,
+    create_plan,
+)
 
 
 def test_file_database_formula_to_dashboard_and_exports(

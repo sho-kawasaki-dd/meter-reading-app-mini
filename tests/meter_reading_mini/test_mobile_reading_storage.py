@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from conftest import SheetBrowser
-from mobile_draft_helpers import open_sheet, wait_saved
 from playwright.sync_api import expect
+
+from .conftest import SheetBrowser
+from .mobile_draft_helpers import open_sheet, wait_saved
 
 
 def test_autosave_restores_partial_and_invalid_input_after_reload(

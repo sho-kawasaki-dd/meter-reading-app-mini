@@ -15,7 +15,6 @@ from PySide6.QtCore import QDate, QSaveFile, Qt
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QTableWidget
 from pytestqt.qtbot import QtBot
-from test_reports import Scenario
 
 from meter_reading_mini.app_context import create_app_context
 from meter_reading_mini.core.aggregation_contracts import AggregationPeriodUnit
@@ -37,6 +36,8 @@ from meter_reading_mini.ui.dialogs.master_dialog import MasterDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
 from meter_reading_mini.ui.staff_selection_memory import StaffSelectionMemory
 from meter_reading_mini.ui.widgets.dashboard import DashboardWindow
+
+from .test_reports import Scenario
 
 
 @dataclass

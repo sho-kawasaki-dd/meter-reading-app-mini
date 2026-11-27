@@ -104,7 +104,7 @@ def test_guard_is_held_across_processes_and_released_after_exit(tmp_path: Path) 
         "assert guard.try_acquire(); print('acquired', flush=True); sys.stdin.readline()"
     )
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
     process = subprocess.Popen(
         [sys.executable, "-c", code, str(path)],
         stdin=subprocess.PIPE,
