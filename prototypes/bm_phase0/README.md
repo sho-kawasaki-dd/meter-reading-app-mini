@@ -25,6 +25,16 @@ uv run --with pillow --with fonttools --with pypdf python prototypes/bm_phase0/p
 
 `out/pdf/` に日次・上限超過日次・31 日月次の HTML/PDF、Noto Sans JP と SIL Open Font License 1.1、試料サイズ・OS 別の検査結果 JSON を出力します。HTML と PDF は Git に含めません。
 
+#### WeasyPrint の分割境界の確認
+
+上記の `prepare` で試料を用意した後、既存の超長日次と、写真・表行を境界に置く追加試料を PDF にして確認します。Windows では上記と同様に MSYS2 UCRT64 の Pango を PATH に追加します。
+
+```powershell
+uv run --locked --with weasyprint==70.0 --with pymupdf --with pillow python prototypes/bm_phase0/verify_weasyprint_pagination.py
+```
+
+画像の描画矩形・画素と表行の文字を確認し、1 ページに収まらない表行のはみ出し・欠落も再現します。CSS の改ページ回避だけでは巨大な行の保護を保証できません。この検証は WeasyPrint の試作のみを対象とし、Qt WebEngine の検証や製品側での入力制限・検出の実装を代替しません。
+
 ### Windows 開発 PC での試作 exe 比較
 
 以下は開発 PC 上での `onedir` 試作であり、未導入の Sandbox/VM や GitHub Actions での検証の代わりにはなりません。事前に上記の `prepare` を実行し、WeasyPrint 用には MSYS2 UCRT64 の Pango とその依存 DLL を用意します。計測時は Python 3.13.12、PyInstaller 6.22.3、WeasyPrint 70.0、PySide6 6.12.0 を使用しました。試作ごとに新しい出力先を指定し、既存の成果物に上書きしないでください。
