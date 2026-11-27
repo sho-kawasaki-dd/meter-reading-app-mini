@@ -155,6 +155,7 @@ th {{ background: #e8eef0; }}
 .daily table, .monthly-day table, .daily tr, .monthly-day tr {{
   break-inside: avoid;
 }}
+table.boundary-table td:first-child {{ width: 26mm; }}
 .daily {{ break-before: page; page: daily; }}
 .daily:first-child {{ break-before: auto; }}
 .monthly-day {{ break-before: page; }}
@@ -210,7 +211,7 @@ def _day_content(day: int, photos: list[str], long: bool = False, monthly: bool 
                 )
                 row_text = "境界で分割せずに配置する架空の表データ。" * 30
                 entries.append(
-                    "<table><tbody>"
+                    '<table class="boundary-table"><tbody>'
                     "<tr><td>境界表A開始</td>"
                     f"<td>{row_text}境界表A終了</td></tr>"
                     "<tr><td>境界表B開始</td><td>表の次の行</td></tr>"
