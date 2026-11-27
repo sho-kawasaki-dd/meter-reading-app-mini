@@ -74,6 +74,21 @@ try {
 
 GitHub Actions の `BM Phase 0 PDF spike` は必須 CI と別の試作用ワークフローです。対象ブランチでワークフローまたは試作コードを更新した場合に起動し、各方式の配布一式・架空の HTML・検査結果を 7 日間の成果物として保存します。この成果物は製品の配布物ではありません。
 
+### 気象庁「日ごとの値」の取得・解析
+
+取得時点の月と前月を 2 地点分、各 URL に一度だけ取得するコマンドです。HTTP は標準ライブラリ、HTML 解析は `html.parser` を使います。
+
+```powershell
+uv run --with beautifulsoup4 python prototypes\bm_phase0\jma_spike.py fetch --year 2026 --month 11
+uv run --with beautifulsoup4 python prototypes\bm_phase0\jma_spike.py verify
+```
+
+取得は 1 件ずつ 3 秒間隔、タイムアウト 20 秒、アプリ名を含む User-Agent で行い、自動再試行しません。取得開始前に URL を一覧へ記録し、試行済み URL はスキップするため再取得しません。試料・取得 URL・UTC 取得日時・文字コード・HTTP 状態・SHA-256 は [`jma_samples/`](./jma_samples/) と [`manifest.json`](./jma_samples/manifest.json) に保存します。再実行時は `verify` だけを使い、別の月を取得するときも JMA の案内に従い過度なアクセスを避けてください。
+
+`verify` は保存済み HTML のみを読み、地点・年月・見出しの検証、見出しラベルに基づく列特定、Decimal 変換、空欄・品質記号の分離を確認します。メンテナンス画面・別地点・必須列の欠落は値を返さず失敗します。2026 年 11 月の実ページには 28 日の行があり、京都は空欄、京田辺は `///` でした。いずれも行は掲載済みとして扱い、未掲載判定の別試料はその行だけを除いて [`jma_samples/processed/`](./jma_samples/processed/) に保存します。
+
+気象庁ホームページの掲載情報は、権利表記等がある場合を除き[公共データ利用規約（第1.0版）](https://www.digital.go.jp/resources/open_data/public_data_license_v1.0)に準拠します。出典には該当する日別値ページの URL を記し、データを編集・加工した場合はその旨と加工主体も示します。ロゴ等の商標・第三者権利は規約の対象外となるため、取得 HTML は解析用試料に限定し、外部画像を同梱したり製品表示に転用したりしません。自動取得の案内、観測項目の根拠、試料の解析結果は Phase 0 計画書の 5.2 節に記録しています。
+
 ## 品質検査・配布の対象範囲
 
 試作コードはアプリの wheel、対応ソースの収録一覧、Pyright、pytest、coverage の対象外です。`packaging/source-files.txt` へ試作ファイルを追加せず、wheel の対象は `src/meter_reading_mini` のままとします。リポジトリ全体を対象とする Ruff の検査・整形確認は試作コードにも適用します。
