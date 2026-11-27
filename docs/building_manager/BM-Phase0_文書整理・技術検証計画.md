@@ -51,8 +51,8 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 
 ### 4.1 事前準備
 
-- [ ] 要件定義書と本書を含む `docs/work-log-planning` の事前 PR を作成し、必須 CI の成功後に `main` へマージする。
-- [ ] `main` が最新で作業ツリーがクリーンであることを確認し、`feature/bm-phase0-docs-reorg` を作成する。
+- [x] 要件定義書と本書を含む `docs/work-log-planning` の事前 PR を作成し、必須 CI の成功後に `main` へマージする。
+- [x] `main` が最新で作業ツリーがクリーンであることを確認し、`feature/bm-phase0-docs-reorg` を作成する。
 - [ ] 再編前に全品質ゲート (`uv sync --locked`・`ruff check`・`ruff format --check`・`pyright`・`pytest --cov`・coverage の閾値) を実行し、基準値 (成功・skip の件数、coverage) を記録する。
 - [ ] `docs/plan` や `../plan/` 等で旧配置を参照する全箇所を検索し、2 章の表と照合する。`docs/` 配下と更新対象文書の Markdown 相対リンクを検査し、凍結文書の既存のリンク切れを記録する。
 
