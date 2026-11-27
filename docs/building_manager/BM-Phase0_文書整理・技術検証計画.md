@@ -1,10 +1,10 @@
 # BM-Phase 0 文書整理・技術検証 作業計画
 
 - 作成日: 2026-11-28
-- ステータス: 計画中 (未着手)
+- ステータス: PR ① 作業中
 - 対象: `docs/` のアプリ別再編と、業務日誌の出力・天気取得に関する技術検証 (製品コードは変更しない)
-- 要件: [業務日誌アプリ要件定義](../plan/業務日誌アプリ要件定義.md) 8 章 (BM-Phase 0)・8.1 節 (文書の整理)・5.3 節 (天気)・6 章 (出力)・7 章 (Q13)
-- 検針アプリの正本: [ローカル検針管理アプリ開発計画書](../plan/ローカル検針管理アプリ開発計画書.md)
+- 要件: [業務日誌アプリ要件定義](業務日誌アプリ要件定義.md) 8 章 (BM-Phase 0)・8.1 節 (文書の整理)・5.3 節 (天気)・6 章 (出力)・7 章 (Q13)
+- 検針アプリの正本: [ローカル検針管理アプリ開発計画書](../meter_reading/ローカル検針管理アプリ開発計画書.md)
 - 現状・実行手順: [README](../../README.md)
 
 ## 1. 目的
@@ -20,7 +20,7 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
   - PR ①: `feature/bm-phase0-docs-reorg`。`docs/` の再編と参照パスの更新。
   - PR ②: `feature/bm-phase0-tech-spike`。技術検証の試作・結果の記録、承認済みの要件変更、本書の完了・凍結移動。
 - 製品コード (`src/`)・テスト (`tests/`)・`pyproject.toml`・`uv.lock` には、PR ① の参照パスの更新を除いて手を加えない。
-- `docs/plan` を参照する箇所の調査結果 (2026-11-28 時点。完了済み計画書を除く):
+- 再編前の `docs/plan` を参照する箇所の調査結果 (2026-11-28 時点。完了済み計画書を除く):
 
   | ファイル | 一致行数 | 扱い |
   | --- | --- | --- |
@@ -28,12 +28,12 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
   | `.github/copilot-instructions.md` | 5 | 更新する (作業用計画書の置き場所の規約を含む) |
   | `packaging/source-files.txt` | 14 | 更新する (対応ソースの収録一覧) |
   | `tests/test_distribution_build.py` | 5 | 更新する |
-  | `docs/plan/ローカル検針管理アプリ開発計画書.md` | 1 | 更新する (正本であり、凍結文書ではない。ほかにディレクトリ構成図の `plan/` が 1 行ある) |
-  | `docs/plan/フェーズ5_集計・バックアップ・配布計画.md` | 1 | 変更しない (一時クローズ・凍結中。未完了タスク内の移動先の記述であり、BM-Phase 7 で引き継ぐときに読み替える) |
-  | `docs/plan/業務日誌アプリ要件定義.md` | 3 | 更新する |
+  | `docs/meter_reading/ローカル検針管理アプリ開発計画書.md` | 1 | 更新する (正本であり、凍結文書ではない。ほかにディレクトリ構成図の `plan/` が 1 行ある) |
+  | `docs/meter_reading/フェーズ5_集計・バックアップ・配布計画.md` | 1 | 変更しない (一時クローズ・凍結中。未完了タスク内の移動先の記述であり、BM-Phase 7 で引き継ぐときに読み替える) |
+  | `docs/building_manager/業務日誌アプリ要件定義.md` | 3 | 更新する |
   | 本書の冒頭の `../plan/` リンク | 2 | 更新する |
 
-- 完了済み計画書 (`docs/plan/implemented/`)・旧企画書 (`docs/plan/archive/`)・一時クローズ中の検針 Phase 5 計画書は凍結記録であり、内容を変更しない。同じ深さへ移し、移動前に有効だった相対リンクは移動後も有効に保つ。旧 `migration_package/` への参照など、凍結文書の既存のリンク切れは移動前に記録し、修正対象外とする。
+- 完了済み計画書 (`docs/meter_reading/implemented/`)・旧企画書 (`docs/meter_reading/archive/`)・一時クローズ中の検針 Phase 5 計画書は凍結記録であり、内容を変更しない。同じ深さへ移し、移動前に有効だった相対リンクは移動後も有効に保つ。旧 `migration_package/` への参照など、凍結文書の既存のリンク切れは移動前に記録し、修正対象外とする。
 - 試作に使うライブラリ (WeasyPrint・beautifulsoup4・Pillow 等) は `pyproject.toml`・`uv.lock` に加えず、`uv run --with <パッケージ>` で一時的に使う。採用が決まったライブラリは、それを使う実装フェーズで依存に加える。
 - 試作コードは `prototypes/bm_phase0/` に置いてコミットする。配布物 (wheel・対応ソースの一覧)・Pyright・pytest・coverage の対象外とする。Ruff はリポジトリ全体を対象とするため、試作コードも `ruff check`・`ruff format --check` を通す。
 - 業務情報を含むデータを試作に使わない。試作の日誌データは架空の内容とし、写真もプログラムで生成した画像を使う。
@@ -58,18 +58,18 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 
 ### 4.2 PR ①: `docs/` の再編
 
-- [ ] `docs/plan/` を `docs/meter_reading/` へ `git mv` する (`implemented/`・`archive/` を含む。階層の深さは変えない)。
-- [ ] `docs/meter_reading/業務日誌アプリ要件定義.md` を `docs/building_manager/` へ `git mv` する。要件定義書内の相対リンク (検針アプリの正本・README) と 8.1 節の記述を更新する。
-- [ ] 本書冒頭の要件定義書・検針アプリの正本へのリンクを再編後の配置に更新する。
-- [ ] `docs/building_manager/implemented/`・`docs/work_log/implemented/` を作る。空ディレクトリは Git で保持されないため、各ディレクトリの用途を記した `README.md` を置く。
-- [ ] 一時クローズ中の Phase 5 計画書は、本文を変更せず `docs/meter_reading/` 直下に移す。内部の相対リンクが移動後も有効であることを確認する。
-- [ ] 検針アプリの正本の `docs/plan` 参照を更新する。
-- [ ] README の文書へのリンク・説明を新しい構成に合わせる。
-- [ ] `.github/copilot-instructions.md` の「開発計画書・作業用計画書は `docs/plan/` にあります」「`docs/plan/implemented/` へ `git mv`」等の規約を、アプリ別の配置 (`docs/<アプリ>/`・`docs/<アプリ>/implemented/`) に書き換える。
-- [ ] `packaging/source-files.txt` と `tests/test_distribution_build.py` のパスを更新する。
-- [ ] 変更をステージした後、`git diff --cached --summary -M100%` で凍結文書がすべて内容一致の名前変更として検出されることを確認する。
-- [ ] 4.1 と同じ範囲の Markdown 相対リンクを再検査する。現行文書は切れがなく、凍結文書は移動前に記録した切れ以外に増えていないことを確認する。検査スクリプトはリポジトリに置かず、一時的に実行して結果だけを記録する。
-- [ ] 全品質ゲートを実行し、4.1 の基準値と比べて件数・coverage が変わらないことを確認する。
+- [x] `docs/plan/` を `docs/meter_reading/` へ `git mv` する (`implemented/`・`archive/` を含む。階層の深さは変えない)。
+- [x] `docs/meter_reading/業務日誌アプリ要件定義.md` を `docs/building_manager/` へ `git mv` する。要件定義書内の相対リンク (検針アプリの正本・README) と 8.1 節の記述を更新する。
+- [x] 本書冒頭の要件定義書・検針アプリの正本へのリンクを再編後の配置に更新する。
+- [x] `docs/building_manager/implemented/`・`docs/work_log/implemented/` を作る。空ディレクトリは Git で保持されないため、各ディレクトリの用途を記した `README.md` を置く。
+- [x] 一時クローズ中の Phase 5 計画書は、本文を変更せず `docs/meter_reading/` 直下に移す。内部の相対リンクが移動後も有効であることを確認する。
+- [x] 検針アプリの正本の `docs/plan` 参照を更新する。
+- [x] README の文書へのリンク・説明を新しい構成に合わせる。
+- [x] `.github/copilot-instructions.md` の旧配置規約を、アプリ別の配置 (`docs/<アプリ>/`・`docs/<アプリ>/implemented/`) に書き換える。
+- [x] `packaging/source-files.txt` と `tests/test_distribution_build.py` のパスを更新する。
+- [x] 変更をステージした後、`git diff --cached --summary -M100%` で凍結文書がすべて内容一致の名前変更として検出されることを確認する。
+- [x] 4.1 と同じ範囲の Markdown 相対リンクを再検査する。現行文書は切れがなく、凍結文書は移動前に記録した切れ以外に増えていないことを確認する。検査スクリプトはリポジトリに置かず、一時的に実行して結果だけを記録する。
+- [x] 全品質ゲートを実行し、4.1 の基準値と比べて件数・coverage が変わらないことを確認する。
 - [ ] 日本語の Conventional Commits (`docs:`・`test:` 等) でコミットし、PR を作成する。必須 CI の成功後にマージする。
 
 ### 4.3 PR ②: 技術検証の準備
@@ -178,6 +178,9 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
   - 同計画書 33 行: `../../../migration_package/src/meter_reading_mini/core/reading_signature.py`
   - 同計画書 36 行: `../../../migration_package/src/meter_reading_mini/core/usage_delta_calculation.py`
   - 同計画書 333 行: `../../../migration_package/README.md`
+
+- 再編後 (2026-11-28) に同じリンク検査を実行した。コードブロックを除く相対リンク 128 件中 11 件がリンク切れで、すべて上記に記録済みの凍結済み計画書内のリンクだった。現行文書のリンク切れはなく、新たなリンク切れは発生していない。
+- 再編後に全品質ゲートを実行した。Ruff check・format・Pyright は成功 (整形確認 208 ファイル、Pyright 0 件)、pytest は 1799 件成功・1 件スキップで、全体・`core/`・`db/` の coverage は 95%・96%・91%。4.1 の記録からテスト件数・skip 件数・coverage の変化はない。
 
 ### 5.1 PDF 生成手段の比較 (4.4 で記入)
 

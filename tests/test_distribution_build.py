@@ -102,33 +102,37 @@ def test_current_schema_is_included_in_source_and_bundle_allowlists() -> None:
 
 
 def test_current_history_plan_is_included_in_source_snapshot() -> None:
-    assert "docs/plan/implemented/検針履歴閲覧・CSV出力計画.md" in builder.snapshot_source_files()
+    assert (
+        "docs/meter_reading/implemented/検針履歴閲覧・CSV出力計画.md"
+        in builder.snapshot_source_files()
+    )
 
 
 def test_current_sheet_datetime_plan_is_included_in_source_snapshot() -> None:
     assert (
-        "docs/plan/implemented/検針シート予定日表示・日付時刻分類計画.md"
+        "docs/meter_reading/implemented/検針シート予定日表示・日付時刻分類計画.md"
         in builder.snapshot_source_files()
     )
 
 
 def test_current_aggregation_json_plan_is_included_in_source_snapshot() -> None:
     assert (
-        "docs/plan/implemented/v0.2.2_使用量集計JSON一括出力計画.md"
+        "docs/meter_reading/implemented/v0.2.2_使用量集計JSON一括出力計画.md"
         in builder.snapshot_source_files()
     )
 
 
 def test_current_raw_only_negative_plan_is_included_in_source_snapshot() -> None:
     assert (
-        "docs/plan/implemented/v0.2.3_raw_only読値の負数許容計画.md"
+        "docs/meter_reading/implemented/v0.2.3_raw_only読値の負数許容計画.md"
         in builder.snapshot_source_files()
     )
 
 
 def test_implemented_reading_route_plan_is_included_in_source_snapshot() -> None:
     assert (
-        "docs/plan/implemented/v0.3.0_検針順路並び順設定計画.md" in builder.snapshot_source_files()
+        "docs/meter_reading/implemented/v0.3.0_検針順路並び順設定計画.md"
+        in builder.snapshot_source_files()
     )
 
 
