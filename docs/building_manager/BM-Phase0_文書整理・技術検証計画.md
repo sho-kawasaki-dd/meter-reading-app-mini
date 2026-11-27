@@ -70,14 +70,14 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 - [x] 変更をステージした後、`git diff --cached --summary -M100%` で凍結文書がすべて内容一致の名前変更として検出されることを確認する。
 - [x] 4.1 と同じ範囲の Markdown 相対リンクを再検査する。現行文書は切れがなく、凍結文書は移動前に記録した切れ以外に増えていないことを確認する。検査スクリプトはリポジトリに置かず、一時的に実行して結果だけを記録する。
 - [x] 全品質ゲートを実行し、4.1 の基準値と比べて件数・coverage が変わらないことを確認する。
-- [ ] 日本語の Conventional Commits (`docs:`・`test:` 等) でコミットし、PR を作成する。必須 CI の成功後にマージする。
+- [x] 日本語の Conventional Commits (`docs:`・`test:` 等) でコミットし、PR を作成する。必須 CI の成功後にマージする。
 
 ### 4.3 PR ②: 技術検証の準備
 
-- [ ] 最新の `main` から `feature/bm-phase0-tech-spike` を作成する。
-- [ ] `prototypes/bm_phase0/` を作り、目的・実行方法・対象外の扱い (配布物・型検査・テストの対象外) を記した `README.md` を置く。
-- [ ] 試作の生成物 (PDF・HTML・ダウンロードしたフォント・一時ファイル) の出力先を `prototypes/bm_phase0/out/` 等に決め、`.gitignore` で除外する。
-- [ ] `packaging/source-files.txt` に `prototypes/` が含まれないこと、wheel の対象が `src/meter_reading_mini` のままであることを確認する。
+- [x] 最新の `main` から `feature/bm-phase0-tech-spike` を作成する。
+- [x] `prototypes/bm_phase0/` を作り、目的・実行方法・対象外の扱い (配布物・型検査・テストの対象外) を記した `README.md` を置く。
+- [x] 試作の生成物 (PDF・HTML・ダウンロードしたフォント・一時ファイル) の出力先を `prototypes/bm_phase0/out/` 等に決め、`.gitignore` で除外する。
+- [x] `packaging/source-files.txt` に `prototypes/` が含まれないこと、wheel の対象が `src/meter_reading_mini` のままであることを確認する。
 
 ### 4.4 PDF 生成手段の比較 (Q13)
 
