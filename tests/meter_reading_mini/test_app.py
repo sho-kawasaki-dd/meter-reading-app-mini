@@ -8,11 +8,12 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from building_manager_mini.paths import (
     DATA_DIR_ENV,
@@ -22,7 +23,7 @@ from building_manager_mini.paths import (
     resolve_paths,
 )
 from building_manager_mini.settings import load_ui_settings
-from building_manager_mini.ui.application_selection import ApplicationSelectionDialog
+from building_manager_mini.ui.application_host import ApplicationHostWindow
 from meter_reading_mini import app as app_module
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
@@ -66,9 +67,12 @@ def restore_root_handlers() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def choose_meter_reading_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        ApplicationSelectionDialog,
-        "exec",
-        lambda dialog: QDialog.DialogCode.Accepted,
+        app_module,
+        "run_app",
+        partial(
+            app_module.run_app,
+            application_selector=lambda applications, *, last_application=None: "meter-reading",
+        ),
     )
 
 
@@ -159,9 +163,9 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
     assert factory_calls == []
     assert QApplication.instance() is qapp
     assert events == [
-        "directories",
         "lock.create",
         "lock.acquire",
+        "directories",
         "logging",
         "hook.install",
         "settings.load",
@@ -177,6 +181,137 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
     ]
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+def test_selector_defers_database_and_reuses_prepared_application(
+    tmp_path: Path, qapp: QApplication
+) -> None:
+    paths = AppPaths.from_root(tmp_path / "data")
+    events: list[str] = []
+
+    def run_loop(application: QApplication) -> int:
+        host = next(
+            widget
+            for widget in application.topLevelWidgets()
+            if isinstance(widget, ApplicationHostWindow) and widget.isVisible()
+        )
+        assert host.selection.isVisible()
+        assert host.current_application is None
+        assert not paths.db_path.exists()
+        assert events == ["lock.acquire", "logging"]
+
+        assert host.open_application(app_module.METER_READING_APPLICATION_ID)
+        first_page = host.current_page
+        assert first_page is not None
+        assert paths.db_path.is_file()
+        assert events == ["lock.acquire", "logging", "database.open", "startup.prepare"]
+
+        host.return_to_selection()
+        assert host.selection.isVisible()
+        assert host.open_application(app_module.METER_READING_APPLICATION_ID)
+        assert host.current_page is first_page
+        assert events == ["lock.acquire", "logging", "database.open", "startup.prepare"]
+        return app_module.STARTUP_SUCCESS
+
+    def open_db(
+        path: Path, backup_dir: Path, *, backup_timestamp: Callable[[], str]
+    ) -> sqlite3.Connection:
+        events.append("database.open")
+        return open_database(path, backup_dir, backup_timestamp=backup_timestamp)
+
+    result = app_module.run_app(
+        paths,
+        database_opener=open_db,
+        lock_factory=lambda path: FakeLock(events),
+        logging_configurator=lambda **kwargs: events.append("logging"),
+        startup_preparer=lambda conn: (
+            events.append("startup.prepare")
+            or app_module.create_app_context(conn).startup_preparation.prepare()
+        ),
+        startup_error_notifier=lambda error: pytest.fail(str(error)),
+        application_selector=None,
+        event_loop_runner=run_loop,
+    )
+
+    assert result == app_module.STARTUP_SUCCESS
+    assert load_ui_settings(paths.ui_settings_path).last_application == (
+        app_module.METER_READING_APPLICATION_ID
+    )
+
+
+def test_failed_application_preparation_releases_only_its_resources_and_can_retry(
+    tmp_path: Path, qapp: QApplication
+) -> None:
+    paths = AppPaths.from_root(tmp_path / "data")
+    connections: list[sqlite3.Connection] = []
+    connection_closed: list[bool] = []
+    windows: list[QMainWindow] = []
+    failures: list[str] = []
+    preparation_calls = 0
+
+    class TrackedConnection(sqlite3.Connection):
+        def close(self) -> None:
+            for index, connection in enumerate(connections):
+                if connection is self:
+                    connection_closed[index] = True
+                    break
+            super().close()
+
+    def open_db(
+        path: Path, backup_dir: Path, *, backup_timestamp: Callable[[], str]
+    ) -> sqlite3.Connection:
+        connection = sqlite3.connect(":memory:", factory=TrackedConnection)
+        connections.append(connection)
+        connection_closed.append(False)
+        return connection
+
+    def prepare(conn: sqlite3.Connection) -> None:
+        nonlocal preparation_calls
+        preparation_calls += 1
+        if preparation_calls == 1:
+            raise RuntimeError("起動時準備に失敗")
+
+    def run_loop(application: QApplication) -> int:
+        host = next(
+            widget
+            for widget in application.topLevelWidgets()
+            if isinstance(widget, ApplicationHostWindow) and widget.isVisible()
+        )
+        assert not host.open_application(app_module.METER_READING_APPLICATION_ID)
+        assert host.current_application is None
+        assert connection_closed[0]
+        assert failures == ["起動時準備に失敗"]
+
+        assert host.open_application(app_module.METER_READING_APPLICATION_ID)
+        assert host.current_application == app_module.METER_READING_APPLICATION_ID
+        assert len(windows) == 1
+        assert (
+            len(
+                [
+                    widget
+                    for widget in application.topLevelWidgets()
+                    if isinstance(widget, QMainWindow) and widget.isVisible()
+                ]
+            )
+            == 1
+        )
+        return app_module.STARTUP_SUCCESS
+
+    result = app_module.run_app(
+        paths,
+        database_opener=open_db,
+        lock_factory=lambda path: FakeLock([]),
+        logging_configurator=lambda **kwargs: None,
+        startup_preparer=prepare,
+        startup_error_notifier=lambda error: failures.append(str(error)),
+        main_window_factory=lambda context: windows.append(QMainWindow()) or windows[-1],
+        application_selector=None,
+        event_loop_runner=run_loop,
+    )
+
+    assert result == app_module.STARTUP_SUCCESS
+    assert preparation_calls == 2
+    assert connection_closed[1]
 
 
 def test_run_app_lock_contention_stops_before_logging_database_and_ui(
@@ -202,7 +337,7 @@ def test_run_app_lock_contention_stops_before_logging_database_and_ui(
     )
 
     assert result == app_module.STARTUP_LOCKED
-    assert events == ["directories", "lock.acquire"]
+    assert events == ["lock.acquire"]
     assert capsys.readouterr().err == "アプリケーションは既に起動しています。\n"
 
 
@@ -323,12 +458,11 @@ def test_windowed_startup_reports_database_failure_without_stderr(
     )
 
     assert result == app_module.STARTUP_FAILURE
-    assert messages == [
-        (
-            "アプリケーションを起動できません",
-            "予期しないエラーが発生しました。詳細はログを確認してください。",
-        )
-    ]
+    assert len(messages) == 1
+    assert messages[0][0] == "エラー"
+    assert messages[0][1].startswith(
+        "予期しないエラーが発生しました。詳細はログを確認してください。"
+    )
     assert "DB を開けません" in caplog.text
 
 
@@ -343,6 +477,11 @@ def test_windowed_startup_reports_domain_failure_without_stderr(
         "critical",
         lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
     )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, text: messages.append((title, text)) or QMessageBox.StandardButton.Ok,
+    )
 
     def fail_open(*args: object, **kwargs: object) -> sqlite3.Connection:
         raise ValidationError("復元候補が不正です")
@@ -355,12 +494,7 @@ def test_windowed_startup_reports_domain_failure_without_stderr(
     )
 
     assert result == app_module.STARTUP_FAILURE
-    assert messages == [
-        (
-            "アプリケーションを起動できません",
-            "アプリケーションの起動に失敗しました: 復元候補が不正です",
-        )
-    ]
+    assert messages == [("入力内容を確認してください", "復元候補が不正です")]
 
 
 def test_windowed_startup_reports_failure_before_logging_without_stderr(
@@ -456,12 +590,13 @@ def test_run_app_reports_database_open_failure_and_releases_lock(
             database_opener=fail_open,
             lock_factory=lambda path: FakeLock(events),
             logging_configurator=lambda **kwargs: None,
+            startup_error_notifier=lambda error: events.append(str(error)),
         )
 
     assert result == app_module.STARTUP_FAILURE
-    assert events == ["lock.acquire", "lock.release"]
+    assert events == ["lock.acquire", "DB を開けません", "lock.release"]
     assert "DB を開けません" in caplog.text
-    assert "DB を開けません" in capsys.readouterr().err
+    assert capsys.readouterr().err == ""
 
 
 def test_run_app_closes_database_before_releasing_lock_on_ui_failure(
@@ -492,8 +627,8 @@ def test_run_app_closes_database_before_releasing_lock_on_ui_failure(
         )
 
     assert result == app_module.STARTUP_FAILURE
-    assert events == ["lock.acquire", "startup.error", "db.close", "lock.release"]
-    assert "アプリケーションの起動または実行に失敗しました" in caplog.text
+    assert events == ["lock.acquire", "db.close", "startup.error", "lock.release"]
+    assert "アプリケーションを開けませんでした" in caplog.text
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
 
@@ -512,16 +647,17 @@ def test_run_app_startup_failure_notifies_after_rollback(
     monkeypatch.setattr(app_module, "apply_display_settings", lambda settings: None)
 
     def fail_startup(conn: sqlite3.Connection) -> None:
-        with transaction(conn):
-            conn.execute("INSERT INTO startup_probe VALUES ('partial')")
-            raise RuntimeError("startup failed")
+        try:
+            with transaction(conn):
+                conn.execute("INSERT INTO startup_probe VALUES ('partial')")
+                raise RuntimeError("startup failed")
+        except RuntimeError:
+            rollback_counts.append(conn.execute("SELECT COUNT(*) FROM startup_probe").fetchone()[0])
+            raise
 
     rollback_counts: list[int] = []
 
     def notify_startup_error(error: BaseException) -> None:
-        rollback_counts.append(
-            connection.execute("SELECT COUNT(*) FROM startup_probe").fetchone()[0]
-        )
         events.append("startup.error")
 
     result = app_module.run_app(
@@ -536,7 +672,7 @@ def test_run_app_startup_failure_notifies_after_rollback(
     )
 
     assert result == app_module.STARTUP_FAILURE
-    assert events == ["lock.acquire", "startup.error", "db.close", "lock.release"]
+    assert events == ["lock.acquire", "db.close", "startup.error", "lock.release"]
     assert rollback_counts == [0]
 
 
@@ -637,11 +773,6 @@ def test_run_app_migrates_legacy_database_after_lock_and_notifies_user(
             events.append("legacy_lock.release")
 
     monkeypatch.setattr(app_module, "SingleInstanceLock", OldDatabaseLock)
-    monkeypatch.setattr(
-        ApplicationSelectionDialog,
-        "exec",
-        lambda dialog: events.append("application.select") or QDialog.DialogCode.Accepted,
-    )
 
     def open_db(
         path: Path, backup_dir: Path, *, backup_timestamp: Callable[[], str]
@@ -653,6 +784,9 @@ def test_run_app_migrates_legacy_database_after_lock_and_notifies_user(
         lock_factory=lambda path: events.append("app_lock.acquire") or FakeLock(events),
         logging_configurator=lambda *, log_dir: events.append("logging"),
         database_opener=open_db,
+        application_selector=lambda applications, *, last_application=None: (
+            events.append("application.select") or "meter-reading"
+        ),
         startup_preparer=lambda conn: events.append("startup.prepare"),
         migration_notifier=lambda legacy_database_path, new_database_path: (
             notified.append((legacy_database_path, new_database_path))
@@ -702,15 +836,12 @@ def test_cancelling_application_selection_does_not_inspect_or_open_databases(
     monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
     monkeypatch.setattr(app_module, "apply_display_settings", lambda settings: None)
     events: list[str] = []
-    monkeypatch.setattr(
-        ApplicationSelectionDialog,
-        "exec",
-        lambda dialog: events.append("selection.cancel") or QDialog.DialogCode.Rejected,
-    )
-
     result = app_module.run_app(
         lock_factory=lambda path: FakeLock(events),
         logging_configurator=lambda *, log_dir: events.append("logging"),
+        application_selector=lambda applications, *, last_application=None: (
+            events.append("selection.cancel") or None
+        ),
         database_opener=lambda *args, **kwargs: pytest.fail("選択取消後に DB を開きました"),
     )
 
@@ -737,17 +868,19 @@ def test_legacy_migration_failure_prevents_opening_meter_reading_database(
     )
     monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
     monkeypatch.setattr(app_module, "apply_display_settings", lambda settings: None)
+    failures: list[str] = []
 
     result = app_module.run_app(
         lock_factory=lambda path: FakeLock([]),
         logging_configurator=lambda *, log_dir: None,
+        startup_error_notifier=lambda error: failures.append(str(error)),
         database_opener=lambda *args, **kwargs: pytest.fail(
             "移行に失敗した後で検針 DB を開きました"
         ),
     )
 
     assert result == app_module.STARTUP_FAILURE
-    assert "旧 DB" in capsys.readouterr().err
+    assert failures and "旧 DB" in failures[0]
     assert not paths.db_path.exists()
 
 
@@ -814,8 +947,8 @@ def test_run_app_does_not_show_window_when_initial_refresh_has_domain_error(
     assert result == app_module.STARTUP_FAILURE
     assert events == [
         "lock.acquire",
-        "予定枠の初期更新に失敗しました",
         "db.close",
+        "予定枠の初期更新に失敗しました",
         "lock.release",
     ]
 
@@ -825,6 +958,17 @@ def test_module_entry_point_exits_with_run_app_result(monkeypatch: pytest.Monkey
 
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("meter_reading_mini", run_name="__main__")
+
+    assert exc.value.code == 23
+
+
+def test_common_module_entry_point_exits_with_run_app_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_module, "run_app", lambda: 23)
+
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("building_manager_mini", run_name="__main__")
 
     assert exc.value.code == 23
 

@@ -41,7 +41,7 @@ class RestartLauncher(Protocol):
 def restart_command() -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable]
-    return [sys.executable, "-m", "meter_reading_mini"]
+    return [sys.executable, "-m", "building_manager_mini"]
 
 
 def take_restart_notice(

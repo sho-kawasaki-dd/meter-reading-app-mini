@@ -8,6 +8,7 @@ import sys
 from collections.abc import Callable, Mapping
 from contextlib import closing
 from datetime import datetime, tzinfo
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
 
 from building_manager_mini.paths import DATA_DIR_ENV, AppPaths
 from building_manager_mini.settings import set_last_application
+from building_manager_mini.ui.application_host import ApplicationHostWindow
 from meter_reading_mini import app, restart
 from meter_reading_mini.core.backup_restore_contracts import BackupRestoreRepository
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
@@ -63,8 +65,13 @@ class TrackedInstallGuard:
 def avoid_blocking_messages(monkeypatch: pytest.MonkeyPatch, restore_app_font: object) -> None:
     monkeypatch.setattr(
         app,
-        "select_application",
-        lambda applications, *, last_application=None: app.METER_READING_APPLICATION_ID,
+        "run_app",
+        partial(
+            app.run_app,
+            application_selector=lambda applications, *, last_application=None: (
+                app.METER_READING_APPLICATION_ID
+            ),
+        ),
     )
     for kind in ("warning", "critical"):
         monkeypatch.setattr(
@@ -81,6 +88,17 @@ def _create_database(path: Path, staff: str) -> None:
 def _staff(path: Path) -> list[str]:
     with closing(connect_readonly(path, immutable=True)) as connection:
         return [str(row[0]) for row in connection.execute("SELECT name FROM staff ORDER BY id")]
+
+
+def _visible_meter_window(application: QApplication) -> MainWindow:
+    host = next(
+        widget
+        for widget in application.topLevelWidgets()
+        if isinstance(widget, ApplicationHostWindow) and widget.isVisible()
+    )
+    window = host.current_page
+    assert isinstance(window, MainWindow)
+    return window
 
 
 def _prepare_paths(tmp_path: Path) -> tuple[AppPaths, Path, bytes]:
@@ -123,12 +141,7 @@ def _exercise_restore(
     events: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> Callable[[QApplication], int]:
     def run_loop(application: QApplication) -> int:
-        window = next(
-            widget
-            for widget in application.topLevelWidgets()
-            if isinstance(widget, MainWindow) and widget.isVisible()
-        )
-        assert isinstance(window, MainWindow)
+        window = _visible_meter_window(application)
         assert window.backup_restore_action.isEnabled()
         menu = window.menuBar().actions()[0].menu()
         assert isinstance(menu, QMenu)
@@ -208,11 +221,7 @@ def test_app_displays_the_opened_database_path(
     )
 
     def inspect_window(application: QApplication) -> int:
-        window = next(
-            widget
-            for widget in application.topLevelWidgets()
-            if isinstance(widget, MainWindow) and widget.isVisible()
-        )
+        window = _visible_meter_window(application)
         window.database_path_action.trigger()
         return 0
 
@@ -305,12 +314,7 @@ def test_app_uses_the_configured_business_timezone_for_both_backup_names(
     monkeypatch.setattr(app, "BackupRestoreService", service_factory)
 
     def run_loop(application: QApplication) -> int:
-        window = next(
-            widget
-            for widget in application.topLevelWidgets()
-            if isinstance(widget, MainWindow) and widget.isVisible()
-        )
-        assert isinstance(window, MainWindow)
+        window = _visible_meter_window(application)
         assert window._backup_restore_service is not None
         assert (
             window._backup_restore_service.default_backup_filename()
@@ -351,12 +355,7 @@ def test_abnormal_event_loop_exit_cancels_the_confirmed_restore(
     )
 
     def fail_loop(application: QApplication) -> int:
-        window = next(
-            widget
-            for widget in application.topLevelWidgets()
-            if isinstance(widget, MainWindow) and widget.isVisible()
-        )
-        assert isinstance(window, MainWindow)
+        window = _visible_meter_window(application)
         window.backup_restore_action.trigger()
         assert not window.boundary_timer.isActive()
         return 9
@@ -506,6 +505,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 from meter_reading_mini.app import run_app
 from building_manager_mini.paths import AppPaths
+from building_manager_mini.ui.application_host import ApplicationHostWindow
 from meter_reading_mini.db import restore
 from meter_reading_mini.ui.dialogs.backup_restore_dialog import BackupRestoreDialog
 from meter_reading_mini.ui.main_window import MainWindow
@@ -533,10 +533,12 @@ def execute(dialog):
 BackupRestoreDialog.exec = execute
 
 def loop(application):
-    window = next(
+    host = next(
         widget for widget in application.topLevelWidgets()
-        if isinstance(widget, MainWindow) and widget.isVisible()
+        if isinstance(widget, ApplicationHostWindow) and widget.isVisible()
     )
+    window = host.current_page
+    assert isinstance(window, MainWindow)
     timer = QTimer(application)
     timer.setInterval(30)
     def close_notification():
@@ -666,6 +668,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 from meter_reading_mini.app import run_app
 from building_manager_mini.paths import AppPaths
+from building_manager_mini.ui.application_host import ApplicationHostWindow
 from meter_reading_mini.ui.dialogs.backup_restore_dialog import BackupRestoreDialog
 from meter_reading_mini.ui.main_window import MainWindow
 from meter_reading_mini.ui.single_instance import SingleInstanceLock
@@ -691,10 +694,12 @@ QMessageBox.critical = report
 BackupRestoreDialog.exec = execute
 
 def loop(application):
-    window = next(
+    host = next(
         widget for widget in application.topLevelWidgets()
-        if isinstance(widget, MainWindow) and widget.isVisible()
+        if isinstance(widget, ApplicationHostWindow) and widget.isVisible()
     )
+    window = host.current_page
+    assert isinstance(window, MainWindow)
     def invoke():
         try:
             window.backup_restore_action.trigger()

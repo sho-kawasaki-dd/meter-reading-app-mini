@@ -25,7 +25,7 @@ def test_restart_commands_follow_python_and_frozen_execution(
 ) -> None:
     monkeypatch.setattr(sys, "executable", "executable")
     monkeypatch.setattr(sys, "frozen", False, raising=False)
-    assert restart.restart_command() == ["executable", "-m", "meter_reading_mini"]
+    assert restart.restart_command() == ["executable", "-m", "building_manager_mini"]
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     assert restart.restart_command() == ["executable"]
 

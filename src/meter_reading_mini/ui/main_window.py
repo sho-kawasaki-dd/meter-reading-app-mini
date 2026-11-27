@@ -369,6 +369,9 @@ class MainWindow(QMainWindow):
     def refresh_planned_readings(self) -> None:
         self._guard(lambda: self._refresh_and_reload(self._clock_boundary()), clear_on_error=True)
 
+    def reload_for_activation(self) -> None:
+        self._refresh_and_reload(self._clock_boundary())
+
     def notify_dialog_saved(self) -> None:
         self.refresh_planned_readings()
 

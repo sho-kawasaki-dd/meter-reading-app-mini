@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
+from importlib.resources import files
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -17,7 +18,7 @@ from pytestqt.qtbot import QtBot
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.errors import FileOutputError, InvalidBackupError
 from meter_reading_mini.db.connection import connect, connect_readonly
-from meter_reading_mini.db.migrations import SCHEMA_VERSION, create_schema
+from meter_reading_mini.db.migrations import SCHEMA_VERSION, create_schema, migrate_schema
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
 from meter_reading_mini.ui.dialogs.backup_restore_dialog import BackupRestoreDialog
 from meter_reading_mini.ui.display_settings import DisplaySettings, apply_display_settings
@@ -192,6 +193,36 @@ def test_cancelled_selection_and_confirmation_discard_preview(
     assert not list(harness.current.parent.glob(".meter-reading-restore-*"))
     with pytest.raises(InvalidBackupError, match="検査済み"):
         harness.service.restore_after_shutdown(harness.close)
+
+
+@pytest.mark.parametrize("version", range(1, 7))
+def test_legacy_backup_in_old_directory_can_be_selected_and_inspected(
+    harness: DialogHarness,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: int,
+) -> None:
+    old_backup = tmp_path / "old-meter-reading" / "backups" / "meter_reading_old.db"
+    old_backup.parent.mkdir(parents=True)
+    with closing(connect(old_backup)) as connection:
+        schema = files("meter_reading_mini.db").joinpath("schema_v1.sql")
+        connection.executescript(schema.read_text(encoding="utf-8"))
+        connection.execute("PRAGMA user_version = 1")
+        connection.execute("INSERT INTO staff (name) VALUES ('旧版担当')")
+        if version > 1:
+            migrate_schema(connection, 1, version)
+
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(old_backup), ""),
+    )
+    harness.dialog.browse_button.click()
+
+    assert Path(harness.dialog.source_edit.text()) == old_backup
+    harness.dialog.inspect_button.click()
+    assert harness.dialog.restore_button.isEnabled()
+    assert f"元のスキーマ版: {version}" in harness.dialog.preview_text.toPlainText()
 
 
 def test_confirmed_candidate_is_kept_for_shutdown_and_replaces_current(
