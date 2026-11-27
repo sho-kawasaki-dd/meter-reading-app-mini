@@ -22,13 +22,13 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 - 製品コード (`src/`)・テスト (`tests/`)・`pyproject.toml`・`uv.lock` には、PR ① の参照パスの更新を除いて手を加えない。
 - `docs/plan` を参照する箇所の調査結果 (2026-11-28 時点。完了済み計画書を除く):
 
-  | ファイル | 箇所数 | 扱い |
+  | ファイル | 一致行数 | 扱い |
   | --- | --- | --- |
-  | `README.md` | 13 | 更新する |
+  | `README.md` | 13 | 更新する (`docs/plan` は 18 箇所。ほかにディレクトリ構成図の `plan/` が 1 行ある) |
   | `.github/copilot-instructions.md` | 5 | 更新する (作業用計画書の置き場所の規約を含む) |
   | `packaging/source-files.txt` | 14 | 更新する (対応ソースの収録一覧) |
   | `tests/test_distribution_build.py` | 5 | 更新する |
-  | `docs/plan/ローカル検針管理アプリ開発計画書.md` | 1 | 更新する (正本であり、凍結文書ではない) |
+  | `docs/plan/ローカル検針管理アプリ開発計画書.md` | 1 | 更新する (正本であり、凍結文書ではない。ほかにディレクトリ構成図の `plan/` が 1 行ある) |
   | `docs/plan/フェーズ5_集計・バックアップ・配布計画.md` | 1 | 変更しない (一時クローズ・凍結中。未完了タスク内の移動先の記述であり、BM-Phase 7 で引き継ぐときに読み替える) |
   | `docs/plan/業務日誌アプリ要件定義.md` | 3 | 更新する |
   | 本書の冒頭の `../plan/` リンク | 2 | 更新する |
@@ -53,8 +53,8 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 
 - [x] 要件定義書と本書を含む `docs/work-log-planning` の事前 PR を作成し、必須 CI の成功後に `main` へマージする。
 - [x] `main` が最新で作業ツリーがクリーンであることを確認し、`feature/bm-phase0-docs-reorg` を作成する。
-- [ ] 再編前に全品質ゲート (`uv sync --locked`・`ruff check`・`ruff format --check`・`pyright`・`pytest --cov`・coverage の閾値) を実行し、基準値 (成功・skip の件数、coverage) を記録する。
-- [ ] `docs/plan` や `../plan/` 等で旧配置を参照する全箇所を検索し、2 章の表と照合する。`docs/` 配下と更新対象文書の Markdown 相対リンクを検査し、凍結文書の既存のリンク切れを記録する。
+- [x] 再編前に全品質ゲート (`uv sync --locked`・`ruff check`・`ruff format --check`・`pyright`・`pytest --cov`・coverage の閾値) を実行し、基準値 (成功・skip の件数、coverage) を記録する。
+- [x] `docs/plan` や `../plan/` 等で旧配置を参照する全箇所を検索し、2 章の表と照合する。`docs/` 配下と更新対象文書の Markdown 相対リンクを検査し、凍結文書の既存のリンク切れを記録する。
 
 ### 4.2 PR ①: `docs/` の再編
 
@@ -157,6 +157,27 @@ BM-Phase 1 以降の作業を始める前に、次の 2 点を済ませる。
 日本語の Conventional Commits でコミットし、PR ② を作成する。PR ② の最終コミットで必須 CI が成功し、`main` にマージされた時点を BM-Phase 0 の完了とする。CI とマージの記録は PR 上に残し、マージ後に凍結文書を更新しない。
 
 ## 5. 検証結果
+
+### 5.0 再編前の基準値・参照検査 (2026-11-28)
+
+- Windows、Python 3.13.12、`QT_QPA_PLATFORM` 未指定で実行した。`uv sync --locked`・`uv run ruff check`・`uv run ruff format --check`・`uv run pyright` は成功 (Ruff 整形確認 206 ファイル、Pyright エラー・警告ともに 0 件)。
+- `uv run pytest --cov`: 1799 件成功、1 件スキップ、失敗 0 件。スキップは `tests/test_timeutil.py` の `time.tzset()` が Windows で利用できない既存ケースである。
+- `uv run coverage report --fail-under=90`: 全体 95%。`--include="*/meter_reading_mini/core/*"` は 96%、`--include="*/meter_reading_mini/db/*"` は 91%、`--include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*"` は 95%。いずれも `--fail-under=90` に成功した。
+
+- 追跡ファイルの `docs/plan`・`../plan/`・ディレクトリ構成図の `plan/` 等を検索し、2 章の表と照合した。表の件数は一致行数であり、README の 13 行には `docs/plan` が 18 箇所含まれる。README と検針アプリの正本には、表の件数とは別にディレクトリ構成図の `plan/` が各 1 行あるため、再編時に更新する。
+- 本書には冒頭の 2 リンクのほか、調査結果・凍結範囲・作業手順を説明する旧配置への言及がある。再編時には文脈に応じて確認する。完了済み計画書には旧配置への参照が 28 行あり、凍結記録として変更しない。
+- `docs/` の Markdown、README、`.github/copilot-instructions.md` の計 19 ファイルを対象に、コードブロックを除く相対リンクのリンク先を検査した。相対ファイル・ディレクトリリンク 128 件中 11 件がリンク切れで、すべて凍結済み計画書にある。現行文書のリンク切れはなかった。Markdown 見出しアンカー 6 件も簡易検査し、不一致はなかった。
+- 既存のリンク切れ (再編では修正しない。行番号は再編前):
+  - `docs/plan/implemented/フェーズ0_共通基盤・CI整備計画.md:6`: `ローカル検針管理アプリ開発計画書.md`
+  - `docs/plan/implemented/フェーズ1_sqlite3統合・コア業務ロジック移植計画.md:17`: `../../../migration_package/src/meter_reading_mini/db/schema.sql`、`../../../migration_package/src/meter_reading_mini/db/connection.py`
+  - 同計画書 22 行: `../../../migration_package/src/meter_reading_mini/core/meter_reading_sync.py`
+  - 同計画書 23 行: `../../../migration_package/src/meter_reading_mini/core/meter_master_service.py`
+  - 同計画書 26 行: `../../../migration_package/src/meter_reading_mini/core/timezone_settings.py`
+  - 同計画書 27 行: `../../../migration_package/src/meter_reading_mini/core/timeutil.py`
+  - 同計画書 31 行: `../../../migration_package/src/meter_reading_mini/core/meter_reading_sync_repositories.py`
+  - 同計画書 33 行: `../../../migration_package/src/meter_reading_mini/core/reading_signature.py`
+  - 同計画書 36 行: `../../../migration_package/src/meter_reading_mini/core/usage_delta_calculation.py`
+  - 同計画書 333 行: `../../../migration_package/README.md`
 
 ### 5.1 PDF 生成手段の比較 (4.4 で記入)
 
