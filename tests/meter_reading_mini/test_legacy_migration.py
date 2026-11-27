@@ -156,6 +156,42 @@ def test_failure_after_copy_keeps_old_database_and_allows_retry(
     )
 
 
+def test_interrupted_sqlite_copy_leaves_no_formal_database_and_allows_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_path = tmp_path / "old" / "meter_reading.db"
+    new_path = tmp_path / "new" / "meter_reading.db"
+    old_path.parent.mkdir()
+    new_path.parent.mkdir()
+    _create_database(old_path, version=5)
+
+    def interrupt_copy(source: sqlite3.Connection, destination: Path) -> None:
+        destination.write_bytes(b"partial copy")
+        raise OSError("copy interrupted")
+
+    original_copy = legacy_migration.copy_database
+    monkeypatch.setattr(legacy_migration, "copy_database", interrupt_copy)
+
+    with pytest.raises(MigrationError, match="copy interrupted"):
+        migrate_legacy_database(
+            new_path,
+            old_path,
+            lock_factory=lambda path: FakeLock(),
+        )
+
+    assert not new_path.exists()
+    assert not list(new_path.parent.glob(".meter-reading-migration-*"))
+    with closing(connect_readonly(old_path)) as old:
+        assert old.execute("PRAGMA user_version").fetchone() == (5,)
+
+    monkeypatch.setattr(legacy_migration, "copy_database", original_copy)
+    assert migrate_legacy_database(
+        new_path,
+        old_path,
+        lock_factory=lambda path: FakeLock(),
+    )
+
+
 def test_too_new_old_database_is_not_published(tmp_path: Path) -> None:
     old_path = tmp_path / "old" / "meter_reading.db"
     new_path = tmp_path / "new" / "meter_reading.db"
@@ -205,11 +241,45 @@ def test_existing_new_database_is_never_replaced(tmp_path: Path) -> None:
     copied = migrate_legacy_database(
         new_path,
         old_path,
-        lock_factory=lambda path: FakeLock(),
+        lock_factory=lambda path: pytest.fail("新 DB があるのに旧ロックを取得しました"),
     )
 
     assert not copied
     assert new_path.read_bytes() == b"invalid existing destination"
+
+
+def test_failure_immediately_before_publication_leaves_destination_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_path = tmp_path / "old" / "meter_reading.db"
+    new_path = tmp_path / "new" / "meter_reading.db"
+    old_path.parent.mkdir()
+    new_path.parent.mkdir()
+    _create_database(old_path)
+    original_link = legacy_migration.os.link
+
+    def fail_publication(source: Path, destination: Path) -> None:
+        raise PermissionError("publish denied")
+
+    monkeypatch.setattr(legacy_migration.os, "link", fail_publication)
+
+    with pytest.raises(MigrationError, match="publish denied"):
+        migrate_legacy_database(
+            new_path,
+            old_path,
+            lock_factory=lambda path: FakeLock(),
+        )
+
+    assert not new_path.exists()
+    assert not list(new_path.parent.glob(".meter-reading-migration-*"))
+
+    monkeypatch.setattr(legacy_migration.os, "link", original_link)
+    assert migrate_legacy_database(
+        new_path,
+        old_path,
+        lock_factory=lambda path: FakeLock(),
+    )
+    assert new_path.is_file()
 
 
 def test_destination_created_during_migration_is_not_overwritten(

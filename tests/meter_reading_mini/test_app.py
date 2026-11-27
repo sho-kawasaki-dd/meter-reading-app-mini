@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QMessageBox
 
 from building_manager_mini.paths import (
     DATA_DIR_ENV,
@@ -21,6 +21,8 @@ from building_manager_mini.paths import (
     StartupPaths,
     resolve_paths,
 )
+from building_manager_mini.settings import load_ui_settings
+from building_manager_mini.ui.application_selection import ApplicationSelectionDialog
 from meter_reading_mini import app as app_module
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
@@ -59,6 +61,15 @@ def restore_root_handlers() -> Iterator[None]:
         for handler in original_handlers:
             if handler not in root_logger.handlers:
                 root_logger.addHandler(handler)
+
+
+@pytest.fixture(autouse=True)
+def choose_meter_reading_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ApplicationSelectionDialog,
+        "exec",
+        lambda dialog: QDialog.DialogCode.Accepted,
+    )
 
 
 def _tracked_database(events: list[str]) -> sqlite3.Connection:
@@ -153,9 +164,9 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
         "lock.acquire",
         "logging",
         "hook.install",
-        "db.open",
         "settings.load",
         "settings.apply",
+        "db.open",
         "startup.prepare",
         "window.create",
         "window.show",
@@ -464,11 +475,10 @@ def test_run_app_closes_database_before_releasing_lock_on_ui_failure(
     connection = _tracked_database(events)
     monkeypatch.setattr(app_module, "ensure_dirs", lambda actual_paths: None)
     monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
+    monkeypatch.setattr(app_module, "apply_display_settings", lambda settings: None)
 
-    def fail_to_apply(settings: DisplaySettings) -> None:
+    def fail_window(context: app_module.AppContext) -> QMainWindow:
         raise RuntimeError("UI failed")
-
-    monkeypatch.setattr(app_module, "apply_display_settings", fail_to_apply)
 
     with caplog.at_level(logging.ERROR):
         result = app_module.run_app(
@@ -476,7 +486,9 @@ def test_run_app_closes_database_before_releasing_lock_on_ui_failure(
             database_opener=lambda *args, **kwargs: connection,
             lock_factory=lambda path: FakeLock(events),
             logging_configurator=lambda **kwargs: None,
+            startup_preparer=lambda conn: None,
             startup_error_notifier=lambda error: events.append("startup.error"),
+            main_window_factory=fail_window,
         )
 
     assert result == app_module.STARTUP_FAILURE
@@ -625,6 +637,11 @@ def test_run_app_migrates_legacy_database_after_lock_and_notifies_user(
             events.append("legacy_lock.release")
 
     monkeypatch.setattr(app_module, "SingleInstanceLock", OldDatabaseLock)
+    monkeypatch.setattr(
+        ApplicationSelectionDialog,
+        "exec",
+        lambda dialog: events.append("application.select") or QDialog.DialogCode.Accepted,
+    )
 
     def open_db(
         path: Path, backup_dir: Path, *, backup_timestamp: Callable[[], str]
@@ -649,12 +666,89 @@ def test_run_app_migrates_legacy_database_after_lock_and_notifies_user(
     assert notified == [(old_database_path, paths.db_path)]
     assert events.index("app_lock.acquire") < events.index("legacy_lock.acquire")
     assert events.index("logging") < events.index("legacy_lock.acquire")
+    assert events.index("application.select") < events.index("legacy_lock.acquire")
     assert events.index("legacy_lock.release") < events.index("database.open")
     assert events.index("database.open") < events.index("migration.notice")
     assert old_ui_settings.read_bytes() == b"old display settings"
-    assert not paths.ui_settings_path.exists()
+    assert load_ui_settings(paths.ui_settings_path).last_application == (
+        app_module.METER_READING_APPLICATION_ID
+    )
     with closing(connect_readonly(paths.db_path)) as migrated:
         assert migrated.execute("SELECT name FROM staff").fetchall() == [("旧版担当者",)]
+
+
+def test_cancelling_application_selection_does_not_inspect_or_open_databases(
+    tmp_path: Path,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_database_path = tmp_path / "old" / "meter_reading.db"
+    old_database_path.parent.mkdir()
+    with closing(
+        open_database(
+            old_database_path,
+            old_database_path.parent / "backups",
+            backup_timestamp=lambda: "test",
+        )
+    ):
+        pass
+
+    paths = AppPaths.from_root(tmp_path / "new")
+    monkeypatch.setattr(
+        app_module,
+        "resolve_startup_paths",
+        lambda env: StartupPaths(paths, old_database_path),
+    )
+    monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
+    monkeypatch.setattr(app_module, "apply_display_settings", lambda settings: None)
+    events: list[str] = []
+    monkeypatch.setattr(
+        ApplicationSelectionDialog,
+        "exec",
+        lambda dialog: events.append("selection.cancel") or QDialog.DialogCode.Rejected,
+    )
+
+    result = app_module.run_app(
+        lock_factory=lambda path: FakeLock(events),
+        logging_configurator=lambda *, log_dir: events.append("logging"),
+        database_opener=lambda *args, **kwargs: pytest.fail("選択取消後に DB を開きました"),
+    )
+
+    assert result == app_module.STARTUP_SUCCESS
+    assert events == ["lock.acquire", "logging", "selection.cancel", "lock.release"]
+    assert not paths.db_path.exists()
+    assert not paths.ui_settings_path.exists()
+
+
+def test_legacy_migration_failure_prevents_opening_meter_reading_database(
+    tmp_path: Path,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    old_database_path = tmp_path / "old" / "meter_reading.db"
+    old_database_path.parent.mkdir()
+    old_database_path.write_bytes(b"not a database")
+    paths = AppPaths.from_root(tmp_path / "new")
+    monkeypatch.setattr(
+        app_module,
+        "resolve_startup_paths",
+        lambda env: StartupPaths(paths, old_database_path),
+    )
+    monkeypatch.setattr(app_module, "load_display_settings", lambda path: DisplaySettings())
+    monkeypatch.setattr(app_module, "apply_display_settings", lambda settings: None)
+
+    result = app_module.run_app(
+        lock_factory=lambda path: FakeLock([]),
+        logging_configurator=lambda *, log_dir: None,
+        database_opener=lambda *args, **kwargs: pytest.fail(
+            "移行に失敗した後で検針 DB を開きました"
+        ),
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert "旧 DB" in capsys.readouterr().err
+    assert not paths.db_path.exists()
 
 
 def test_run_app_releases_resources_when_event_loop_fails(
@@ -755,7 +849,12 @@ def run_loop(application):
     QTimer.singleShot(0, application.quit)
     return application.exec()
 
-raise SystemExit(run_app(event_loop_runner=run_loop))
+raise SystemExit(
+    run_app(
+        application_selector=lambda applications, *, last_application=None: "meter-reading",
+        event_loop_runner=run_loop,
+    )
+)
 """
 
     completed = subprocess.run(

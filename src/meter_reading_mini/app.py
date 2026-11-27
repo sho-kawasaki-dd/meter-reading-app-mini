@@ -4,7 +4,7 @@ import logging
 import os
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Protocol
@@ -20,6 +20,8 @@ from building_manager_mini.paths import (
     ensure_dirs,
     resolve_startup_paths,
 )
+from building_manager_mini.settings import load_ui_settings, set_last_application
+from building_manager_mini.ui.application_selection import ApplicationChoice, select_application
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core.backup_restore_contracts import RestoreResult
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
@@ -71,6 +73,15 @@ class StartupPreparer(Protocol):
     def __call__(self, conn: sqlite3.Connection) -> None: ...
 
 
+class ApplicationSelector(Protocol):
+    def __call__(
+        self,
+        applications: Sequence[ApplicationChoice],
+        *,
+        last_application: str | None = None,
+    ) -> str | None: ...
+
+
 class StartupErrorNotifier(Protocol):
     def __call__(self, error: BaseException) -> None: ...
 
@@ -89,6 +100,10 @@ class InstallGuard(Protocol):
     def try_acquire(self) -> bool: ...
 
     def release(self) -> None: ...
+
+
+METER_READING_APPLICATION_ID = "meter-reading"
+REGISTERED_APPLICATIONS: tuple[ApplicationChoice, ...] = ((METER_READING_APPLICATION_ID, "検針"),)
 
 
 def _create_qapplication() -> QApplication:
@@ -144,6 +159,24 @@ def _initialize_ui(
     settings = load_display_settings(paths.ui_settings_path)
     apply_display_settings(settings)
     return application
+
+
+def _choose_application(
+    paths: AppPaths,
+    selector: ApplicationSelector | None,
+) -> str | None:
+    settings = load_ui_settings(paths.ui_settings_path)
+    selected_application = (selector or select_application)(
+        REGISTERED_APPLICATIONS,
+        last_application=settings.last_application,
+    )
+    if selected_application is None:
+        return None
+    registered_application_ids = {application_id for application_id, _ in REGISTERED_APPLICATIONS}
+    if selected_application not in registered_application_ids:
+        raise LookupError(f"未登録のアプリです: {selected_application}")
+    set_last_application(paths.ui_settings_path, selected_application)
+    return selected_application
 
 
 def _restore_backup_path(error: BaseException) -> Path | None:
@@ -229,6 +262,7 @@ def run_app(
     startup_preparer: StartupPreparer | None = None,
     startup_error_notifier: StartupErrorNotifier | None = None,
     migration_notifier: MigrationNotifier | None = None,
+    application_selector: ApplicationSelector | None = None,
     main_window_factory: Callable[[AppContext], QMainWindow] | None = None,
     event_loop_runner: Callable[[QApplication], int] | None = None,
     restart_launcher: RestartLauncher | None = None,
@@ -279,8 +313,22 @@ def run_app(
                     install_excepthook(resolved_paths.log_path)
                     resources.callback(setattr, sys, "excepthook", previous_excepthook)
 
+                    application = _initialize_ui(ui_resources, application_factory, resolved_paths)
+                    if restart_notice is not None:
+                        selected_application = METER_READING_APPLICATION_ID
+                    else:
+                        selected_application = _choose_application(
+                            resolved_paths,
+                            application_selector,
+                        )
+                        if selected_application is None:
+                            return STARTUP_SUCCESS
+
                     migration_completed = False
-                    if legacy_database_path is not None:
+                    if (
+                        selected_application == METER_READING_APPLICATION_ID
+                        and legacy_database_path is not None
+                    ):
                         migration_completed = migrate_legacy_database(
                             resolved_paths.db_path,
                             legacy_database_path,
@@ -303,9 +351,6 @@ def run_app(
                     resources.callback(close_connection_once)
 
                     try:
-                        application = _initialize_ui(
-                            ui_resources, application_factory, resolved_paths
-                        )
                         if migration_completed and legacy_database_path is not None:
                             if migration_notifier is not None:
                                 migration_notifier(legacy_database_path, resolved_paths.db_path)

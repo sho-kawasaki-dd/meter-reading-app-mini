@@ -15,6 +15,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
 
 from building_manager_mini.paths import DATA_DIR_ENV, AppPaths
+from building_manager_mini.settings import set_last_application
 from meter_reading_mini import app, restart
 from meter_reading_mini.core.backup_restore_contracts import BackupRestoreRepository
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
@@ -60,6 +61,11 @@ class TrackedInstallGuard:
 
 @pytest.fixture(autouse=True)
 def avoid_blocking_messages(monkeypatch: pytest.MonkeyPatch, restore_app_font: object) -> None:
+    monkeypatch.setattr(
+        app,
+        "select_application",
+        lambda applications, *, last_application=None: app.METER_READING_APPLICATION_ID,
+    )
     for kind in ("warning", "critical"):
         monkeypatch.setattr(
             QMessageBox, kind, lambda *args, **kwargs: QMessageBox.StandardButton.Ok
@@ -87,6 +93,7 @@ def _prepare_paths(tmp_path: Path) -> tuple[AppPaths, Path, bytes]:
     source = tmp_path / "source.db"
     _create_database(source, "復元担当")
     save_display_settings(paths.ui_settings_path, DisplaySettings(None, 125))
+    set_last_application(paths.ui_settings_path, app.METER_READING_APPLICATION_ID)
     return paths, source, paths.ui_settings_path.read_bytes()
 
 
@@ -547,7 +554,12 @@ def loop(application):
 def fail_launch(command, *, env):
     raise OSError("再起動失敗")
 
-result = run_app(paths, event_loop_runner=loop, restart_launcher=fail_launch)
+result = run_app(
+    paths,
+    application_selector=lambda applications, *, last_application=None: "meter-reading",
+    event_loop_runner=loop,
+    restart_launcher=fail_launch,
+)
 Path(os.environ["RESTORE_RESULT"]).write_text(
     json.dumps({"result": result, "messages": messages}, ensure_ascii=False), encoding="utf-8"
 )
@@ -712,7 +724,13 @@ def launch(command, *, env):
     )
     return subprocess.Popen(command, env=child_env)
 
-result = run_app(paths, event_loop_runner=loop, restart_launcher=launch, restart_timeout=20)
+result = run_app(
+    paths,
+    application_selector=lambda applications, *, last_application=None: "meter-reading",
+    event_loop_runner=loop,
+    restart_launcher=launch,
+    restart_timeout=20,
+)
 Path(os.environ["RESTORE_PARENT_RESULT"]).write_text(
     json.dumps({"result": result, "events": events, "errors": errors}, ensure_ascii=False),
     encoding="utf-8",
