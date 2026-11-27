@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from shiboken6 import delete as delete_qobject
 
@@ -123,6 +124,12 @@ def _initialize_ui(
         resources.callback(release_application)
     if not isinstance(application, QApplication):
         raise RuntimeError("QApplication 以外のアプリケーションが既に存在します")
+
+    icon_path = Path(__file__).parent / "assets" / "meter-reading-mini.ico"
+    icon = QIcon(str(icon_path))
+    if icon.isNull():
+        raise RuntimeError(f"アプリケーションアイコンを読み込めません: {icon_path}")
+    application.setWindowIcon(icon)
 
     settings = load_display_settings(paths.ui_settings_path)
     apply_display_settings(settings)

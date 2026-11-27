@@ -16,7 +16,7 @@ docs/plan/implemented/検針シート予定日表示・日付時刻分類計画.
 docs/plan/implemented/v0.2.2_使用量集計JSON一括出力計画.md
 docs/plan/implemented/v0.2.3_raw_only読値の負数許容計画.md
 docs/plan/ローカル検針管理アプリ開発計画書.md
-docs/plan/v0.3.0_検針順路並び順設定計画.md
+docs/plan/implemented/v0.3.0_検針順路並び順設定計画.md
 packaging/DISTRIBUTION_LICENSE.txt
 packaging/LICENSING_AUDIT_PROCEDURE.md
 packaging/SOURCE_CODE.txt
@@ -76,6 +76,7 @@ src/meter_reading_mini/__init__.py
 src/meter_reading_mini/__main__.py
 src/meter_reading_mini/app.py
 src/meter_reading_mini/app_context.py
+src/meter_reading_mini/assets/meter-reading-mini.ico
 src/meter_reading_mini/config.py
 src/meter_reading_mini/core/__init__.py
 src/meter_reading_mini/core/aggregation_contracts.py

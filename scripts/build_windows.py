@@ -20,6 +20,7 @@ APP_NAME = "meter-reading-mini"
 PACKAGE = ROOT / "src" / "meter_reading_mini"
 INTERNAL = Path("_internal")
 APP_RESOURCES = (
+    Path("assets") / "meter-reading-mini.ico",
     *(
         Path("db") / name
         for name in (
