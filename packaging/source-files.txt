@@ -75,6 +75,7 @@ scripts/verify_windows_exe.ps1
 src/building_manager_mini/__init__.py
 src/building_manager_mini/__main__.py
 src/building_manager_mini/core/__init__.py
+src/building_manager_mini/core/recovery.py
 src/building_manager_mini/core/sender_address.py
 src/building_manager_mini/core/settings_contracts.py
 src/building_manager_mini/core/settings_service.py
@@ -209,6 +210,7 @@ tests/building_manager_mini/test_common_migrations.py
 tests/building_manager_mini/test_common_settings.py
 tests/building_manager_mini/test_launcher.py
 tests/building_manager_mini/test_paths.py
+tests/building_manager_mini/test_recovery_gate.py
 tests/building_manager_mini/test_sender_address.py
 tests/building_manager_mini/test_settings.py
 tests/meter_reading_mini/__init__.py

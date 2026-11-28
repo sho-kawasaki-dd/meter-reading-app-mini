@@ -85,6 +85,46 @@ def _tracked_database(events: list[str]) -> sqlite3.Connection:
     return sqlite3.connect(":memory:", factory=Connection)
 
 
+def test_pending_recovery_blocks_before_ui_and_database_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = AppPaths.from_root(tmp_path / "data")
+    paths.recovery_pending_path.parent.mkdir(parents=True)
+    paths.recovery_pending_path.write_text("未完了", encoding="utf-8")
+    events: list[str] = []
+    messages: list[str] = []
+    lock = FakeLock(events)
+
+    def fail_ui() -> QApplication:
+        raise AssertionError("中断記録がある場合は UI を作成しません")
+
+    def fail_database(
+        path: Path, backup_dir: Path, *, backup_timestamp: Callable[[], str]
+    ) -> sqlite3.Connection:
+        raise AssertionError("中断記録がある場合は DB を開きません")
+
+    monkeypatch.setattr(
+        app_module,
+        "_report_startup_error",
+        lambda message, *, gui_message=None: messages.append(str(gui_message)),
+    )
+    result = app_module.run_app(
+        paths,
+        lock_factory=lambda _path: lock,
+        install_guard_factory=lambda: None,
+        logging_configurator=lambda *, log_dir: events.append("logging"),
+        application_factory=fail_ui,
+        database_opener=fail_database,
+    )
+
+    assert result == app_module.STARTUP_FAILURE
+    assert events == ["lock.acquire", "logging", "lock.release"]
+    assert str(paths.recovery_pending_path) in messages[0]
+    assert str(paths.safety_backup_root) in messages[0]
+    assert paths.recovery_pending_path.read_text(encoding="utf-8") == "未完了"
+    assert not paths.db_path.exists()
+
+
 def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:

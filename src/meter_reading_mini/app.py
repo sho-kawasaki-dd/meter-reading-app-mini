@@ -14,6 +14,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from shiboken6 import delete as delete_qobject
 
+from building_manager_mini.core.recovery import PendingRecoveryError, refuse_pending_operation
 from building_manager_mini.paths import (
     AppPaths,
     PathConfigurationError,
@@ -311,6 +312,9 @@ def run_app(
                     ensure_dirs(resolved_paths)
                     (logging_configurator or configure_logging)(log_dir=resolved_paths.log_dir)
                     logging_initialized = True
+                    refuse_pending_operation(
+                        resolved_paths.recovery_pending_path, resolved_paths.safety_backup_root
+                    )
                     previous_excepthook = sys.excepthook
                     install_excepthook(resolved_paths.log_path)
                     resources.callback(setattr, sys, "excepthook", previous_excepthook)
@@ -555,7 +559,9 @@ def run_app(
             logger.exception("アプリケーションの起動に失敗しました")
         if isinstance(error, DomainError):
             gui_message = f"アプリケーションの起動に失敗しました: {error.message}"
-        elif isinstance(error, (InstallationGuardError, PathConfigurationError)):
+        elif isinstance(
+            error, (InstallationGuardError, PathConfigurationError, PendingRecoveryError)
+        ):
             gui_message = str(error)
         elif logging_initialized:
             gui_message = "予期しないエラーが発生しました。詳細はログを確認してください。"
