@@ -19,6 +19,8 @@ from building_manager_mini.db.recovery import (
     RecoveryRecord,
     RecoveryTargetRecord,
     RegisteredDatabase,
+    complete_operation,
+    mark_operation_applying,
     prepare_operation,
     recover_pending,
 )
@@ -336,6 +338,96 @@ def test_prepare_new_database_needs_no_automatic_backup(tmp_path: Path) -> None:
     _create_database(database, "作成後")
     assert recover_pending(pending, safety, databases, validate_set=lambda: None)
     assert not database.exists()
+
+
+def test_mark_and_complete_operation_lifecycle(tmp_path: Path) -> None:
+    database = tmp_path / "new.db"
+    pending = tmp_path / "recovery" / "pending.json"
+    safety = tmp_path / "backups" / "safety"
+    databases = {"new": RegisteredDatabase(database, _validate_database)}
+    record = prepare_operation(
+        pending,
+        safety,
+        databases,
+        ["new"],
+        operation_id="3" * 32,
+        operation_kind="initial_migration",
+        copy_database=copy_database,
+        create_and_verify_backup=lambda _snapshots: pytest.fail("新規作成で自動保全を実行しました"),
+    )
+    assert record.stage == "prepared"
+    applying_record = mark_operation_applying(pending, safety, databases)
+    assert applying_record.stage == "applying"
+    assert mark_operation_applying(pending, safety, databases) == applying_record
+    _create_database(database, "作成済み")
+
+    def validate_set() -> None:
+        assert _read_database(database) == "作成済み"
+        assert pending.exists()
+
+    assert complete_operation(pending, safety, databases, validate_set=validate_set)
+    assert not pending.exists()
+    assert not (safety / record.operation_id).exists()
+    assert database.exists()
+
+
+def test_completion_validation_failure_keeps_pending_and_snapshots(tmp_path: Path) -> None:
+    pending, safety, databases, record = _setup(tmp_path)
+    assert record.automatic_backup_path is not None
+    automatic_backup = Path(record.automatic_backup_path)
+    automatic_backup.write_bytes(b"verified backup")
+
+    def fail_validation() -> None:
+        raise ValueError("DB 間の整合性が不正です")
+
+    with pytest.raises(PendingRecoveryError):
+        complete_operation(pending, safety, databases, validate_set=fail_validation)
+    assert pending.exists()
+    assert all(
+        Path(target.safety_path).exists()
+        for target in record.targets
+        if target.safety_path is not None
+    )
+    assert automatic_backup.exists()
+    assert complete_operation(pending, safety, databases, validate_set=lambda: None)
+
+
+def test_complete_operation_without_record_is_a_noop(tmp_path: Path) -> None:
+    pending = tmp_path / "recovery" / "pending.json"
+    safety = tmp_path / "backups" / "safety"
+    assert not complete_operation(pending, safety, {}, validate_set=lambda: None)
+    assert not pending.parent.exists()
+    assert not safety.exists()
+
+
+def test_complete_operation_requires_applying_stage(tmp_path: Path) -> None:
+    database = tmp_path / "new.db"
+    pending = tmp_path / "recovery" / "pending.json"
+    safety = tmp_path / "backups" / "safety"
+    databases = {"new": RegisteredDatabase(database, _validate_database)}
+    prepare_operation(
+        pending,
+        safety,
+        databases,
+        ["new"],
+        operation_id="4" * 32,
+        operation_kind="initial_migration",
+        copy_database=copy_database,
+        create_and_verify_backup=lambda _snapshots: pytest.fail("新規作成で自動保全を実行しました"),
+    )
+    with pytest.raises(PendingRecoveryError, match="完了検査"):
+        complete_operation(pending, safety, databases, validate_set=lambda: None)
+    assert pending.exists()
+    assert not database.exists()
+
+
+def test_mark_operation_rejects_recovering_record(tmp_path: Path) -> None:
+    pending, safety, databases, record = _setup(tmp_path)
+    record.stage = "recovering"
+    pending.write_text(record.model_dump_json(), encoding="utf-8")
+    with pytest.raises(PendingRecoveryError, match="更新できません"):
+        mark_operation_applying(pending, safety, databases)
+    assert pending.read_text(encoding="utf-8") == record.model_dump_json()
 
 
 def test_process_exit_immediately_after_publishing_record_allows_retry(tmp_path: Path) -> None:

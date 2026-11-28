@@ -90,6 +90,31 @@ def _load_record(pending_path: Path) -> RecoveryRecord:
     return RecoveryRecord.model_validate(data)
 
 
+def _write_record_atomically(
+    pending_path: Path,
+    record: RecoveryRecord,
+    *,
+    replace_existing: bool,
+) -> None:
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".pending-", suffix=".tmp", dir=pending_path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
+            output.write(record.model_dump_json())
+            output.flush()
+            os.fsync(output.fileno())
+        exists = _exists(pending_path)
+        if exists != replace_existing:
+            raise ValueError("中断記録の状態が処理中に変わりました。")
+        if exists:
+            _regular_file(pending_path)
+        os.replace(temporary, pending_path)
+    finally:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+
+
 def _validate_record(
     record: RecoveryRecord,
     safety_root: Path,
@@ -146,6 +171,30 @@ def _validate_record(
         ):
             raise ValueError("中断記録の自動保全先が不正です。")
     return safety_directory
+
+
+def mark_operation_applying(
+    pending_path: Path,
+    safety_root: Path,
+    databases: Mapping[str, RegisteredDatabase],
+) -> RecoveryRecord:
+    """保全後、最初の現行 DB 変更に入る直前に中断記録を進行中へ更新する。"""
+    try:
+        pending_path = _absolute_unlinked_path(pending_path)
+        record = _load_record(pending_path)
+        _validate_record(record, safety_root, databases)
+        if record.stage == "applying":
+            return record
+        if record.stage != "prepared":
+            raise ValueError("中断記録の段階を進行中へ変更できません。")
+        updated_record = RecoveryRecord.model_validate(record.model_dump() | {"stage": "applying"})
+        _write_record_atomically(pending_path, updated_record, replace_existing=True)
+        return updated_record
+    except (OSError, ValueError, sqlite3.Error, ValidationError, CommonSettingsError) as error:
+        raise PendingRecoveryError(
+            f"DB 操作の中断記録を更新できません。\n中断記録: {pending_path}\n"
+            f"保全先: {safety_root}\n現行 DB を変更せず、管理者に相談してください。"
+        ) from error
 
 
 def _copy_verified(source: Path, destination: Path, target: RecoveryTargetRecord) -> None:
@@ -351,27 +400,68 @@ def prepare_operation(
                 if _file_digest(snapshot_path) != (target.size, target.sha256):
                     raise ValueError(f"保全データが処理中に変更されました: {snapshot_path}")
 
-        pending_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(
-            prefix=".pending-", suffix=".tmp", dir=pending_path.parent
-        )
-        temporary = Path(name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
-                output.write(record.model_dump_json())
-                output.flush()
-                os.fsync(output.fileno())
-            if _exists(pending_path):
-                raise ValueError("未完了の DB 操作が既にあります。")
-            os.replace(temporary, pending_path)
-        finally:
-            with suppress(FileNotFoundError):
-                temporary.unlink()
+        _write_record_atomically(pending_path, record, replace_existing=False)
         return record
     except (OSError, ValueError, sqlite3.Error, CommonSettingsError) as error:
         raise PendingRecoveryError(
             f"DB 操作の保全を準備できません。\n中断記録: {pending_path}\n"
             f"保全先: {safety_root}\n現行 DB を変更せず、管理者に相談してください。"
+        ) from error
+
+
+def complete_operation(
+    pending_path: Path,
+    safety_root: Path,
+    databases: Mapping[str, RegisteredDatabase],
+    *,
+    validate_set: Callable[[], None],
+) -> bool:
+    """反映済み DB の検査後に中断記録を解除し、操作用保全コピーを清掃する。"""
+    try:
+        pending_path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise PendingRecoveryError(f"中断記録を確認できません: {pending_path}") from error
+
+    try:
+        record = _load_record(pending_path)
+        safety_directory = _validate_record(record, safety_root, databases)
+        if record.stage != "applying":
+            raise ValueError("進行中ではない DB 操作を完了できません。")
+        for target in record.targets:
+            if not target.modified:
+                continue
+            database = databases[target.database_id]
+            _regular_file(database.path)
+            database.validate(database.path)
+        if record.automatic_backup_path is not None:
+            _regular_file(Path(record.automatic_backup_path))
+        validate_set()
+        pending_path.unlink()
+        for target in record.targets:
+            if target.safety_path is not None:
+                try:
+                    _remove_regular_if_present(Path(target.safety_path))
+                except (OSError, ValueError):
+                    logger.warning(
+                        "完了後の保全ファイルを削除できません: %s",
+                        target.safety_path,
+                        exc_info=True,
+                    )
+        try:
+            safety_directory.rmdir()
+        except OSError:
+            logger.warning(
+                "完了後の保全ディレクトリを削除できません: %s",
+                safety_directory,
+                exc_info=True,
+            )
+        return True
+    except (OSError, ValueError, sqlite3.Error, ValidationError, CommonSettingsError) as error:
+        raise PendingRecoveryError(
+            f"DB 操作の完了検査に失敗しました。\n中断記録: {pending_path}\n"
+            f"保全先: {safety_root}\n記録と保全先を保持し、管理者に相談してください。"
         ) from error
 
 
