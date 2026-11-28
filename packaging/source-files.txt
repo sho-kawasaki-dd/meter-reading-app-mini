@@ -74,6 +74,8 @@ scripts/fetch_dependency_sources.py
 scripts/verify_windows_exe.ps1
 src/building_manager_mini/__init__.py
 src/building_manager_mini/__main__.py
+src/building_manager_mini/core/__init__.py
+src/building_manager_mini/core/sender_address.py
 src/building_manager_mini/entrypoint.py
 src/building_manager_mini/launcher.py
 src/building_manager_mini/paths.py
@@ -199,6 +201,7 @@ tests/building_manager_mini/__init__.py
 tests/building_manager_mini/test_application_host.py
 tests/building_manager_mini/test_launcher.py
 tests/building_manager_mini/test_paths.py
+tests/building_manager_mini/test_sender_address.py
 tests/building_manager_mini/test_settings.py
 tests/meter_reading_mini/__init__.py
 tests/meter_reading_mini/conftest.py

@@ -17,6 +17,8 @@ def test_paths_resolve_to_the_shared_directory_layout(tmp_path: Path) -> None:
     assert resolved.work_log_db_path == resolved.data_dir / "work_log" / "work_log.db"
     assert resolved.backup_root == resolved.data_dir / "backups"
     assert resolved.backup_dir == resolved.backup_root / "meter_reading"
+    assert resolved.safety_backup_root == resolved.backup_root / "safety"
+    assert resolved.recovery_pending_path == resolved.data_dir / "recovery" / "pending.json"
     assert resolved.log_path == resolved.data_dir / "logs" / "app.log"
 
 
@@ -104,5 +106,7 @@ def test_ensure_dirs_does_not_create_reserved_application_databases(tmp_path: Pa
     assert resolved.log_dir.is_dir()
     assert not resolved.common_db_path.parent.exists()
     assert not resolved.work_log_db_path.parent.exists()
+    assert not resolved.safety_backup_root.exists()
+    assert not resolved.recovery_pending_path.parent.exists()
     assert not resolved.common_db_path.exists()
     assert not resolved.work_log_db_path.exists()

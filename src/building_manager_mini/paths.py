@@ -28,6 +28,8 @@ class AppPaths:
     work_log_db_path: Path
     backup_root: Path
     backup_dir: Path
+    safety_backup_root: Path
+    recovery_pending_path: Path
     log_dir: Path
     log_path: Path
 
@@ -46,6 +48,8 @@ class AppPaths:
             work_log_db_path=root / "work_log" / "work_log.db",
             backup_root=backup_root,
             backup_dir=backup_root / "meter_reading",
+            safety_backup_root=backup_root / "safety",
+            recovery_pending_path=root / "recovery" / "pending.json",
             log_dir=log_dir,
             log_path=log_dir / "app.log",
         )
