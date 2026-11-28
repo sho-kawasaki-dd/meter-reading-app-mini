@@ -81,6 +81,7 @@ _internal/api-ms-win-crt-time-l1-1-0.dll
 _internal/api-ms-win-crt-utility-l1-1-0.dll
 _internal/base_library.zip
 _internal/building_manager_mini-0.3.0.dist-info/entry_points.txt
+_internal/building_manager_mini/db/schema.sql
 _internal/libcrypto-3-x64.dll
 _internal/libffi-8.dll
 _internal/libssl-3-x64.dll

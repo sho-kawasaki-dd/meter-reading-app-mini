@@ -88,3 +88,12 @@ jobs:
 
       - name: Check common launcher coverage threshold
         run: uv run coverage report --include="*/building_manager_mini/launcher.py" --fail-under=90
+
+      - name: Check common settings coverage threshold
+        run: uv run coverage report --include="*/building_manager_mini/settings.py" --fail-under=90
+
+      - name: Check common core coverage threshold
+        run: uv run coverage report --include="*/building_manager_mini/core/*" --fail-under=90
+
+      - name: Check common db coverage threshold
+        run: uv run coverage report --include="*/building_manager_mini/db/*" --fail-under=90

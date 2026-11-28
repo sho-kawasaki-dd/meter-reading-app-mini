@@ -165,6 +165,35 @@ def test_shared_package_does_not_import_meter_reading_or_qt() -> None:
                 assert not _is_module_or_submodule(module, "shiboken6"), path
 
 
+def test_shared_layers_preserve_dependencies_and_wall_clock_boundary() -> None:
+    for layer in ("core", "db", "ui"):
+        for path in _python_files(BUILDING_MANAGER_ROOT / layer):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            modules = _absolute_imported_modules(tree)
+            package = ("building_manager_mini", *path.relative_to(BUILDING_MANAGER_ROOT).parts[:-1])
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                if node.level:
+                    base = package[: len(package) - node.level + 1]
+                    module = ".".join((*base, *(node.module or "").split("."))).rstrip(".")
+                else:
+                    module = node.module or ""
+                modules.extend(f"{module}.{alias.name}" for alias in node.names)
+                modules.append(module)
+            for module in modules:
+                if layer == "core":
+                    assert not _is_module_or_submodule(module, "building_manager_mini.db"), path
+                    assert not _is_module_or_submodule(module, "building_manager_mini.ui"), path
+                elif layer == "db":
+                    assert not _is_module_or_submodule(module, "building_manager_mini.ui"), path
+                else:
+                    assert not _is_module_or_submodule(module, "building_manager_mini.db"), path
+                    assert not _is_module_or_submodule(module, "sqlite3"), path
+            if layer in {"core", "db"}:
+                assert not _uses_direct_wall_clock(tree), path
+
+
 def test_meter_core_and_db_do_not_import_shared_launcher() -> None:
     for path in (*_python_files(CORE_ROOT), *_python_files(DB_ROOT)):
         tree = ast.parse(path.read_text(encoding="utf-8"))
