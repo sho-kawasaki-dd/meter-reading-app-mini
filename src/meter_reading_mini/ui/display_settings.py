@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,15 +7,15 @@ from pathlib import Path
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
-from meter_reading_mini.ui.atomic_write import atomic_write_text
+from building_manager_mini.settings import (
+    ALLOWED_FONT_SCALES,
+    DEFAULT_FONT_SCALE_PERCENT,
+    UISettings,
+    load_ui_settings,
+    save_ui_settings,
+)
 
 logger = logging.getLogger(__name__)
-
-ALLOWED_FONT_SCALES: tuple[int, ...] = (90, 100, 125, 150)
-DEFAULT_FONT_SCALE_PERCENT = 100
-
-_FONT_FAMILY_KEY = "font_family"
-_FONT_SCALE_KEY = "font_scale_percent"
 
 # 起動時に取得した OS 既定フォント。倍率はこのフォントに対して適用する。
 _base_font: QFont | None = None
@@ -33,20 +32,10 @@ def default_display_settings() -> DisplaySettings:
 
 
 def load_display_settings(path: Path) -> DisplaySettings:
-    try:
-        text = path.read_text(encoding="utf-8")
-        data: object = json.loads(text)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        logger.warning("UI 表示設定を読み込めないため既定値を使用します: %s (%s)", path, error)
-        return default_display_settings()
-
-    if not isinstance(data, dict):
-        logger.warning("UI 表示設定の形式が不正なため既定値を使用します: %s", path)
-        return default_display_settings()
-
+    settings = load_ui_settings(path)
     return DisplaySettings(
-        font_family=_parse_font_family(data.get(_FONT_FAMILY_KEY)),
-        font_scale_percent=_parse_font_scale(data.get(_FONT_SCALE_KEY)),
+        font_family=_parse_font_family(settings.font_family),
+        font_scale_percent=_parse_font_scale(settings.font_scale_percent),
     )
 
 
@@ -72,11 +61,16 @@ def _parse_font_scale(value: object) -> int:
 
 
 def save_display_settings(path: Path, settings: DisplaySettings) -> None:
-    payload = {
-        _FONT_FAMILY_KEY: settings.font_family,
-        _FONT_SCALE_KEY: settings.font_scale_percent,
-    }
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    current = load_ui_settings(path)
+    save_ui_settings(
+        path,
+        UISettings(
+            font_family=settings.font_family,
+            font_scale_percent=settings.font_scale_percent,
+            last_application=current.last_application,
+            applications=current.applications,
+        ),
+    )
 
 
 def capture_base_font() -> QFont:

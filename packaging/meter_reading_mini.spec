@@ -1,9 +1,10 @@
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 root = Path(SPECPATH).parent
 package = root / "src" / "meter_reading_mini"
+entry_point = root / "src" / "building_manager_mini" / "__main__.py"
 
 datas = [
     (
@@ -29,13 +30,24 @@ datas += [
     for name in ("sheet.html", "sheet.css", "sheet.js")
 ]
 datas += collect_data_files("tzdata")
+application_metadata = copy_metadata("building-manager-mini")
+if len(application_metadata) != 1:
+    raise RuntimeError("building-manager-mini の配布メタデータを一つに特定できません。")
+application_metadata_source, application_metadata_destination = application_metadata[0]
+application_entry_points = Path(application_metadata_source) / "entry_points.txt"
+if not application_entry_points.is_file():
+    raise RuntimeError(f"アプリの entry points がありません: {application_entry_points}")
+datas.append((str(application_entry_points), application_metadata_destination))
 
 analysis = Analysis(
-    [str(package / "__main__.py")],
+    [str(entry_point)],
     pathex=[str(root / "src")],
     binaries=[],
     datas=datas,
-    hiddenimports=collect_submodules("tzdata.zoneinfo"),
+    hiddenimports=[
+        "meter_reading_mini.app",
+        *collect_submodules("tzdata.zoneinfo"),
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],

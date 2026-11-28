@@ -1,8 +1,16 @@
-"""アプリケーションの起動入口。"""
+"""旧起動入口。"""
 
 import sys
 
-from meter_reading_mini.app import run_app
+
+def main() -> int:
+    print(
+        "この起動コマンドは廃止されました。"
+        " `uv run python -m building_manager_mini` を実行してください。",
+        file=sys.stderr,
+    )
+    return 2
+
 
 if __name__ == "__main__":
-    sys.exit(run_app())
+    sys.exit(main())

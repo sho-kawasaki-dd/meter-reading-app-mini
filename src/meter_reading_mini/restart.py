@@ -13,12 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from meter_reading_mini.config import DATA_DIR_ENV, AppPaths, resolve_paths
+from building_manager_mini.paths import DATA_DIR_ENV, AppPaths, resolve_paths
 
-_READY_PATH_ENV = "_METER_READING_MINI_RESTART_READY"
-_READY_TOKEN_ENV = "_METER_READING_MINI_RESTART_TOKEN"
-_BACKUP_PATH_ENV = "_METER_READING_MINI_RESTART_BACKUP"
-_LOG_DIR_ENV = "_METER_READING_MINI_RESTART_LOG_DIR"
+_READY_PATH_ENV = "_BUILDING_MANAGER_MINI_RESTART_READY"
+_READY_TOKEN_ENV = "_BUILDING_MANAGER_MINI_RESTART_TOKEN"
+_BACKUP_PATH_ENV = "_BUILDING_MANAGER_MINI_RESTART_BACKUP"
+_LOG_DIR_ENV = "_BUILDING_MANAGER_MINI_RESTART_LOG_DIR"
 _RESTART_DIR_PREFIX = ".meter-reading-restart-"
 
 
@@ -41,7 +41,7 @@ class RestartLauncher(Protocol):
 def restart_command() -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable]
-    return [sys.executable, "-m", "meter_reading_mini"]
+    return [sys.executable, "-m", "building_manager_mini"]
 
 
 def take_restart_notice(

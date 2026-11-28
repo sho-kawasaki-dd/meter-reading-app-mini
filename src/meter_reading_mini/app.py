@@ -4,7 +4,7 @@ import logging
 import os
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Protocol
@@ -14,13 +14,22 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from shiboken6 import delete as delete_qobject
 
+from building_manager_mini.paths import (
+    AppPaths,
+    PathConfigurationError,
+    ensure_dirs,
+    resolve_startup_paths,
+)
+from building_manager_mini.settings import load_ui_settings, set_last_application
+from building_manager_mini.ui.application_host import ApplicationHostWindow
+from building_manager_mini.ui.application_selection import ApplicationChoice
 from meter_reading_mini.app_context import AppContext, create_app_context
-from meter_reading_mini.config import AppPaths, ensure_dirs, resolve_paths
 from meter_reading_mini.core.backup_restore_contracts import RestoreResult
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.errors import DomainError, InvalidBackupError, RestoreError
 from meter_reading_mini.core.logging_config import configure_logging
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
+from meter_reading_mini.db.legacy_migration import migrate_legacy_database
 from meter_reading_mini.db.migrations import open_database
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
 from meter_reading_mini.installation_guard import InstallationGuardError, create_installation_guard
@@ -65,8 +74,21 @@ class StartupPreparer(Protocol):
     def __call__(self, conn: sqlite3.Connection) -> None: ...
 
 
+class ApplicationSelector(Protocol):
+    def __call__(
+        self,
+        applications: Sequence[ApplicationChoice],
+        *,
+        last_application: str | None = None,
+    ) -> str | None: ...
+
+
 class StartupErrorNotifier(Protocol):
     def __call__(self, error: BaseException) -> None: ...
+
+
+class MigrationNotifier(Protocol):
+    def __call__(self, legacy_database_path: Path, new_database_path: Path) -> None: ...
 
 
 class InstanceLock(Protocol):
@@ -79,6 +101,10 @@ class InstallGuard(Protocol):
     def try_acquire(self) -> bool: ...
 
     def release(self) -> None: ...
+
+
+METER_READING_APPLICATION_ID = "meter-reading"
+REGISTERED_APPLICATIONS: tuple[ApplicationChoice, ...] = ((METER_READING_APPLICATION_ID, "検針"),)
 
 
 def _create_qapplication() -> QApplication:
@@ -134,6 +160,24 @@ def _initialize_ui(
     settings = load_display_settings(paths.ui_settings_path)
     apply_display_settings(settings)
     return application
+
+
+def _choose_application(
+    paths: AppPaths,
+    selector: ApplicationSelector,
+) -> str | None:
+    settings = load_ui_settings(paths.ui_settings_path)
+    selected_application = selector(
+        REGISTERED_APPLICATIONS,
+        last_application=settings.last_application,
+    )
+    if selected_application is None:
+        return None
+    registered_application_ids = {application_id for application_id, _ in REGISTERED_APPLICATIONS}
+    if selected_application not in registered_application_ids:
+        raise LookupError(f"未登録のアプリです: {selected_application}")
+    set_last_application(paths.ui_settings_path, selected_application)
+    return selected_application
 
 
 def _restore_backup_path(error: BaseException) -> Path | None:
@@ -218,6 +262,8 @@ def run_app(
     logging_configurator: LoggingConfigurator | None = None,
     startup_preparer: StartupPreparer | None = None,
     startup_error_notifier: StartupErrorNotifier | None = None,
+    migration_notifier: MigrationNotifier | None = None,
+    application_selector: ApplicationSelector | None = None,
     main_window_factory: Callable[[AppContext], QMainWindow] | None = None,
     event_loop_runner: Callable[[QApplication], int] | None = None,
     restart_launcher: RestartLauncher | None = None,
@@ -226,11 +272,16 @@ def run_app(
     logging_initialized = False
 
     try:
-        resolved_paths = paths or resolve_paths()
+        startup_paths = resolve_startup_paths(os.environ)
+        resolved_paths = paths if paths is not None else startup_paths.paths
+        legacy_database_path = startup_paths.legacy_meter_reading_db_path if paths is None else None
         restart_notice = take_restart_notice(os.environ, resolved_paths.data_dir)
-        if restart_notice is not None and paths is None:
-            resolved_paths = AppPaths.from_dirs(resolved_paths.data_dir, restart_notice.log_dir)
-        ensure_dirs(resolved_paths)
+        if (
+            restart_notice is not None
+            and restart_notice.log_dir.resolve() != resolved_paths.log_dir
+        ):
+            raise RuntimeError("復元後の再起動情報に含まれるログ保存先が不正です。")
+        resolved_paths.data_dir.mkdir(parents=True, exist_ok=True)
 
         lock = (lock_factory or SingleInstanceLock)(resolved_paths.lock_path)
         if not lock.try_acquire():
@@ -257,126 +308,227 @@ def run_app(
                 with ExitStack() as resources:
                     resources.callback(lock.release)
 
+                    ensure_dirs(resolved_paths)
                     (logging_configurator or configure_logging)(log_dir=resolved_paths.log_dir)
                     logging_initialized = True
                     previous_excepthook = sys.excepthook
                     install_excepthook(resolved_paths.log_path)
                     resources.callback(setattr, sys, "excepthook", previous_excepthook)
 
-                    connection = (database_opener or open_database)(
-                        resolved_paths.db_path,
-                        resolved_paths.backup_dir,
-                        backup_timestamp=local_timestamp_for_filename,
-                    )
-                    connection_closed = False
+                    application = _initialize_ui(ui_resources, application_factory, resolved_paths)
+                    settings = load_ui_settings(resolved_paths.ui_settings_path)
+                    restore_requested = False
+                    meter_window: QMainWindow | None = None
+                    backup_service: BackupRestoreService | None = None
+                    close_meter_window: Callable[[], None] | None = None
+                    close_meter_connection: Callable[[], None] | None = None
 
-                    def close_connection_once() -> None:
-                        nonlocal connection_closed
-                        if not connection_closed:
-                            connection_closed = True
-                            connection.close()
+                    def report_application_error(error: Exception) -> None:
+                        if isinstance(error, DomainError):
+                            logger.warning("アプリケーションを開けませんでした: %s", error)
+                            if startup_error_notifier is not None:
+                                startup_error_notifier(error)
+                            else:
+                                show_domain_error(host, error)
+                        elif startup_error_notifier is not None:
+                            logger.error(
+                                "アプリケーションを開けませんでした",
+                                exc_info=(type(error), error, error.__traceback__),
+                            )
+                            startup_error_notifier(error)
+                        else:
+                            show_unexpected_error(host, error)
 
-                    resources.callback(close_connection_once)
+                    def persist_application_choice(application_id: str) -> None:
+                        registered_ids = {
+                            registered_id for registered_id, _ in REGISTERED_APPLICATIONS
+                        }
+                        if application_id not in registered_ids:
+                            raise LookupError(f"未登録のアプリです: {application_id}")
+                        set_last_application(resolved_paths.ui_settings_path, application_id)
 
-                    try:
-                        application = _initialize_ui(
-                            ui_resources, application_factory, resolved_paths
-                        )
-                        context = create_app_context(connection)
+                    def open_application(application_id: str) -> QMainWindow:
+                        nonlocal backup_service
+                        nonlocal close_meter_connection
+                        nonlocal close_meter_window
+                        nonlocal meter_window
+                        if application_id != METER_READING_APPLICATION_ID:
+                            raise LookupError(f"未登録のアプリです: {application_id}")
+
+                        if meter_window is not None:
+                            if not isinstance(meter_window, MainWindow):
+                                raise RuntimeError("検針画面の型が不正です。")
+                            meter_window.reload_for_activation()
+                            return meter_window
+
+                        app_resources = ExitStack()
                         try:
+                            migration_completed = False
+                            if legacy_database_path is not None:
+                                migration_completed = migrate_legacy_database(
+                                    resolved_paths.db_path,
+                                    legacy_database_path,
+                                    lock_factory=SingleInstanceLock,
+                                )
+
+                            connection = (database_opener or open_database)(
+                                resolved_paths.db_path,
+                                resolved_paths.backup_dir,
+                                backup_timestamp=local_timestamp_for_filename,
+                            )
+                            connection_closed = False
+
+                            def close_connection_once() -> None:
+                                nonlocal connection_closed
+                                if not connection_closed:
+                                    connection_closed = True
+                                    connection.close()
+
+                            app_resources.callback(close_connection_once)
+
+                            if migration_completed and legacy_database_path is not None:
+                                if migration_notifier is not None:
+                                    migration_notifier(
+                                        legacy_database_path,
+                                        resolved_paths.db_path,
+                                    )
+                                else:
+                                    QMessageBox.information(
+                                        host,
+                                        "検針 DB の移行が完了しました",
+                                        "旧版の検針 DB を新しい保存先へ複製しました。\n"
+                                        "旧 DB と旧バックアップは変更していません。\n"
+                                        "以後、旧版で入力した内容は新しい DB には反映されません。",
+                                    )
+
+                            context = create_app_context(connection)
                             if startup_preparer is not None:
                                 startup_preparer(connection)
                             else:
                                 context.startup_preparation.prepare()
-                        except Exception as error:
-                            logger.exception("起動時準備に失敗しました")
-                            (
-                                startup_error_notifier
-                                or (lambda failure: show_unexpected_error(None, failure))
-                            )(error)
-                            return STARTUP_FAILURE
 
-                        restore_requested = False
-                        backup_service: BackupRestoreService | None = None
+                            new_backup_service: BackupRestoreService | None = None
 
-                        def request_restore() -> None:
-                            nonlocal restore_requested
-                            if restore_requested:
-                                raise RuntimeError("復元の終了処理は既に開始されています。")
-                            restore_requested = True
-                            application.quit()
+                            def request_restore() -> None:
+                                nonlocal restore_requested
+                                if restore_requested:
+                                    raise RuntimeError("復元の終了処理は既に開始されています。")
+                                restore_requested = True
+                                application.quit()
 
-                        if main_window_factory is not None:
-                            window = main_window_factory(context)
-                        else:
-                            backup_service = BackupRestoreService(
-                                SQLiteBackupRestoreRepository(connection, resolved_paths.db_path),
-                                resolved_paths.backup_dir,
-                                timezone_provider=context.timezone_settings.get_timezone,
-                            )
-                            resources.callback(backup_service.discard_preview)
-                            window = MainWindow(
-                                context,
-                                database_path=resolved_paths.db_path,
-                                display_settings_path=resolved_paths.ui_settings_path,
-                                backup_restore_service=backup_service,
-                                backup_directory=resolved_paths.backup_dir,
-                                request_restore=request_restore,
-                            )
-
-                        window_closed = False
-
-                        def close_window_once() -> None:
-                            nonlocal window_closed
-                            if not window_closed:
-                                window_closed = True
-                                if not window.close():
-                                    raise RuntimeError("メイン画面を終了できませんでした。")
-
-                        resources.callback(close_window_once)
-                        window.show()
-                        if restart_notice is not None:
-                            QTimer.singleShot(0, lambda: _announce_restart_ready(restart_notice))
-                        loop_result = (event_loop_runner or (lambda app: app.exec()))(application)
-                        if not restore_requested:
-                            return loop_result
-                        if backup_service is None:
-                            raise RuntimeError("復元サービスが利用できません。")
-                        try:
-                            if loop_result != STARTUP_SUCCESS:
-                                raise RestoreError(
-                                    "イベントループが正常終了しなかったため復元を中止しました。",
-                                    stage="pre_backup",
-                                    recovered=True,
+                            if main_window_factory is not None:
+                                window = main_window_factory(context)
+                            else:
+                                new_backup_service = BackupRestoreService(
+                                    SQLiteBackupRestoreRepository(
+                                        connection,
+                                        resolved_paths.db_path,
+                                    ),
+                                    resolved_paths.backup_dir,
+                                    timezone_provider=context.timezone_settings.get_timezone,
                                 )
-                            close_window_once()
-                            restore_result = backup_service.restore_after_shutdown(
-                                close_connection_once
-                            )
-                        except Exception as error:
-                            _show_restore_failure(error)
+                                app_resources.callback(new_backup_service.discard_preview)
+                                window = MainWindow(
+                                    context,
+                                    database_path=resolved_paths.db_path,
+                                    display_settings_path=resolved_paths.ui_settings_path,
+                                    backup_restore_service=new_backup_service,
+                                    backup_directory=resolved_paths.backup_dir,
+                                    request_restore=request_restore,
+                                )
+
+                            window_closed = False
+
+                            def close_window_once() -> None:
+                                nonlocal window_closed
+                                if not window_closed:
+                                    window_closed = True
+                                    if not window.close():
+                                        raise RuntimeError("メイン画面を終了できませんでした。")
+
+                            app_resources.callback(close_window_once)
+                        except BaseException:
+                            app_resources.close()
+                            raise
+
+                        resources.callback(app_resources.close)
+                        close_meter_connection = close_connection_once
+                        close_meter_window = close_window_once
+                        backup_service = new_backup_service
+                        meter_window = window
+                        return window
+
+                    host = ApplicationHostWindow(
+                        REGISTERED_APPLICATIONS,
+                        opener=open_application,
+                        on_selected=persist_application_choice,
+                        on_error=report_application_error,
+                        last_application=settings.last_application,
+                    )
+                    host_closed = False
+
+                    def close_host_once() -> None:
+                        nonlocal host_closed
+                        if not host_closed:
+                            host_closed = True
+                            if not host.close():
+                                raise RuntimeError("アプリ選択画面を終了できませんでした。")
+
+                    resources.callback(close_host_once)
+
+                    if restart_notice is not None:
+                        if not host.open_application(METER_READING_APPLICATION_ID):
                             return STARTUP_FAILURE
-                    except DomainError as error:
-                        logger.warning("アプリケーションの起動または実行を中断しました: %s", error)
+                    elif application_selector is not None:
+                        selected_application = _choose_application(
+                            resolved_paths,
+                            application_selector,
+                        )
+                        if selected_application is None:
+                            return STARTUP_SUCCESS
+                        if not host.open_application(selected_application):
+                            return STARTUP_FAILURE
+
+                    host.show()
+                    if restart_notice is not None:
+                        QTimer.singleShot(0, lambda: _announce_restart_ready(restart_notice))
+
+                    try:
+                        loop_result = (event_loop_runner or (lambda app: app.exec()))(application)
+                    except Exception as error:
+                        logger.exception("アプリケーションの実行に失敗しました")
                         if startup_error_notifier is not None:
                             startup_error_notifier(error)
                         elif isinstance(QApplication.instance(), QApplication):
-                            show_domain_error(None, error)
-                        else:
-                            _report_startup_error(f"アプリケーションの起動に失敗しました: {error}")
-                        return STARTUP_FAILURE
-                    except Exception as error:
-                        logger.exception("アプリケーションの起動または実行に失敗しました")
-                        if isinstance(QApplication.instance(), QApplication):
-                            (
-                                startup_error_notifier
-                                or (lambda failure: show_unexpected_error(None, failure))
-                            )(error)
+                            show_unexpected_error(host, error)
                         else:
                             _report_startup_error(
                                 f"アプリケーションの起動に失敗しました: {error}",
-                                gui_message="予期しないエラーが発生しました。詳細はログを確認してください。",
+                                gui_message=(
+                                    "予期しないエラーが発生しました。詳細はログを確認してください。"
+                                ),
                             )
+                        return STARTUP_FAILURE
+                    if not restore_requested:
+                        return loop_result
+                    if backup_service is None or close_meter_connection is None:
+                        raise RuntimeError("復元サービスが利用できません。")
+                    try:
+                        if loop_result != STARTUP_SUCCESS:
+                            raise RestoreError(
+                                "イベントループが正常終了しなかったため復元を中止しました。",
+                                stage="pre_backup",
+                                recovered=True,
+                            )
+                        if close_meter_window is None:
+                            raise RuntimeError("検針画面が利用できません。")
+                        close_meter_window()
+                        close_host_once()
+                        restore_result = backup_service.restore_after_shutdown(
+                            close_meter_connection
+                        )
+                    except Exception as error:
+                        _show_restore_failure(error)
                         return STARTUP_FAILURE
             except Exception as error:
                 if restore_result is None:
@@ -403,7 +555,7 @@ def run_app(
             logger.exception("アプリケーションの起動に失敗しました")
         if isinstance(error, DomainError):
             gui_message = f"アプリケーションの起動に失敗しました: {error.message}"
-        elif isinstance(error, InstallationGuardError):
+        elif isinstance(error, (InstallationGuardError, PathConfigurationError)):
             gui_message = str(error)
         elif logging_initialized:
             gui_message = "予期しないエラーが発生しました。詳細はログを確認してください。"

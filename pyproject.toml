@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "meter-reading-mini"
+name = "building-manager-mini"
 version = "0.3.0"
 description = "ローカル完結型 検針管理デスクトップアプリ (PySide6 + 単一HTMLスマホ検針)"
 readme = "README.md"
@@ -14,6 +14,9 @@ dependencies = [
     "pydantic>=2.12.5",
     "tzdata>=2025.2",
 ]
+
+[project.entry-points."building_manager_mini.application"]
+meter-reading = "meter_reading_mini.app:run_app"
 
 [dependency-groups]
 dev = [
@@ -27,7 +30,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/meter_reading_mini"]
+packages = ["src/building_manager_mini", "src/meter_reading_mini"]
 
 [tool.ruff]
 line-length = 100
@@ -37,13 +40,14 @@ target-version = "py313"
 select = ["E", "W", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["meter_reading_mini"]
+known-first-party = ["building_manager_mini", "meter_reading_mini"]
 
 [tool.pyright]
 pythonVersion = "3.13"
 include = ["src", "tests"]
 typeCheckingMode = "standard"
 strict = [
+    "src/building_manager_mini",
     "src/meter_reading_mini/core",
     "src/meter_reading_mini/db",
 ]
@@ -56,11 +60,12 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
+    "--import-mode=importlib",
 ]
 markers = ["perf: 時間のかかる性能計測テスト"]
 
 [tool.coverage.run]
-source = ["meter_reading_mini"]
+source = ["building_manager_mini", "meter_reading_mini"]
 branch = false
 
 [tool.coverage.report]

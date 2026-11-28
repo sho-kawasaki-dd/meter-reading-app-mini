@@ -12,8 +12,8 @@ from decimal import Decimal
 from pathlib import Path
 from shlex import quote
 
+from building_manager_mini.paths import AppPaths, ensure_dirs
 from meter_reading_mini.app_context import AppContext, create_app_context
-from meter_reading_mini.config import AppPaths, ensure_dirs
 from meter_reading_mini.core.contract_models import (
     CalculationMethod,
     Category,
@@ -66,7 +66,7 @@ def create_manual_test_data(
         )
 
     resolved_dir = data_dir.expanduser().resolve()
-    paths = AppPaths.from_dirs(resolved_dir, resolved_dir / "logs")
+    paths = AppPaths.from_root(resolved_dir)
     if paths.db_path.exists():
         raise FileExistsError(f"既存 DB を上書きしません: {paths.db_path}")
 
@@ -291,10 +291,13 @@ def _save_example_readings(
 def _format_launch_instructions(data_dir: Path) -> str:
     path = str(data_dir).replace("'", "''")
     if os.name == "nt":
-        return f"$env:METER_READING_MINI_DATA_DIR = '{path}'\nuv run python -m meter_reading_mini"
+        return (
+            f"$env:BUILDING_MANAGER_MINI_DATA_DIR = '{path}'\n"
+            "uv run python -m building_manager_mini"
+        )
     return (
-        f"export METER_READING_MINI_DATA_DIR={quote(str(data_dir))}\n"
-        "uv run python -m meter_reading_mini"
+        f"export BUILDING_MANAGER_MINI_DATA_DIR={quote(str(data_dir))}\n"
+        "uv run python -m building_manager_mini"
     )
 
 
@@ -329,7 +332,7 @@ def main() -> None:
             "--measured-percent は "
             f"{MIN_MEASURED_PERCENT} から {MAX_MEASURED_PERCENT} の範囲で指定してください。"
         )
-    data_dir = args.data_dir or Path(tempfile.mkdtemp(prefix="meter-reading-mini-manual-"))
+    data_dir = args.data_dir or Path(tempfile.mkdtemp(prefix="building-manager-mini-manual-"))
 
     try:
         summary = create_manual_test_data(
@@ -340,7 +343,7 @@ def main() -> None:
     except FileExistsError as error:
         parser.error(str(error))
 
-    print(f"手動確認用 DB を作成しました: {summary.data_dir / 'meter_reading.db'}")
+    print(f"手動確認用 DB を作成しました: {AppPaths.from_root(summary.data_dir).db_path}")
     print(f"測定定義: {summary.definition_count} 件")
     print(f"予定枠: {summary.planned_reading_count} 件")
     print(f"実測入力割合: {args.measured_percent}%")

@@ -3,9 +3,10 @@
 ## プロジェクト概要・仕様の正本
 
 - 基本設計・業務ルールの正本は [ローカル検針管理アプリ開発計画書](../docs/meter_reading/ローカル検針管理アプリ開発計画書.md) です。旧企画書と異なる場合は開発計画書を優先します。
+- 共通基盤・業務日誌統合の正本は [業務日誌アプリ要件定義](../docs/building_manager/業務日誌アプリ要件定義.md) です。共通基盤の現行仕様は同書 3 章と BM-Phase の完了済み計画書を参照します。
 - [旧企画書](../docs/meter_reading/archive/オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md) は旧サーバー・Android 構成の参考記録として変更しません。旧アーキテクチャを新構成へ持ち込みません。
 - 現状と実行手順は [README](../README.md) を参照します。同梱資産を完成済みアプリと扱いません。
-- 現在のプロジェクト基点はリポジトリ直下です。`src/`・`tests/`・`pyproject.toml`・`uv.lock` はルートに配置し、開発計画書・作業用計画書は `docs/<アプリ>/` にアプリ別で配置します。検針アプリの文書は `docs/meter_reading/` にあります。
+- 現在のプロジェクト基点はリポジトリ直下です。共通基盤は `src/building_manager_mini/`、検針アプリは `src/meter_reading_mini/`、テストは `tests/building_manager_mini/` と `tests/meter_reading_mini/` に配置し、開発計画書・作業用計画書は `docs/<アプリ>/` にあります。
 - ルート配置への移行は完了しています。ソース・設定・文書・コマンドを変更するときは、リポジトリルートを基準に関連するパスも一緒に更新します。
 - UI テキスト・ドキュメント・コミットメッセージ・コード内コメントは日本語を使用します。
 
@@ -74,9 +75,9 @@
 
 ## 起動・保存先・バックアップ
 
-- 起動順は「`QLockFile` 多重起動チェック → ログ初期化 → DB オープン・マイグレーション → 予定枠補完・自動クローズ → MainWindow 表示」とし、DB を開く前にロックを取得します。
-- 保存先は `config.py` に集約します。既定のアプリ名は `meter-reading-mini`、DB は `meter_reading.db`、ロックは `meter_reading.lock` です。
-- 動作確認は `METER_READING_MINI_DATA_DIR` に一時保存先を指定し、実データと分離します。指定時のログはその `logs/` 配下です。
+- 起動順は「保存先指定の検証 → アプリ全体の `QLockFile` → ログ初期化 → アプリ選択 → 選択アプリの DB 準備・起動時処理 → 業務画面」とし、DB を開く前にロックを取得します。検針の旧 DB 複製は検針選択後に限ります。
+- 保存先の正本は `src/building_manager_mini/paths.py` です。既定のデータルートは `building-manager-mini`、共通ロックは `app.lock`、検針 DB は `meter_reading/meter_reading.db`、単体バックアップは `backups/meter_reading/`、ログは常に `logs/app.log` です。
+- 動作確認は `BUILDING_MANAGER_MINI_DATA_DIR` に一時保存先を指定し、実データと分離します。旧 `METER_READING_MINI_DATA_DIR` のみを指定した場合は起動せず、ログも作成しません。
 - バックアップは `sqlite3.Connection.backup()` を使います。復元は開発計画書 7 章の順序 (読取専用検査 → 一時コピー・移行 → 業務整合性検査 → 現行 DB 自動保全 → 置換・再起動) を守ります。
 - 復元では Decimal 値・状態と値の対応・交換境界も検証します。表示設定 `ui_settings.json` は DB 復元の対象外です。
 
@@ -89,8 +90,8 @@
 - 型検査: `uv run pyright` (`core/`・`db/` strict、`ui/` standard)
 - ブラウザ準備: `uv run playwright install chromium` (Linux CI: `uv run playwright install --with-deps chromium`)
 - テスト: `uv run pytest --cov`。Linux ヘッドレス環境では `QT_QPA_PLATFORM=offscreen` を設定します。
-- カバレッジ: `uv run coverage report --include="src/meter_reading_mini/core/*,src/meter_reading_mini/db/*" --fail-under=90`
-- 起動処理実装後: `uv run python -m meter_reading_mini`。現時点では起動モジュールは未整備です。
+- カバレッジ: 検針の `core/`・`db/` と共通基盤の `core/`・`db/`、`paths.py`、`entrypoint.py`、`launcher.py` は各 CI ゲートで個別に 90% 以上を確認します。
+- 起動: `uv run python -m building_manager_mini`。旧 `uv run python -m meter_reading_mini` は新コマンドを案内して終了し、アプリ・DB を開きません。
 
 旧 import 等の未移植部分による失敗を、成功・完了と報告しません。実行した検査と未実施・失敗理由を区別します。
 
