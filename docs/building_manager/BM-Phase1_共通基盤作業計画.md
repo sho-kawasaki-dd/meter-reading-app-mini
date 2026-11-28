@@ -63,7 +63,7 @@
 - [x] [プロジェクト設定](../../pyproject.toml) の配布名を `building-manager-mini` に変更し、`uv lock` でロックを更新する。wheel に共通・検針の両パッケージと既存資産を収録する。旧 `python -m meter_reading_mini` は新コマンドを案内し、アプリ・DB を開かず終了する。復元後の再起動コマンドを `-m building_manager_mini` に、再起動用の環境変数を `_BUILDING_MANAGER_MINI_RESTART_*` に切り替える。新旧両入口を一時ルートで実行して確認する。
 - [x] インストール用ガードの保存先 (`{localappdata}\meter-reading-mini\installation.guard`)・exe 名・インストーラーは Phase 7 まで旧名のまま据え置く。ガードの保存先は共通基盤の `APP_NAME` から導かず、インストーラー専用の定数として保持する。exe とインストーラーが同じガードを参照することを既存の配布検証で確認する。
 - [x] Ruff の first-party、Pyright の strict、coverage 対象、[CI](../../.github/workflows/ci.yml)、配布用 spec・収録一覧・ビルド／exe 検証・テストデータ作成スクリプトを新しい構成・入口・環境変数に追随させる。旧名を一括置換せず、検針パッケージ名、旧 DB 探索、過去版の識別は保持する。
-- [ ] `uv sync --locked`、Ruff の検査・整形確認、`uv run pyright`、Chromium 準備後の `uv run pytest --cov` を通す。カバレッジは検針 core / db と、共通基盤の core / db・`paths.py`・ランチャーの非 UI 部分に、それぞれ別の 90% ゲートを設ける。合算だけにしない。Windows は通常環境、Ubuntu は `QT_QPA_PLATFORM=offscreen` で実行する。Windows の検証は完了。Ubuntu CI の結果確認後にチェックする。
+- [x] `uv sync --locked`、Ruff の検査・整形確認、`uv run pyright`、Chromium 準備後の `uv run pytest --cov` を通す。カバレッジは検針 core / db と、共通基盤の core / db・`paths.py`・ランチャーの非 UI 部分に、それぞれ別の 90% ゲートを設ける。合算だけにしない。Windows は通常環境、Ubuntu は `QT_QPA_PLATFORM=offscreen` で実行する。Windows の検証は完了。Ubuntu CI の結果確認後にチェックする。
 - [x] 一時ルートで新規起動と旧 DB からの初回起動を各 1 回以上行い、予定枠・検針結果・監査履歴の保持、入力保存、単体バックアップ／復元、終了後の再起動を確認する。開発 PC の実データ・既定保存先は使用しない。
   - 2026-11-28 に Windows で確認した。`main` から作成した旧版のサンプル DB (旧レイアウト、v6、予定枠 92・結果 43) と旧版の単体バックアップを、一時ルートの兄弟ディレクトリに置いて使用した。操作は実入口 `python -m building_manager_mini` で行った。Qt ダイアログはアクセシビリティ経由で操作できなかったため、同じプロセス内の自動操作でウィジェットを操作した。スタブにしたのは保存ダイアログのみ。結果は読取専用で取得した `reading_transactions` 全行のハッシュで照合した。
   - 旧 DB からの初回起動: 選択前は DB を生成しなかった。開くと移行通知が表示され、予定枠・結果・監査署名を含むハッシュが旧 DB と一致した。旧 DB と旧バックアップのハッシュは変わらず、移行前バックアップは作られなかった。入力 2 件の保存後、入力 1 件目の時点のバックアップから復元した。復元後は再起動され、保全バックアップの案内が表示された。DB はバックアップ時点 (結果 44) に戻り、保全バックアップには 45 件が残った。再起動用の一時ディレクトリは残らなかった。異常終了後の再起動では古いロックが回収された。正常終了後の再起動では移行通知も再複製もなく、内容を保持していた。
@@ -71,7 +71,7 @@
 
 ## 4. 完了・引継ぎ
 
-- [ ] [README](../../README.md) に新旧コマンドの扱い、環境変数の組合せ、移行対象、旧 DB を残す理由、複製後に旧版で入力した内容は反映されないこと、新旧のバックアップの場所と旧バックアップからの復元方法、失敗時の再試行手順を記載する。開発手順・検針の正本に残る現行パスも更新し、凍結済み計画書は書き換えない。
-- [ ] 各変更は `feature/bm-phase1-…` ブランチから PR とし、`test (windows-latest)`・`test (ubuntu-latest)` の成功と手動確認の結果を記録する。未検証項目を完了扱いにしない。
-- [ ] 確定仕様を要件定義 3 章・8 章へ統合し、本書を `implemented/` へ `git mv` して相対リンクを直す。Phase 2 には新ルート・ロック・起動順・単体 DB 復元の契約を渡し、Phase 7 には旧インストールとの共存・更新検証と、据え置いたガードの保存先・exe 名・インストーラーの新名称への同時切替を残す。
+- [x] [README](../../README.md) に新旧コマンドの扱い、環境変数の組合せ、移行対象、旧 DB を残す理由、複製後に旧版で入力した内容は反映されないこと、新旧のバックアップの場所と旧バックアップからの復元方法、失敗時の再試行手順を記載する。開発手順・検針の正本に残る現行パスも更新し、凍結済み計画書は書き換えない。
+- [x] 各変更は `feature/bm-phase1-…` ブランチから PR とし、`test (windows-latest)`・`test (ubuntu-latest)` の成功と手動確認の結果を記録する。未検証項目を完了扱いにしない。
+- [x] 確定仕様を要件定義 3 章・8 章へ統合し、本書を `implemented/` へ `git mv` して相対リンクを直す。Phase 2 には新ルート・ロック・起動順・単体 DB 復元の契約を渡し、Phase 7 には旧インストールとの共存・更新検証と、据え置いたガードの保存先・exe 名・インストーラーの新名称への同時切替を残す。
 $env:BUILDING_MANAGER_MINI_DATA_DIR = 'C:\Users\tohbo\AppData\Local\Temp\bm-phase1-manual-be38fee213e444a9a3d9801e74ea44ff'; uv run python -m building_manager_mini
