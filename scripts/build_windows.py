@@ -21,6 +21,7 @@ APP_NAME = "meter-reading-mini"
 APP_DISTRIBUTION_NAME = "building-manager-mini"
 APP_VERSION = version(APP_DISTRIBUTION_NAME)
 PACKAGE = ROOT / "src" / "meter_reading_mini"
+COMMON_PACKAGE = ROOT / "src" / "building_manager_mini"
 INTERNAL = Path("_internal")
 APP_ENTRY_POINTS = INTERNAL / f"building_manager_mini-{APP_VERSION}.dist-info" / "entry_points.txt"
 METER_READING_ENTRY_POINT = "meter-reading = meter_reading_mini.app:run_app"
@@ -44,6 +45,7 @@ APP_RESOURCES = (
 REQUIRED_FILES = (
     Path(f"{APP_NAME}.exe"),
     APP_ENTRY_POINTS,
+    INTERNAL / "building_manager_mini" / "db" / "schema.sql",
     *(INTERNAL / "meter_reading_mini" / name for name in APP_RESOURCES),
     INTERNAL / "tzdata" / "zoneinfo" / "Asia" / "Tokyo",
     INTERNAL / "tzdata" / "zoneinfo" / "America" / "New_York",
@@ -83,6 +85,10 @@ def _validate_distribution(directory: Path) -> None:
         bundled = directory / INTERNAL / "meter_reading_mini" / name
         if bundled.read_bytes() != (PACKAGE / name).read_bytes():
             raise RuntimeError(f"実行時資産が現在のソースと一致しません: {bundled}")
+
+    common_schema = directory / INTERNAL / "building_manager_mini" / "db" / "schema.sql"
+    if common_schema.read_bytes() != (COMMON_PACKAGE / "db" / "schema.sql").read_bytes():
+        raise RuntimeError(f"実行時資産が現在のソースと一致しません: {common_schema}")
 
     for path in directory.rglob("*"):
         if not path.is_file():

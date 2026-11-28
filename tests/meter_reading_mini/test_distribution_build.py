@@ -91,6 +91,10 @@ def test_source_snapshot_rejects_unlisted_and_business_files(tmp_path: Path) -> 
 
 def test_current_schema_is_included_in_source_and_bundle_allowlists() -> None:
     snapshot = builder.snapshot_source_files()
+    assert "src/building_manager_mini/db/schema.sql" in snapshot
+    assert "_internal/building_manager_mini/db/schema.sql" in builder.read_allowlist(
+        builder.BUNDLE_ALLOWLIST
+    )
     assert "src/meter_reading_mini/db/schema_v4.sql" in snapshot
     assert "src/meter_reading_mini/db/schema_v5.sql" in snapshot
     assert "_internal/meter_reading_mini/db/schema_v4.sql" in builder.read_allowlist(

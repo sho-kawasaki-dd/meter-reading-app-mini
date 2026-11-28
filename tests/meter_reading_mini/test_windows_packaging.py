@@ -36,6 +36,10 @@ def _populate_distribution(directory: Path) -> None:
     for relative in build_windows.APP_RESOURCES:
         target = directory / build_windows.INTERNAL / "meter_reading_mini" / relative
         target.write_bytes((build_windows.PACKAGE / relative).read_bytes())
+    common_schema = build_windows.INTERNAL / "building_manager_mini" / "db" / "schema.sql"
+    (directory / common_schema).write_bytes(
+        (build_windows.COMMON_PACKAGE / "db" / "schema.sql").read_bytes()
+    )
 
 
 @pytest.mark.parametrize(
@@ -170,6 +174,18 @@ def test_frozen_v4_schema_is_included_in_pyinstaller_spec() -> None:
     assert 'root / "src" / "building_manager_mini" / "__main__.py"' in spec_source
     assert '"meter_reading_mini.app"' in spec_source
     assert 'Path(application_metadata_source) / "entry_points.txt"' in spec_source
+    assert 'common_package / "db" / "schema.sql"' in spec_source
+
+
+def test_distribution_rejects_missing_or_changed_common_schema(tmp_path: Path) -> None:
+    _populate_distribution(tmp_path)
+    schema = tmp_path / build_windows.INTERNAL / "building_manager_mini" / "db" / "schema.sql"
+    schema.unlink()
+    with pytest.raises(RuntimeError, match="実行時資産が不足"):
+        build_windows._validate_distribution(tmp_path)
+    schema.write_text("stale", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="ソースと一致しません"):
+        build_windows._validate_distribution(tmp_path)
 
 
 def test_installation_guard_keeps_the_legacy_path_across_exe_and_installer() -> None:
