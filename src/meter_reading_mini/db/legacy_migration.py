@@ -43,6 +43,9 @@ def migrate_legacy_database(
     legacy_database_path: Path | None,
     *,
     lock_factory: LockFactory,
+    before_publish: Callable[[], None] | None = None,
+    after_publish: Callable[[], None] | None = None,
+    on_publication_conflict: Callable[[], None] | None = None,
 ) -> bool:
     """旧 DB を変更せず、一時コピーを検査・移行して新しい正式パスへ反映する。"""
 
@@ -67,7 +70,13 @@ def migrate_legacy_database(
             "旧版を終了してから新アプリを再起動してください。"
         )
     try:
-        return _copy_and_validate(new_database_path, legacy_database_path)
+        return _copy_and_validate(
+            new_database_path,
+            legacy_database_path,
+            before_publish=before_publish,
+            after_publish=after_publish,
+            on_publication_conflict=on_publication_conflict,
+        )
     finally:
         lock.release()
 
@@ -82,7 +91,15 @@ def _path_exists(path: Path) -> bool:
     return True
 
 
-def _copy_and_validate(new_database_path: Path, legacy_database_path: Path) -> bool:
+def _copy_and_validate(
+    new_database_path: Path,
+    legacy_database_path: Path,
+    *,
+    before_publish: Callable[[], None] | None,
+    after_publish: Callable[[], None] | None,
+    on_publication_conflict: Callable[[], None] | None,
+) -> bool:
+    published = False
     try:
         with tempfile.TemporaryDirectory(
             prefix=".meter-reading-migration-", dir=new_database_path.parent
@@ -128,11 +145,18 @@ def _copy_and_validate(new_database_path: Path, legacy_database_path: Path) -> b
                     raise MigrationError(f"一時 DB の確定データを整理できません: {checkpoint}")
 
             _ensure_standalone_database(candidate_path)
+            if before_publish is not None:
+                before_publish()
             try:
                 os.link(candidate_path, new_database_path)
             except FileExistsError:
+                if on_publication_conflict is not None:
+                    on_publication_conflict()
                 return False
-            return True
+            published = True
+        if published and after_publish is not None:
+            after_publish()
+        return published
     except (sqlite3.DatabaseError, OSError) as error:
         raise MigrationError(
             f"旧 DB を安全に複製できませんでした: {error}。"

@@ -465,6 +465,63 @@ def complete_operation(
         ) from error
 
 
+def cancel_unpublished_initial_migration(
+    pending_path: Path,
+    safety_root: Path,
+    databases: Mapping[str, RegisteredDatabase],
+) -> bool:
+    """公開競合で中止した初回移行の記録を解除し、競合先の DB には触れない。"""
+    try:
+        pending_path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise PendingRecoveryError(f"中断記録を確認できません: {pending_path}") from error
+
+    try:
+        record = _load_record(pending_path)
+        safety_directory = _validate_record(record, safety_root, databases)
+        if (
+            record.operation_kind != "initial_migration"
+            or record.stage not in {"prepared", "applying"}
+            or {target.database_id for target in record.targets if target.modified}
+            != {"meter-reading"}
+        ):
+            raise ValueError("公開前の新規検針移行以外は取り消せません。")
+        expected_snapshots = {
+            f"{target.database_id}.db" for target in record.targets if target.existed
+        }
+        if {path.name for path in safety_directory.iterdir()} != expected_snapshots:
+            raise ValueError("公開前移行の保全先に不明なファイルがあります。")
+        if record.automatic_backup_path is not None:
+            _regular_file(Path(record.automatic_backup_path))
+        pending_path.unlink()
+        for target in record.targets:
+            if target.safety_path is not None:
+                try:
+                    _remove_regular_if_present(Path(target.safety_path))
+                except (OSError, ValueError):
+                    logger.warning(
+                        "中止した移行の保全ファイルを削除できません: %s",
+                        target.safety_path,
+                        exc_info=True,
+                    )
+        try:
+            safety_directory.rmdir()
+        except OSError:
+            logger.warning(
+                "中止した移行の保全ディレクトリを削除できません: %s",
+                safety_directory,
+                exc_info=True,
+            )
+        return True
+    except (OSError, ValueError, sqlite3.Error, ValidationError, CommonSettingsError) as error:
+        raise PendingRecoveryError(
+            f"未公開の DB 操作を取り消せません。\n中断記録: {pending_path}\n"
+            f"保全先: {safety_root}\n記録と保存先を保持し、管理者に相談してください。"
+        ) from error
+
+
 def recover_pending(
     pending_path: Path,
     safety_root: Path,

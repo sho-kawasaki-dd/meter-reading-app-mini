@@ -19,6 +19,7 @@ from building_manager_mini.db.recovery import (
     RecoveryRecord,
     RecoveryTargetRecord,
     RegisteredDatabase,
+    cancel_unpublished_initial_migration,
     complete_operation,
     mark_operation_applying,
     prepare_operation,
@@ -428,6 +429,135 @@ def test_mark_operation_rejects_recovering_record(tmp_path: Path) -> None:
     with pytest.raises(PendingRecoveryError, match="更新できません"):
         mark_operation_applying(pending, safety, databases)
     assert pending.read_text(encoding="utf-8") == record.model_dump_json()
+
+
+def test_cancel_unpublished_initial_migration_keeps_competing_database(tmp_path: Path) -> None:
+    database = tmp_path / "meter.db"
+    pending = tmp_path / "recovery" / "pending.json"
+    safety = tmp_path / "backups" / "safety"
+    databases = {"meter-reading": RegisteredDatabase(database, _validate_database)}
+    record = prepare_operation(
+        pending,
+        safety,
+        databases,
+        ["meter-reading"],
+        operation_id="5" * 32,
+        operation_kind="initial_migration",
+        copy_database=copy_database,
+        create_and_verify_backup=lambda _snapshots: pytest.fail("新規作成で自動保全を実行しました"),
+    )
+    mark_operation_applying(pending, safety, databases)
+    _create_database(database, "別プロセスの DB")
+
+    assert cancel_unpublished_initial_migration(pending, safety, databases)
+    assert not pending.exists()
+    assert not (safety / record.operation_id).exists()
+    assert _read_database(database) == "別プロセスの DB"
+
+
+def test_cancel_without_pending_record_is_a_noop(tmp_path: Path) -> None:
+    pending = tmp_path / "recovery" / "pending.json"
+    safety = tmp_path / "backups" / "safety"
+    assert not cancel_unpublished_initial_migration(pending, safety, {})
+    assert not pending.parent.exists()
+    assert not safety.exists()
+
+
+def test_cancel_unpublished_migration_preserves_unchanged_database_snapshot(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "meter.db"
+    _create_database(database, "existing")
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA user_version = 6")
+        connection.commit()
+    pending = tmp_path / "recovery" / "pending.json"
+    safety = tmp_path / "backups" / "safety"
+    backup_root = safety.parent
+    databases = {"meter-reading": RegisteredDatabase(database, _validate_database)}
+
+    def create_backup(snapshots: Mapping[str, Path]) -> Path:
+        destination = backup_root / "automatic.db"
+        shutil.copyfile(snapshots["meter-reading"], destination)
+        _validate_database(destination)
+        return destination
+
+    record = prepare_operation(
+        pending,
+        safety,
+        databases,
+        ["meter-reading"],
+        operation_id="6" * 32,
+        operation_kind="initial_migration",
+        copy_database=copy_database,
+        create_and_verify_backup=create_backup,
+    )
+    mark_operation_applying(pending, safety, databases)
+
+    assert cancel_unpublished_initial_migration(pending, safety, databases)
+    assert not pending.exists()
+    assert not (safety / record.operation_id).exists()
+    assert _read_database(database) == "existing"
+    assert (backup_root / "automatic.db").exists()
+
+
+def test_cancel_preserves_database_changes_and_refuses_unknown_safety_file(tmp_path: Path) -> None:
+    database = tmp_path / "meter.db"
+    _create_database(database, "before")
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("PRAGMA user_version = 6")
+        connection.commit()
+    pending = tmp_path / "recovery" / "pending.json"
+    safety = tmp_path / "backups" / "safety"
+    backup_root = safety.parent
+    databases = {"meter-reading": RegisteredDatabase(database, _validate_database)}
+
+    def create_backup(snapshots: Mapping[str, Path]) -> Path:
+        destination = backup_root / "automatic.db"
+        shutil.copyfile(snapshots["meter-reading"], destination)
+        _validate_database(destination)
+        return destination
+
+    record = prepare_operation(
+        pending,
+        safety,
+        databases,
+        ["meter-reading"],
+        operation_id="8" * 32,
+        operation_kind="initial_migration",
+        copy_database=copy_database,
+        create_and_verify_backup=create_backup,
+    )
+    mark_operation_applying(pending, safety, databases)
+    with closing(sqlite3.connect(databases["meter-reading"].path)) as connection:
+        connection.execute("UPDATE item SET value = 'changed'")
+        connection.commit()
+    assert cancel_unpublished_initial_migration(pending, safety, databases)
+    assert not pending.exists()
+    assert _read_database(database) == "changed"
+    assert record.targets[0].safety_path is not None
+    assert not Path(record.targets[0].safety_path).exists()
+    assert (backup_root / "automatic.db").exists()
+
+    empty_pending = tmp_path / "unknown" / "pending.json"
+    empty_safety = tmp_path / "unknown" / "safety"
+    new_database = tmp_path / "unknown" / "meter.db"
+    new_databases = {"meter-reading": RegisteredDatabase(new_database, _validate_database)}
+    new_record = prepare_operation(
+        empty_pending,
+        empty_safety,
+        new_databases,
+        ["meter-reading"],
+        operation_id="7" * 32,
+        operation_kind="initial_migration",
+        copy_database=copy_database,
+        create_and_verify_backup=lambda _snapshots: pytest.fail("新規作成で自動保全を実行しました"),
+    )
+    (empty_safety / new_record.operation_id / "unexpected").write_bytes(b"keep")
+    with pytest.raises(PendingRecoveryError, match="取り消せません"):
+        cancel_unpublished_initial_migration(empty_pending, empty_safety, new_databases)
+    assert empty_pending.exists()
+    assert (empty_safety / new_record.operation_id / "unexpected").read_bytes() == b"keep"
 
 
 def test_process_exit_immediately_after_publishing_record_allows_retry(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sqlite3
 import stat
 import sys
@@ -9,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
@@ -19,7 +21,14 @@ from building_manager_mini.core.recovery import PendingRecoveryError
 from building_manager_mini.db.migrations import (
     open_database_readonly as open_common_database_readonly,
 )
-from building_manager_mini.db.recovery import RegisteredDatabase, recover_pending
+from building_manager_mini.db.recovery import (
+    RegisteredDatabase,
+    cancel_unpublished_initial_migration,
+    complete_operation,
+    mark_operation_applying,
+    prepare_operation,
+    recover_pending,
+)
 from building_manager_mini.paths import (
     AppPaths,
     PathConfigurationError,
@@ -32,10 +41,15 @@ from building_manager_mini.ui.application_selection import ApplicationChoice
 from meter_reading_mini.app_context import AppContext, create_app_context
 from meter_reading_mini.core.backup_restore_contracts import RestoreResult
 from meter_reading_mini.core.backup_restore_service import BackupRestoreService
-from meter_reading_mini.core.errors import DomainError, InvalidBackupError, RestoreError
+from meter_reading_mini.core.errors import (
+    DomainError,
+    InvalidBackupError,
+    MigrationError,
+    RestoreError,
+)
 from meter_reading_mini.core.logging_config import configure_logging
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
-from meter_reading_mini.db.backup import check_sqlite_integrity
+from meter_reading_mini.db.backup import check_sqlite_integrity, copy_database
 from meter_reading_mini.db.connection import connect_readonly
 from meter_reading_mini.db.integrity import check_business_integrity
 from meter_reading_mini.db.legacy_migration import migrate_legacy_database
@@ -376,12 +390,18 @@ def run_app(
                             resolved_paths.db_path, _validate_meter_reading_database
                         ),
                     }
-                    recover_pending(
-                        resolved_paths.recovery_pending_path,
-                        resolved_paths.safety_backup_root,
-                        recovery_databases,
-                        validate_set=lambda: _validate_recovery_database_set(recovery_databases),
-                    )
+
+                    def recover_interrupted_operation() -> None:
+                        recover_pending(
+                            resolved_paths.recovery_pending_path,
+                            resolved_paths.safety_backup_root,
+                            recovery_databases,
+                            validate_set=lambda: _validate_recovery_database_set(
+                                recovery_databases
+                            ),
+                        )
+
+                    recover_interrupted_operation()
                     previous_excepthook = sys.excepthook
                     install_excepthook(resolved_paths.log_path)
                     resources.callback(setattr, sys, "excepthook", previous_excepthook)
@@ -432,14 +452,79 @@ def run_app(
                             meter_window.reload_for_activation()
                             return meter_window
 
+                        recover_interrupted_operation()
                         app_resources = ExitStack()
                         try:
                             migration_completed = False
                             if legacy_database_path is not None:
+                                operation_id = uuid4().hex
+
+                                def prepare_legacy_migration() -> None:
+                                    if resolved_paths.common_db_path.exists():
+                                        raise MigrationError(
+                                            "共通 DB が存在するため、"
+                                            "旧 DB の初回移行を実行できません。"
+                                        )
+
+                                    def create_backup(snapshots: Mapping[str, Path]) -> Path:
+                                        if set(snapshots) != {"meter-reading"}:
+                                            raise ValueError(
+                                                "初回移行用の単体自動保全を作成できません。"
+                                            )
+                                        backup_path = (
+                                            resolved_paths.backup_root
+                                            / f"initial-migration-{operation_id}.db"
+                                        )
+                                        shutil.copyfile(snapshots["meter-reading"], backup_path)
+                                        _validate_meter_reading_database(backup_path)
+                                        return backup_path
+
+                                    prepare_operation(
+                                        resolved_paths.recovery_pending_path,
+                                        resolved_paths.safety_backup_root,
+                                        recovery_databases,
+                                        [METER_READING_APPLICATION_ID],
+                                        operation_id=operation_id,
+                                        operation_kind="initial_migration",
+                                        copy_database=copy_database,
+                                        create_and_verify_backup=create_backup,
+                                    )
+                                    mark_operation_applying(
+                                        resolved_paths.recovery_pending_path,
+                                        resolved_paths.safety_backup_root,
+                                        recovery_databases,
+                                    )
+
+                                def complete_legacy_migration() -> None:
+                                    if not complete_operation(
+                                        resolved_paths.recovery_pending_path,
+                                        resolved_paths.safety_backup_root,
+                                        recovery_databases,
+                                        validate_set=lambda: _validate_recovery_database_set(
+                                            recovery_databases
+                                        ),
+                                    ):
+                                        raise PendingRecoveryError(
+                                            "旧 DB 移行の中断記録が完了前に失われました。"
+                                        )
+
+                                def cancel_legacy_migration() -> None:
+                                    if not cancel_unpublished_initial_migration(
+                                        resolved_paths.recovery_pending_path,
+                                        resolved_paths.safety_backup_root,
+                                        recovery_databases,
+                                    ):
+                                        raise PendingRecoveryError(
+                                            "公開競合後の移行記録を確認できません。"
+                                        )
+
                                 migration_completed = migrate_legacy_database(
                                     resolved_paths.db_path,
                                     legacy_database_path,
                                     lock_factory=SingleInstanceLock,
+                                    before_publish=prepare_legacy_migration,
+                                    after_publish=complete_legacy_migration,
+                                    on_publication_conflict=cancel_legacy_migration,
                                 )
 
                             connection = (database_opener or open_database)(

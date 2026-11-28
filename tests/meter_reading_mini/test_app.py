@@ -285,6 +285,7 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
         "hook.install",
         "settings.load",
         "settings.apply",
+        "recovery",
         "db.open",
         "startup.prepare",
         "window.create",
@@ -922,6 +923,8 @@ def test_run_app_migrates_legacy_database_after_lock_and_notifies_user(
     assert load_ui_settings(paths.ui_settings_path).last_application == (
         app_module.METER_READING_APPLICATION_ID
     )
+    assert not paths.recovery_pending_path.exists()
+    assert not list(paths.safety_backup_root.iterdir())
     with closing(connect_readonly(paths.db_path)) as migrated:
         assert migrated.execute("SELECT name FROM staff").fetchall() == [("旧版担当者",)]
 

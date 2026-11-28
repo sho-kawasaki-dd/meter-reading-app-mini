@@ -81,6 +81,36 @@ def test_migration_copies_wal_data_and_keeps_old_db_and_backups_unchanged(
     assert not list(new_dir.glob(".meter-reading-migration-*"))
 
 
+def test_migration_callbacks_bracket_database_publication(tmp_path: Path) -> None:
+    old_path = tmp_path / "old" / "meter_reading.db"
+    new_path = tmp_path / "new" / "meter_reading.db"
+    old_path.parent.mkdir()
+    new_path.parent.mkdir()
+    _create_database(old_path, version=5)
+    events: list[str] = []
+
+    def before_publish() -> None:
+        assert not new_path.exists()
+        events.append("before")
+
+    def after_publish() -> None:
+        assert new_path.is_file()
+        events.append("after")
+
+    def publication_conflict() -> None:
+        pytest.fail("公開が成功した場合は競合コールバックを呼びません")
+
+    assert migrate_legacy_database(
+        new_path,
+        old_path,
+        lock_factory=lambda _path: FakeLock(),
+        before_publish=before_publish,
+        after_publish=after_publish,
+        on_publication_conflict=publication_conflict,
+    )
+    assert events == ["before", "after"]
+
+
 def test_migration_refuses_old_database_when_old_lock_is_held(tmp_path: Path) -> None:
     old_path = tmp_path / "old" / "meter_reading.db"
     new_path = tmp_path / "new" / "meter_reading.db"
@@ -291,6 +321,7 @@ def test_destination_created_during_migration_is_not_overwritten(
     new_path.parent.mkdir()
     _create_database(old_path)
     racing_destination = b"created concurrently"
+    events: list[str] = []
 
     def create_destination_then_link(source: Path, destination: Path) -> None:
         destination.write_bytes(racing_destination)
@@ -302,9 +333,13 @@ def test_destination_created_during_migration_is_not_overwritten(
         new_path,
         old_path,
         lock_factory=lambda path: FakeLock(),
+        before_publish=lambda: events.append("before"),
+        after_publish=lambda: pytest.fail("競合時に公開後コールバックを呼びません"),
+        on_publication_conflict=lambda: events.append("conflict"),
     )
 
     assert not copied
+    assert events == ["before", "conflict"]
     assert new_path.read_bytes() == racing_destination
     assert not list(new_path.parent.glob(".meter-reading-migration-*"))
 
