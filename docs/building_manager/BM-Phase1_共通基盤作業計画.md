@@ -74,3 +74,4 @@
 - [ ] [README](../../README.md) に新旧コマンドの扱い、環境変数の組合せ、移行対象、旧 DB を残す理由、複製後に旧版で入力した内容は反映されないこと、新旧のバックアップの場所と旧バックアップからの復元方法、失敗時の再試行手順を記載する。開発手順・検針の正本に残る現行パスも更新し、凍結済み計画書は書き換えない。
 - [ ] 各変更は `feature/bm-phase1-…` ブランチから PR とし、`test (windows-latest)`・`test (ubuntu-latest)` の成功と手動確認の結果を記録する。未検証項目を完了扱いにしない。
 - [ ] 確定仕様を要件定義 3 章・8 章へ統合し、本書を `implemented/` へ `git mv` して相対リンクを直す。Phase 2 には新ルート・ロック・起動順・単体 DB 復元の契約を渡し、Phase 7 には旧インストールとの共存・更新検証と、据え置いたガードの保存先・exe 名・インストーラーの新名称への同時切替を残す。
+$env:BUILDING_MANAGER_MINI_DATA_DIR = 'C:\Users\tohbo\AppData\Local\Temp\bm-phase1-manual-be38fee213e444a9a3d9801e74ea44ff'; uv run python -m building_manager_mini

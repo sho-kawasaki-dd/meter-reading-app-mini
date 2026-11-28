@@ -108,19 +108,41 @@ uv run coverage report --include="*/meter_reading_mini/db/*" --fail-under=90
 
 ## アプリの起動
 
-リポジトリのルートで実行します。Phase 3 のメイン画面が起動します。現在利用できる機能は上記の開発状況を確認してください。
+リポジトリのルートで実行します。共通のアプリ選択画面が起動し、「検針管理」を選ぶと検針アプリが開きます。現在利用できる機能は上記の開発状況を確認してください。
 
 ```powershell
 uv sync --locked
-uv run python -m meter_reading_mini
+uv run python -m building_manager_mini
 ```
 
 実データと分離して動作を確認するときは、一時フォルダを指定して起動します。
 
 ```powershell
 $env:BUILDING_MANAGER_MINI_DATA_DIR = "<一時フォルダ>"
-uv run python -m meter_reading_mini
+uv run python -m building_manager_mini
 ```
+
+### 共通基盤の旧起動入口・初回移行
+
+現在の起動入口は `uv run python -m building_manager_mini` です。旧コマンド
+`uv run python -m meter_reading_mini` は新コマンドを案内して終了し、アプリや DB を開きません。
+
+保存先の環境変数は次の組合せで扱います。
+
+| `BUILDING_MANAGER_MINI_DATA_DIR` | `METER_READING_MINI_DATA_DIR` | 動作 |
+| --- | --- | --- |
+| 未指定 | 未指定 | 新ルート `%APPDATA%\building-manager-mini` を使い、旧既定ルート `%APPDATA%\meter-reading-mini` の検針 DB を移行元として探します |
+| 指定 | 未指定 | 指定先を新ルートに使い、旧既定ルートは探しません |
+| 指定 | 指定 | 新変数の指定先を新ルート、旧変数の指定先を移行元として使います |
+| 未指定 | 指定 | 実データを誤用しないよう、ロック・DB・ログを作成せず起動を中止します |
+
+新ルートと旧保存領域・旧ログ領域が同一または親子になる指定も拒否します。旧変数を指定するときは、新変数にも旧領域と重ならない新しい保存先を指定してください。
+
+初回移行の対象は検針 DB (`meter_reading.db`) のみです。旧表示設定・ログ・バックアップはコピーも削除もせず、新しい表示設定は初期値で始まります。新しい DB が既にあれば旧 DB で置き換えません。旧 DB はそのまま残りますが、複製後に旧版で入力した内容は新 DB へ反映されません。
+
+新しい検針 DB と標準の単体バックアップ保存先は、それぞれ `<新ルート>\meter_reading\meter_reading.db` と `<新ルート>\backups\meter_reading\` です。旧 DB と旧版の標準バックアップ保存先は、それぞれ `%APPDATA%\meter-reading-mini\meter_reading.db` と `%APPDATA%\meter-reading-mini\backups\` に残ります (バックアップ時に別の保存先を選んでいた場合はその場所です)。旧バックアップから復元する場合は、検針アプリの「ファイル」→「バックアップ・復元」で旧バックアップをファイル選択し、候補を検査してから復元してください。旧 DB の初回移行とは別操作です。
+
+移行に失敗した場合は表示された理由を解消して新入口を再起動します。旧版が使用中なら旧版を終了して再試行してください。複製処理は一時 DB を検査してから新しい正式パスへ反映するため、失敗した移行元は変更しません。既存の新 DB は自動で上書き・修復しないため、その場合は状態を確認してから再試行してください。
 
 手動確認用のサンプルデータを作る場合は、リポジトリルートで次を実行します。
 既定では OS の一時フォルダーに新しい DB を作り、既存 DB がある保存先への上書きは拒否します。
@@ -154,7 +176,7 @@ $previousDataDir = $env:BUILDING_MANAGER_MINI_DATA_DIR
 try {
     $env:BUILDING_MANAGER_MINI_DATA_DIR = $dataDir
     Write-Host "確認用データの保存先: $dataDir"
-    uv run python -X faulthandler -m meter_reading_mini
+    uv run python -X faulthandler -m building_manager_mini
     $exitCode = $LASTEXITCODE
     Write-Host "アプリ終了コード: $exitCode"
     if ($exitCode -ne 0) {
@@ -213,7 +235,7 @@ Linux では Qt の OS 依存も必要です。Ubuntu 系の準備例:
 sudo apt-get update
 sudo apt-get install --yes libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libxcb-cursor0
 uv sync --locked
-uv run python -m meter_reading_mini
+uv run python -m building_manager_mini
 ```
 
 ## 基本操作
@@ -404,14 +426,14 @@ UTF-8 BOM なしの JSON 形式 v1 (`kind: "mrm-usage-aggregation"`, `v: 1`) で
 
 ```powershell
 $env:BUILDING_MANAGER_MINI_DATA_DIR = Join-Path $env:TEMP ("building-manager-mini-" + [guid]::NewGuid().ToString('N'))
-uv run python -m meter_reading_mini
+uv run python -m building_manager_mini
 ```
 
 Linux の指定例:
 
 ```sh
 export BUILDING_MANAGER_MINI_DATA_DIR="$HOME/.local/share/building-manager-mini-test"
-uv run python -m meter_reading_mini
+uv run python -m building_manager_mini
 ```
 
 ### バックアップ・復元
@@ -618,13 +640,6 @@ DB・バックアップ・ログが残ることを確認し、環境・版数・
 │   │   └── ローカル検針管理アプリ開発計画書.md
 │   └── work_log/
 │       └── implemented/
-│       ├── archive/
-│       │   └── オフライン対応・Wi-Fi同期型_検針システム企画書_v4.md
-│       ├── implemented/
-│       │   ├── フェーズ0_共通基盤・CI整備計画.md
-│       │   ├── フェーズ1_sqlite3統合・コア業務ロジック移植計画.md
-│       │   └── ルート配置移行計画.md
-│       └── ローカル検針管理アプリ開発計画書.md
 ├── pyproject.toml
 ├── uv.lock
 ├── packaging/
@@ -633,7 +648,14 @@ DB・バックアップ・ログが残ることを確認し、環境・版数・
 │   ├── build_windows.py
 │   └── verify_windows_exe.ps1
 ├── src/
+│   ├── building_manager_mini/
+│   │   ├── __main__.py
+│   │   ├── entrypoint.py
+│   │   ├── launcher.py
+│   │   ├── paths.py
+│   │   └── settings.py / ui/
 │   └── meter_reading_mini/
+│       ├── __main__.py
 │       ├── app.py
 │       ├── config.py
 │       ├── restart.py
@@ -641,14 +663,19 @@ DB・バックアップ・ログが残ることを確認し、環境・版数・
 │       ├── db/
 │       └── ui/
 └── tests/
+    ├── building_manager_mini/
+    └── meter_reading_mini/
 ```
 
 以下の `core/`・`db/`・`ui/` は `src/meter_reading_mini/` 配下です。
 
 | ファイル / ディレクトリ | 役割 |
 | --- | --- |
-| `src/meter_reading_mini/app.py` | 起動・復元後の DB 終了とロック・再起動の順序を統括 |
-| `src/meter_reading_mini/config.py` | アプリデータ・ログ等の保存先を解決 |
+| `src/building_manager_mini/entrypoint.py` | 共通起動・アプリ登録を組み立て |
+| `src/building_manager_mini/launcher.py` | アプリ選択と切替を統括 |
+| `src/building_manager_mini/paths.py` | 全アプリの保存先を解決 |
+| `src/meter_reading_mini/app.py` | 検針アプリの起動アダプターを組み立て |
+| `src/meter_reading_mini/config.py` | 共通保存先 API の後方互換 |
 | `src/meter_reading_mini/restart.py` | 実行形態に応じた再起動と起動完了の確認 |
 | `packaging/meter_reading_mini.spec` | Windows x64 exe の実行時資産と `tzdata` の同梱設定 |
 | `scripts/build_windows.py`・`scripts/verify_windows_exe.ps1` | 開発用 exe の新規ビルドと一時保存先での実行検証 |
