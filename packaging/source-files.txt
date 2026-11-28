@@ -81,6 +81,7 @@ src/building_manager_mini/core/settings_contracts.py
 src/building_manager_mini/core/settings_service.py
 src/building_manager_mini/db/__init__.py
 src/building_manager_mini/db/migrations.py
+src/building_manager_mini/db/recovery.py
 src/building_manager_mini/db/schema.sql
 src/building_manager_mini/db/settings_repository.py
 src/building_manager_mini/entrypoint.py
@@ -210,6 +211,7 @@ tests/building_manager_mini/test_common_migrations.py
 tests/building_manager_mini/test_common_settings.py
 tests/building_manager_mini/test_launcher.py
 tests/building_manager_mini/test_paths.py
+tests/building_manager_mini/test_recovery.py
 tests/building_manager_mini/test_recovery_gate.py
 tests/building_manager_mini/test_sender_address.py
 tests/building_manager_mini/test_settings.py
