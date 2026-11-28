@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import stat
 import sys
-from collections.abc import Callable, Sequence
-from contextlib import ExitStack
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import Protocol
 
@@ -14,7 +15,11 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from shiboken6 import delete as delete_qobject
 
-from building_manager_mini.core.recovery import PendingRecoveryError, refuse_pending_operation
+from building_manager_mini.core.recovery import PendingRecoveryError
+from building_manager_mini.db.migrations import (
+    open_database_readonly as open_common_database_readonly,
+)
+from building_manager_mini.db.recovery import RegisteredDatabase, recover_pending
 from building_manager_mini.paths import (
     AppPaths,
     PathConfigurationError,
@@ -30,8 +35,18 @@ from meter_reading_mini.core.backup_restore_service import BackupRestoreService
 from meter_reading_mini.core.errors import DomainError, InvalidBackupError, RestoreError
 from meter_reading_mini.core.logging_config import configure_logging
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
+from meter_reading_mini.db.backup import check_sqlite_integrity
+from meter_reading_mini.db.connection import connect_readonly
+from meter_reading_mini.db.integrity import check_business_integrity
 from meter_reading_mini.db.legacy_migration import migrate_legacy_database
-from meter_reading_mini.db.migrations import open_database
+from meter_reading_mini.db.migrations import (
+    MIN_SUPPORTED_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    check_migration_path,
+    check_migration_prechecks,
+    inspect_schema,
+    open_database,
+)
 from meter_reading_mini.db.restore import SQLiteBackupRestoreRepository
 from meter_reading_mini.installation_guard import InstallationGuardError, create_installation_guard
 from meter_reading_mini.restart import (
@@ -106,6 +121,47 @@ class InstallGuard(Protocol):
 
 METER_READING_APPLICATION_ID = "meter-reading"
 REGISTERED_APPLICATIONS: tuple[ApplicationChoice, ...] = ((METER_READING_APPLICATION_ID, "検針"),)
+
+
+def _validate_meter_reading_database(path: Path) -> None:
+    with closing(connect_readonly(path)) as connection:
+        version_row = connection.execute("PRAGMA user_version").fetchone()
+        if version_row is None or type(version_row[0]) is not int:
+            raise ValueError("検針 DB のスキーマ版を確認できません。")
+        version = version_row[0]
+        if not MIN_SUPPORTED_SCHEMA_VERSION <= version <= SCHEMA_VERSION:
+            raise ValueError(f"検針 DB のスキーマ版が未対応です: {version}")
+        schema_reasons = inspect_schema(connection, version)
+        if schema_reasons:
+            raise ValueError("検針 DB のスキーマが不正です: " + "、".join(schema_reasons))
+        integrity_reasons = check_sqlite_integrity(connection)
+        if integrity_reasons:
+            raise ValueError("検針 DB の整合性が不正です: " + "、".join(integrity_reasons))
+        try:
+            check_migration_path(version, SCHEMA_VERSION)
+            check_migration_prechecks(connection, version, SCHEMA_VERSION)
+        except DomainError as error:
+            raise ValueError(f"検針 DB の移行前検査に失敗しました: {error}") from error
+        if version == SCHEMA_VERSION:
+            business_reasons = check_business_integrity(connection)
+            if business_reasons:
+                raise ValueError("検針 DB の業務整合性が不正です: " + "、".join(business_reasons))
+
+
+def _validate_common_database(path: Path) -> None:
+    with closing(open_common_database_readonly(path)):
+        pass
+
+
+def _validate_recovery_database_set(databases: Mapping[str, RegisteredDatabase]) -> None:
+    for database in databases.values():
+        try:
+            info = database.path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError(f"DB が通常の単独ファイルではありません: {database.path}")
+        database.validate(database.path)
 
 
 def _create_qapplication() -> QApplication:
@@ -312,8 +368,19 @@ def run_app(
                     ensure_dirs(resolved_paths)
                     (logging_configurator or configure_logging)(log_dir=resolved_paths.log_dir)
                     logging_initialized = True
-                    refuse_pending_operation(
-                        resolved_paths.recovery_pending_path, resolved_paths.safety_backup_root
+                    recovery_databases = {
+                        "common": RegisteredDatabase(
+                            resolved_paths.common_db_path, _validate_common_database
+                        ),
+                        METER_READING_APPLICATION_ID: RegisteredDatabase(
+                            resolved_paths.db_path, _validate_meter_reading_database
+                        ),
+                    }
+                    recover_pending(
+                        resolved_paths.recovery_pending_path,
+                        resolved_paths.safety_backup_root,
+                        recovery_databases,
+                        validate_set=lambda: _validate_recovery_database_set(recovery_databases),
                     )
                     previous_excepthook = sys.excepthook
                     install_excepthook(resolved_paths.log_path)

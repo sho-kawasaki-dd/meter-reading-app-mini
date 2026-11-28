@@ -6,7 +6,7 @@ import runpy
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import closing
 from functools import partial
 from pathlib import Path
@@ -15,6 +15,7 @@ import pytest
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
+from building_manager_mini.db.recovery import prepare_operation
 from building_manager_mini.paths import (
     DATA_DIR_ENV,
     LEGACY_DATA_DIR_ENV,
@@ -27,6 +28,7 @@ from building_manager_mini.ui.application_host import ApplicationHostWindow
 from meter_reading_mini import app as app_module
 from meter_reading_mini.core.errors import ValidationError
 from meter_reading_mini.core.timeutil import local_timestamp_for_filename
+from meter_reading_mini.db.backup import copy_database
 from meter_reading_mini.db.connection import connect_readonly, transaction
 from meter_reading_mini.db.migrations import SCHEMA_VERSION, open_database
 from meter_reading_mini.ui.display_settings import DisplaySettings
@@ -125,6 +127,63 @@ def test_pending_recovery_blocks_before_ui_and_database_open(
     assert not paths.db_path.exists()
 
 
+def test_pending_recovery_restores_database_before_startup(
+    tmp_path: Path, qapp: QApplication
+) -> None:
+    paths = AppPaths.from_root(tmp_path / "data")
+    paths.db_path.parent.mkdir(parents=True)
+    paths.backup_dir.mkdir(parents=True)
+    connection = open_database(
+        paths.db_path,
+        paths.backup_dir,
+        backup_timestamp=local_timestamp_for_filename,
+    )
+    connection.execute("INSERT INTO staff (name) VALUES ('保全時点')")
+    connection.close()
+
+    def create_backup(snapshots: Mapping[str, Path]) -> Path:
+        backup_path = paths.backup_root / "automatic.db"
+        with closing(sqlite3.connect(snapshots["meter-reading"], autocommit=True)) as snapshot:
+            copy_database(snapshot, backup_path)
+        app_module._validate_meter_reading_database(backup_path)
+        return backup_path
+
+    prepare_operation(
+        paths.recovery_pending_path,
+        paths.safety_backup_root,
+        {
+            "common": app_module.RegisteredDatabase(
+                paths.common_db_path, app_module._validate_common_database
+            ),
+            "meter-reading": app_module.RegisteredDatabase(
+                paths.db_path, app_module._validate_meter_reading_database
+            ),
+        },
+        ["meter-reading"],
+        operation_id="a" * 32,
+        operation_kind="initial_migration",
+        copy_database=copy_database,
+        create_and_verify_backup=create_backup,
+    )
+    with closing(sqlite3.connect(paths.db_path, autocommit=True)) as changed:
+        changed.execute("UPDATE staff SET name = '変更後'")
+
+    result = app_module.run_app(
+        paths,
+        application_selector=lambda applications, *, last_application=None: None,
+        lock_factory=lambda _path: FakeLock([]),
+        install_guard_factory=lambda: None,
+        logging_configurator=lambda *, log_dir: None,
+        event_loop_runner=lambda _application: 0,
+    )
+
+    assert result == app_module.STARTUP_SUCCESS
+    with closing(connect_readonly(paths.db_path)) as restored:
+        assert restored.execute("SELECT name FROM staff").fetchone() == ("保全時点",)
+    assert not paths.recovery_pending_path.exists()
+    assert (paths.backup_root / "automatic.db").exists()
+
+
 def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -148,6 +207,20 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
         events.append("hook.install")
         assert path == paths.log_path
         install_excepthook(path)
+
+    def recover_pending(
+        pending_path: Path,
+        safety_root: Path,
+        databases: dict[str, app_module.RegisteredDatabase],
+        *,
+        validate_set: Callable[[], None],
+    ) -> bool:
+        events.append("recovery")
+        assert pending_path == paths.recovery_pending_path
+        assert safety_root == paths.safety_backup_root
+        assert set(databases) == {"common", "meter-reading"}
+        validate_set()
+        return False
 
     def make_window(context: app_module.AppContext) -> QMainWindow:
         events.append("window.create")
@@ -177,6 +250,7 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
         return connection
 
     monkeypatch.setattr(app_module, "ensure_dirs", ensure_dirs)
+    monkeypatch.setattr(app_module, "recover_pending", recover_pending)
     monkeypatch.setattr(app_module, "install_excepthook", install_hook)
     monkeypatch.setattr(
         app_module,
@@ -207,6 +281,7 @@ def test_run_app_initializes_in_order_and_reuses_existing_qapplication(
         "lock.acquire",
         "directories",
         "logging",
+        "recovery",
         "hook.install",
         "settings.load",
         "settings.apply",
